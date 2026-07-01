@@ -1,5 +1,50 @@
 # Migrate control-point preparation into `uw-cryo/groundcontrol`
 
+<!-- REVIEW SCAFFOLDING — remove once these decisions are folded into the schema section below -->
+## 🔴 Reviewer sign-off — schema + CRS/epoch
+
+**How to review (low-burden):** reply inline on each item below in the **Files changed** tab — `ok`
+to accept my recommendation, or your change. Everything else (mechanical porting, the Appendix B
+bugs, packaging) I own — you don't need to read it. There's **one** decision that needs real
+thought (**D0**), plus **five** quick yes/veto calls.
+
+### D0 — the time/epoch model  *(the one that needs your head)*
+The canonical frame `EPSG:7912` unifies points in **space but not time**: it's a *dynamic* frame,
+yet each point keeps its own `epoch` and **no velocity is stored** — so `geometry` is silently
+mixed-epoch and motion can't be propagated to the DEM's epoch. Both reviewers converged here. For
+the Iceland acceptance AOI (~cm/yr in H **and** V) a 5–10 yr control↔DEM gap is 10–50 cm — larger
+than the accuracy being measured. **Recommended model — accept or tweak:**
+1. Fetch **preserves** each point's native epoch and carries a **velocity** (`vel_e/n/u`; MIDAS for
+   GNSS, a plate model for fixed marks). `epoch` is *live* coordinate state, not just provenance.
+2. The **DEM owns the target epoch + frame**; `assess_dem` applies velocity·Δt at sample time.
+   `fetch_control --epoch` becomes a non-binding hint so a saved table can't silently go stale.
+3. **Working frame tracks the DEM** — the US case stays NAD83→NAD83 (epoch-only) instead of a
+   NAVD88→ellipsoid→ITRF→back round-trip through GEOID18 twice. ITRF2014 stays provenance/interop.
+4. **NGL:** pull the global IGS product and convert IGS20→ITRF2014 explicitly; **don't** ingest
+   plate-fixed series.
+5. **Static/mosaic DEM** (e.g. COP30): require `--dem-epoch`; when only the frame epoch is known,
+   the report prints the implied velocity·Δt error budget instead of hiding it.
+
+**→ Your scope call (reply here):** build rigorous velocity propagation into v1, or document
+velocity·Δt as a known limitation for now (simpler — no velocity column)? Iceland argues build-in.
+
+### Quick yes/veto — reply `ok` or your change on each
+- **D1 · geometry dimensionality:** 2D point + matching **2D** CRS label + explicit `height` column
+  — *not* 2D points tagged with the 3D `EPSG:7912` code (geopandas drops Z widely). *(rec: yes)*
+- **D2 · `point_type` split:** separate `marker_type` (gnss / monument / checkpoint) **+**
+  `assessment_class` (NVA / VVA / none) — a GNSS mark can also be a checkpoint; metrics key off the
+  latter. *(rec: yes)*
+- **D3 · accuracy columns:** define `acc_h` / `acc_v` as **1-σ meters**, `acc_h = √(σe²+σn²)`, and
+  promote `sig_e` / `sig_n` / `sig_u` to first-class nullable columns. *(rec: yes — ok to convert
+  NGS's 95% network accuracy → 1-σ at ingest?)*
+- **D4 · provenance dedup:** one column per concept — drop `height_datum` (keep `vertical_crs`),
+  make `ref_frame` authoritative for **all** geodetic sources, split `observed` →
+  `observed_start` / `observed_end`. *(rec: yes)*
+- **D5 · `raw` round-trip:** store `raw` as a **JSON string**, and promote audit-critical native
+  coords + per-axis sigmas to typed columns (Python dicts don't survive GeoParquet/CSV). *(rec: yes)*
+
+---
+
 ## Context
 
 Ground-control preparation logic is currently scattered across two project repos and is hard

@@ -103,6 +103,24 @@ def _frame_fields(datum: pd.Series) -> tuple[pd.Series, pd.Series]:
     return ref, frame_epoch
 
 
+def _parse_recovered(s: pd.Series) -> pd.Series:
+    """Parse NGS ``lastRecovered`` dates, which come in mixed precision.
+
+    Real distribution (Casa Grande, 2026-07): 362x ``YYYYMMDD``, 136x ``YYYY``
+    (year only), 2x blank. A strict ``%Y%m%d`` parse silently drops 28% of
+    measurement dates. Year-only values are assigned **mid-year (July 2)** so
+    the derived ``measurement_epoch`` is unbiased (max error ±0.5 yr).
+    """
+    s = s.astype("string").str.strip()
+    out = pd.Series(pd.NaT, index=s.index, dtype="datetime64[ns, UTC]")
+    n = s.str.len()
+    out[n == 8] = pd.to_datetime(s[n == 8], format="%Y%m%d", utc=True, errors="coerce")
+    out[n == 6] = pd.to_datetime(s[n == 6], format="%Y%m", utc=True, errors="coerce")
+    out[n == 4] = pd.to_datetime(s[n == 4] + "0702", format="%Y%m%d", utc=True,
+                                 errors="coerce")
+    return out
+
+
 def _vert_crs(vert_datum: pd.Series) -> pd.Series:
     """Honest per-row vertical CRS from the NGS ``vertDatum`` string.
 
@@ -129,7 +147,7 @@ def parse_nde(records: list[dict]) -> gpd.GeoDataFrame:
     ref_frame, frame_epoch = _frame_fields(df.get("posDatum", pd.Series(index=df.index)))
     # B7: per-row native realization CRS (fail-loud on unrecognized strings)
     h_crs = ref_frame.map(ngs_datum_to_epsg).astype("string")
-    mdt = pd.to_datetime(df.get("lastRecovered"), format="%Y%m%d", utc=True, errors="coerce")
+    mdt = _parse_recovered(df.get("lastRecovered", pd.Series(index=df.index)))
     consumed = {"pid", "lat", "lon", "orthoHt", "lastRecovered"}
     extras = [c for c in df.columns if c not in consumed]
     out = gpd.GeoDataFrame(
@@ -152,8 +170,12 @@ def parse_nde(records: list[dict]) -> gpd.GeoDataFrame:
             "coord_epoch": _num(df, "epoch").fillna(frame_epoch),
             "measurement_datetime": mdt,
             "measurement_epoch": decyear(mdt),
-            # NGS network accuracies (netAccHz/netAccU, 95%-confidence) stay in
-            # raw until the confidence/units convention is adjudicated. TODO(D3)
+            # NGS network accuracies where published (~5% of marks): datasheet
+            # network accuracies are 95%-confidence values in **cm** -> m.
+            # TODO(D3): single library-wide confidence convention; spec-based
+            # (posOrder/vertOrder-class) fallback for the rest is a D3 call.
+            "acc_h": _num(df, "netAccHz") / 100.0,
+            "acc_v": _num(df, "netAccU") / 100.0,
             "native_x": lon, "native_y": lat, "native_h": ortho,
             "native_crs": (h_crs + "+5703").astype("string"),
             "raw": pd.Series([json.dumps({k: str(df.iloc[i][k]) for k in extras})
@@ -196,6 +218,10 @@ def parse_opus(records: list[dict]) -> gpd.GeoDataFrame:
             "coord_epoch": _num(df, "epoch").fillna(frame_epoch),
             "measurement_datetime": mdt,
             "measurement_epoch": decyear(mdt),
+            # OPUS peak-to-peak spreads (m) — a repeatability measure, not 1σ;
+            # TODO(D3) convert to the library-wide convention when adjudicated.
+            "acc_h": pd.concat([_num(df, "latP2p"), _num(df, "lonP2p")], axis=1).max(axis=1),
+            "acc_v": _num(df, "orthoHtP2p"),
             "native_x": lon, "native_y": lat, "native_h": ortho,
             "native_crs": (h_crs + "+5703").astype("string"),
             "raw": pd.Series([json.dumps({k: str(df.iloc[i][k]) for k in extras})

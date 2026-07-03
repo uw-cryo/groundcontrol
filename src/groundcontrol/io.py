@@ -73,16 +73,49 @@ def _embed_parquet_metadata(path: Path, provenance: dict) -> None:
     pq.write_table(table.replace_schema_metadata(meta), path)
 
 
+def _compound_export_crs(gdf):
+    """Compound CRS for export when the heights' vertical datum is uniform.
+
+    QGIS-facing honesty (TODO(D1) refinement): the file-level CRS should tell a
+    reader what the ``height`` values are. If **every row that has a height**
+    carries the same single ``vertical_crs``, promote the export CRS to
+    ``horizontal+vertical`` (e.g. EPSG:6318+5703 -> "NAD83(2011) + NAVD88
+    height"); otherwise keep the honest 2D horizontal CRS (never claim a
+    vertical datum some rows don't have).
+    """
+    if gdf.crs is None or gdf.crs.is_compound or "vertical_crs" not in gdf.columns:
+        return None
+    with_height = gdf["height"].notna() if "height" in gdf.columns else gdf.index == gdf.index
+    vcodes = gdf.loc[with_height, "vertical_crs"].dropna().unique()
+    if len(vcodes) != 1 or gdf.loc[with_height, "vertical_crs"].isna().any():
+        return None
+    auth = gdf.crs.to_authority()
+    if auth is None:
+        return None
+    try:
+        return pyproj.CRS(f"{auth[0]}:{auth[1]}+{vcodes[0].split(':')[-1]}")
+    except pyproj.exceptions.CRSError:  # pragma: no cover - defensive
+        logger.warning("could not build compound export CRS from %s + %s", auth, vcodes[0])
+        return None
+
+
 def write(gdf, path, status: dict | None = None, command: str | None = None) -> Path:
     """Write control points to ``path`` (.parquet or .csv) + provenance sidecar.
 
     Returns the output path. GeoParquet keeps full geometry/dtypes and embeds
     the provenance; CSV adds ``x``/``y`` columns (geometry dropped) with a
-    ``# provenance:`` header comment pointing at the sidecar.
+    ``# provenance:`` header comment pointing at the sidecar. When the heights'
+    vertical datum is uniform, the GeoParquet CRS is promoted to the compound
+    form (see :func:`_compound_export_crs`).
     """
     path = Path(path)
-    provenance = build_provenance(gdf, status=status, command=command)
     suffix = path.suffix.lower()
+    if suffix == ".parquet":
+        compound = _compound_export_crs(gdf)
+        if compound is not None:
+            gdf = gdf.set_crs(compound, allow_override=True)
+            logger.info("export CRS promoted to compound: %s", compound.name)
+    provenance = build_provenance(gdf, status=status, command=command)
     if suffix == ".parquet":
         gdf.to_parquet(path)
         _embed_parquet_metadata(path, provenance)

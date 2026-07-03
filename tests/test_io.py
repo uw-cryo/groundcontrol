@@ -48,6 +48,37 @@ def test_write_csv_has_header_comment_and_xy(tmp_path):
     assert (tmp_path / "control.csv.provenance.json").exists()
 
 
+def test_parquet_crs_promoted_to_compound_when_vertical_uniform(tmp_path):
+    """QGIS-facing: file CRS says what the heights are (NAD83(2011)+NAVD88)."""
+    g = _gdf()
+    g["vertical_crs"] = pd.array(["EPSG:5703", "EPSG:5703"], dtype="string")
+    out = tmp_path / "c.parquet"
+    io.write(g, out)
+    back = gpd.read_parquet(out)
+    assert back.crs.is_compound
+    assert "NAVD88" in back.crs.name
+
+
+def test_parquet_crs_stays_2d_when_vertical_mixed(tmp_path):
+    g = _gdf()
+    g["vertical_crs"] = pd.array(["EPSG:5703", "EPSG:7968"], dtype="string")
+    out = tmp_path / "c.parquet"
+    io.write(g, out)
+    back = gpd.read_parquet(out)
+    assert not back.crs.is_compound and back.crs.to_epsg() == 6318
+
+
+def test_parquet_crs_ignores_heightless_rows_for_promotion(tmp_path):
+    """Rows without a height can't veto the compound claim (their vertical_crs is vacuous)."""
+    import numpy as np
+    g = _gdf()
+    g["vertical_crs"] = pd.array(["EPSG:5703", pd.NA], dtype="string")
+    g.loc[g.index[1], "height"] = np.nan
+    out = tmp_path / "c.parquet"
+    io.write(g, out)
+    assert gpd.read_parquet(out).crs.is_compound
+
+
 def test_write_rejects_unknown_format(tmp_path):
     with pytest.raises(ValueError, match="unsupported export format"):
         io.write(_gdf(), tmp_path / "control.xlsx")

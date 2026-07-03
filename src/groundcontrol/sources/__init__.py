@@ -20,7 +20,7 @@ import logging
 import geopandas as gpd
 import pandas as pd
 
-from groundcontrol import schema
+from groundcontrol import crs, schema
 from groundcontrol.sources import checkpoints_3dep, ngs
 
 logger = logging.getLogger(__name__)
@@ -74,7 +74,11 @@ def fetch_control(aoi, sources=("3dep", "ngs", "opus"), target_crs=None, target_
             continue
         fetch, parse = PROVIDERS[name]
         try:
-            gdf = schema.normalize(parse(fetch(bounds)), source=name)
+            gdf = parse(fetch(bounds))
+            # B7: per-datum horizontal landing into the interim frame (subset
+            # AOIs, fail-loud on missing grids/unknown realizations).
+            gdf = crs.land_horizontal(gdf, target=_INTERIM_LANDING_CRS)
+            gdf = schema.normalize(gdf, source=name)
             status[name] = {"n_rows": len(gdf), "error": None}
             if len(gdf):
                 frames.append(gdf)

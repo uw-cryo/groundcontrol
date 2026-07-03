@@ -159,3 +159,76 @@ def get_transformer(source_crs, target_crs, aoi_bounds_4326=None) -> pyproj.Tran
         len(tg.transformers), len(unavailable),
     )
     return chosen
+
+
+# ---------------------------------------------------------------------------
+# NGS realization mapping + per-datum horizontal landing (plan B7)
+# ---------------------------------------------------------------------------
+
+#: NGS datasheet ``posDatum`` / OPUS ``refFrame`` strings -> EPSG geographic 2D CRS.
+#: State HPGN/HARN readjustments are labelled by year (1991-1999) on datasheets;
+#: they are all NAD83(HARN) EPSG:4152 for transformation purposes (NADCON5).
+_NGS_DATUM_RULES = (
+    ("2011", "EPSG:6318"),
+    ("NSRS2007", "EPSG:4759"),
+    ("2007", "EPSG:4759"),
+    ("CORS96", "EPSG:6783"),
+    ("FBN", "EPSG:8860"),
+    ("HARN", "EPSG:4152"),
+    ("1991", "EPSG:4152"), ("1992", "EPSG:4152"), ("1993", "EPSG:4152"),
+    ("1994", "EPSG:4152"), ("1995", "EPSG:4152"), ("1996", "EPSG:4152"),
+    ("1997", "EPSG:4152"), ("1998", "EPSG:4152"), ("1999", "EPSG:4152"),
+    ("1986", "EPSG:4269"),
+)
+
+
+def ngs_datum_to_epsg(datum: str) -> str:
+    """Map an NGS realization string (e.g. ``'NAD 83(1992)'``) to its EPSG CRS.
+
+    Raises ``ValueError`` listing the supported realizations for anything
+    unrecognized (fail-loud: an unmapped realization must never be silently
+    carried as if it were NAD83(2011)).
+    """
+    s = (datum or "").upper().replace(" ", "").replace("_", "")
+    if s.startswith("NAD83") or s.startswith("NAD_83"):
+        for token, epsg in _NGS_DATUM_RULES:
+            if token in s:
+                return epsg
+    raise ValueError(
+        f"unrecognized NGS realization {datum!r}; supported: NAD83 "
+        "(1986/1991-1999 state HARN/HARN/FBN/CORS96/NSRS2007/2007/2011)"
+    )
+
+
+def land_horizontal(gdf, target: str = "EPSG:6318", datum_col: str = "horizontal_crs"):
+    """Land a mixed-realization frame horizontally into one target CRS (plan B7).
+
+    Groups rows by ``datum_col`` (per-row EPSG strings) and transforms each
+    subset with its own transformer built from the **subset's** bounds (B7a).
+    Heights are untouched: the current sources carry NAVD88 *orthometric*
+    heights, which are invariant under NAD83 horizontal realization changes —
+    ellipsoidal heights would not be (B7b); those remain provenance in ``raw``.
+
+    Sets a per-subset ``transform_id`` and the single target CRS on return.
+    Original per-row provenance (``horizontal_crs``/``native_*``) is preserved.
+    """
+    import geopandas as gpd  # local import to keep crs.py light for non-geo use
+
+    out = gdf.copy()
+    if not len(out):
+        return out.set_crs(target, allow_override=True)
+    tgt_norm = str(target).upper().replace(" ", "")
+    for datum, idx in out.groupby(datum_col, dropna=False).groups.items():
+        sub = out.loc[idx]
+        if pd.isna(datum) or str(datum).upper().replace(" ", "") == tgt_norm:
+            out.loc[idx, "transform_id"] = f"land:identity:{target}"
+            continue
+        bounds = tuple(sub.geometry.total_bounds)  # subset AOI, in degrees (B7a)
+        t = get_transformer(datum, target, aoi_bounds_4326=bounds)
+        x, y = t.transform(sub.geometry.x.to_numpy(), sub.geometry.y.to_numpy(),
+                           errcheck=True)
+        out.loc[idx, "geometry"] = gpd.points_from_xy(x, y)
+        out.loc[idx, "transform_id"] = f"land:{datum}->{target}|acc={t.accuracy}m"
+        logger.info("landed %d rows %s -> %s (%s, accuracy %s m)",
+                    len(idx), datum, target, t.description, t.accuracy)
+    return out.set_crs(target, allow_override=True)

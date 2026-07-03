@@ -109,9 +109,13 @@ def parse_nde(records: list[dict]) -> gpd.GeoDataFrame:
     if df.empty:
         from groundcontrol import schema
         return schema.empty(crs="EPSG:6318")
+    from groundcontrol.crs import ngs_datum_to_epsg
+
     lat, lon = _num(df, "lat"), _num(df, "lon")
     ortho, ellip = _num(df, "orthoHt"), _num(df, "ellipHeight")
     ref_frame, frame_epoch = _frame_fields(df.get("posDatum", pd.Series(index=df.index)))
+    # B7: per-row native realization CRS (fail-loud on unrecognized strings)
+    h_crs = ref_frame.map(ngs_datum_to_epsg).astype("string")
     mdt = pd.to_datetime(df.get("lastRecovered"), format="%Y%m%d", utc=True, errors="coerce")
     consumed = {"pid", "lat", "lon", "orthoHt", "lastRecovered"}
     extras = [c for c in df.columns if c not in consumed]
@@ -119,35 +123,31 @@ def parse_nde(records: list[dict]) -> gpd.GeoDataFrame:
         {
             "id": df["pid"].astype("string"),
             "point_type": pd.Series(["monument"] * len(df), dtype="string"),  # TODO(D2)
-            # orthoHt is the well-populated height; ellipHeight is often blank
+            # orthoHt is the well-populated height; ellipHeight is often blank.
+            # NAVD88 orthometric heights are invariant under NAD83 horizontal
+            # realization changes -> the B7 landing is horizontal-only (B7b).
             "height": ortho,
             "height_datum": df.get("vertDatum", pd.Series(index=df.index)).astype("string"),
-            "horizontal_crs": pd.Series(["EPSG:6318"] * len(df), dtype="string"),
+            "horizontal_crs": h_crs,
             "vertical_crs": pd.Series(["EPSG:5703"] * len(df), dtype="string"),
             "ref_frame": ref_frame,
             "frame_epoch": frame_epoch,
             "coord_epoch": _num(df, "epoch").fillna(frame_epoch),
             "measurement_datetime": mdt,
             "measurement_epoch": decyear(mdt),
-            # NGS network accuracies (cm -> m? units unverified) TODO(D3):
-            # netAccHz/netAccU are 95%-confidence network accuracies; kept in
-            # raw until the confidence/units convention is adjudicated.
+            # NGS network accuracies (netAccHz/netAccU, 95%-confidence) stay in
+            # raw until the confidence/units convention is adjudicated. TODO(D3)
             "native_x": lon, "native_y": lat, "native_h": ortho,
-            "native_crs": pd.Series(["EPSG:6318+5703"] * len(df), dtype="string"),
+            "native_crs": (h_crs + "+5703").astype("string"),
             "raw": pd.Series([json.dumps({k: str(df.iloc[i][k]) for k in extras})
                               for i in range(len(df))], dtype="string", index=df.index),
         },
+        # geometry values are per-row mixed-realization until the dispatcher
+        # lands them (crs.land_horizontal); no single CRS is claimed here.
         geometry=gpd.points_from_xy(lon, lat),
-        crs="EPSG:6318",
+        crs=None,
         index=df.index,
     )
-    # TODO(B7): rows whose posDatum is a pre-2011 realization (HARN/1992/1986)
-    # must be transformed per-datum once the landing machinery exists; for the
-    # interim landing they are carried with ref_frame provenance intact.
-    n_old = int((~ref_frame.str.contains("2011", na=True)).sum())
-    if n_old:
-        logger.warning("parse_nde: %d rows carry a non-NAD83(2011) posDatum "
-                       "(per-datum landing TODO(B7))", n_old)
     return out
 
 
@@ -157,9 +157,12 @@ def parse_opus(records: list[dict]) -> gpd.GeoDataFrame:
     if df.empty:
         from groundcontrol import schema
         return schema.empty(crs="EPSG:6318")
+    from groundcontrol.crs import ngs_datum_to_epsg
+
     lat, lon = _num(df, "lat"), _num(df, "lon")
     ortho = _num(df, "orthoHt")
     ref_frame, frame_epoch = _frame_fields(df.get("refFrame", pd.Series(index=df.index)))
+    h_crs = ref_frame.map(ngs_datum_to_epsg).astype("string")  # B7 (usually all 2011)
     mdt = pd.to_datetime(df.get("obsTimeStart"), utc=True, errors="coerce")
     consumed = {"pid", "lat", "lon", "orthoHt", "obsTimeStart"}
     extras = [c for c in df.columns if c not in consumed]
@@ -169,7 +172,7 @@ def parse_opus(records: list[dict]) -> gpd.GeoDataFrame:
             "point_type": pd.Series(["gnss"] * len(df), dtype="string"),  # TODO(D2)
             "height": ortho,
             "height_datum": pd.Series(["NAVD88"] * len(df), dtype="string"),
-            "horizontal_crs": pd.Series(["EPSG:6318"] * len(df), dtype="string"),
+            "horizontal_crs": h_crs,
             "vertical_crs": pd.Series(["EPSG:5703"] * len(df), dtype="string"),
             "ref_frame": ref_frame,
             "frame_epoch": frame_epoch,
@@ -177,11 +180,11 @@ def parse_opus(records: list[dict]) -> gpd.GeoDataFrame:
             "measurement_datetime": mdt,
             "measurement_epoch": decyear(mdt),
             "native_x": lon, "native_y": lat, "native_h": ortho,
-            "native_crs": pd.Series(["EPSG:6318+5703"] * len(df), dtype="string"),
+            "native_crs": (h_crs + "+5703").astype("string"),
             "raw": pd.Series([json.dumps({k: str(df.iloc[i][k]) for k in extras})
                               for i in range(len(df))], dtype="string", index=df.index),
         },
         geometry=gpd.points_from_xy(lon, lat),
-        crs="EPSG:6318",
+        crs=None,
         index=df.index,
     )

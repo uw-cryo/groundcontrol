@@ -1,0 +1,33 @@
+{
+ "point": {
+  "lat": 32.8,
+  "lon": -111.7
+ },
+ "outDatum": "NAD83(2011)",
+ "url": "https://geodesy.noaa.gov/api/ncat/llh",
+ "recorded": "2026-07",
+ "results": {
+  "NAD83(HARN)": {
+   "srcDatum": "NAD83(HARN)",
+   "destDatum": "NAD83(2011)",
+   "destLat": "32.7999999250",
+   "destLon": "-111.6999998533",
+   "deltaLat": "-0.008",
+   "deltaLon": "0.014",
+   "sigLat_m": "0.0095",
+   "sigLon_m": "0.0055",
+   "nadconVersion": "5.0"
+  },
+  "NAD83(1986)": {
+   "srcDatum": "NAD83(1986)",
+   "destDatum": "NAD83(2011)",
+   "destLat": "32.8000014972",
+   "destLon": "-111.6999996960",
+   "deltaLat": "0.166",
+   "deltaLon": "0.028",
+   "sigLat_m": "0.0121",
+   "sigLon_m": "0.0080",
+   "nadconVersion": "5.0"
+  }
+ }
+}

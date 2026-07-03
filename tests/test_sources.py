@@ -39,10 +39,13 @@ def test_parse_3dep_sample():
 def test_parse_nde_sample():
     records = json.loads((DATA / "ngs_nde_sample.json").read_text())
     out = schema.normalize(ngs.parse_nde(records), source="ngs")
-    schema.validate(out)
+    schema.validate(out, require_crs=False)  # un-landed: no single CRS claimed yet
     assert len(out) == len(records)
     assert out["id"].str.match(r"^[A-Z]{2}\d{4}$").all()  # NGS PIDs
-    assert out.crs is not None and out.crs.to_epsg() == 6318
+    assert out.crs is None  # per-row mixed realizations until land_horizontal
+    # B7: every row maps to a known realization EPSG
+    assert set(out["horizontal_crs"].unique()) <= {
+        "EPSG:6318", "EPSG:4152", "EPSG:4269", "EPSG:4759", "EPSG:8860", "EPSG:6783"}
     # blanks (' ') coerced to NaN, not zeros
     assert out["height"].isna().sum() < len(out)
     # mixed realizations are the norm — provenance must be carried
@@ -59,8 +62,9 @@ def test_parse_nde_empty():
 def test_parse_opus_sample():
     records = json.loads((DATA / "ngs_opus_sample.json").read_text())
     out = schema.normalize(ngs.parse_opus(records), source="opus")
-    schema.validate(out)
+    schema.validate(out, require_crs=False)  # un-landed
     assert (out["point_type"] == "gnss").all()
+    assert (out["horizontal_crs"] == "EPSG:6318").all()  # OPUS is NAD_83(2011)
     assert (out["coord_epoch"] == 2010.0).all()  # refFrame NAD_83(2011), epoch 2010.0000
     assert out["measurement_datetime"].notna().all()  # obsTimeStart
 

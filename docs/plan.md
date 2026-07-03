@@ -285,9 +285,16 @@ deciding silently:**
 - **D2 `point_type` split:** `marker_type` (gnss / monument / checkpoint) + `assessment_class`
   (NVA / VVA / none) — the current single column conflates instrument and land-cover taxonomies
   (A3's `Control` vs lowercase casing also unresolved).
-- **D3 accuracy convention:** `acc_h`/`acc_v` as 1-σ meters (`acc_h = √(σe²+σn²)`); promote
-  `sig_e/n/u` to nullable columns; convert NGS 95% network accuracy at ingest (vertical ÷ 1.96,
-  horizontal circular ÷ ≈ 1.7308).
+- **D3 accuracy convention — researched, NOT adjudicated (see
+  `docs/accuracy_conventions.md`, WIP):** two cited research passes (2026-07) verified the
+  per-source semantics (NGS netAcc* = ellipsoid-height only; OPUS P2P = range-of-3, σ≈P2P/1.6926;
+  3DEP `accuracy` = authoritatively null → spec defaults). Owner requirements: reliable per-point
+  accuracies are core; support **user-side filtering by accuracy**; preserve native metrics in
+  `raw` and convert once to a single convention (95% vs 1σ undecided). Owner review notes to
+  resolve: GPS OBS horizontal ≈ 2× better than vertical (fix-type dependent); Casa Grande
+  calibration-range reports document excellent horizontal network accuracy for ADJUSTED marks
+  there; the relative→absolute posOrder defaults need careful review. Revisit with a dedicated
+  research round as development continues.
 - **D4 provenance dedup:** drop `height_datum` (keep `vertical_crs`); `ref_frame` authoritative
   for all geodetic sources; NGS `lastRecovered` → `measurement_datetime`; the NGS `observed` API
   field → `raw`.

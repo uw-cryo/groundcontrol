@@ -170,12 +170,14 @@ def parse_nde(records: list[dict]) -> gpd.GeoDataFrame:
             "coord_epoch": _num(df, "epoch").fillna(frame_epoch),
             "measurement_datetime": mdt,
             "measurement_epoch": decyear(mdt),
-            # NGS network accuracies where published (~5% of marks): datasheet
-            # network accuracies are 95%-confidence values in **cm** -> m.
-            # TODO(D3): single library-wide confidence convention; spec-based
-            # (posOrder/vertOrder-class) fallback for the rest is a D3 call.
+            # acc_h: netAccHz is NGS-stated circular 95% network accuracy in cm
+            # (api/nde/meta; dsdata.pdf p.17) — the one directly usable value.
+            # acc_v: deliberately NaN — netAccU/netAccEh describe the ELLIPSOID
+            # height, and NGS publishes no network accuracy for orthometric
+            # heights (our `height`); orthometric accuracy comes from
+            # vertSource/order semantics, pending D3 adjudication.
+            # See docs/accuracy_conventions.md (WIP). TODO(D3)
             "acc_h": _num(df, "netAccHz") / 100.0,
-            "acc_v": _num(df, "netAccU") / 100.0,
             "native_x": lon, "native_y": lat, "native_h": ortho,
             "native_crs": (h_crs + "+5703").astype("string"),
             "raw": pd.Series([json.dumps({k: str(df.iloc[i][k]) for k in extras})
@@ -218,8 +220,11 @@ def parse_opus(records: list[dict]) -> gpd.GeoDataFrame:
             "coord_epoch": _num(df, "epoch").fillna(frame_epoch),
             "measurement_datetime": mdt,
             "measurement_epoch": decyear(mdt),
-            # OPUS peak-to-peak spreads (m) — a repeatability measure, not 1σ;
-            # TODO(D3) convert to the library-wide convention when adjudicated.
+            # OPUS peak-to-peak = RANGE (max−min) of the 3 single-CORS baseline
+            # solutions, meters (api/opus/meta) — not σ, not 95%. NGS-endorsed
+            # conversion σ ≈ P2P/1.6926 (Schwarz 2006) is deferred to D3;
+            # native metric carried as-is. orthoHtP2p is already geoid-padded.
+            # See docs/accuracy_conventions.md (WIP). TODO(D3)
             "acc_h": pd.concat([_num(df, "latP2p"), _num(df, "lonP2p")], axis=1).max(axis=1),
             "acc_v": _num(df, "orthoHtP2p"),
             "native_x": lon, "native_y": lat, "native_h": ortho,

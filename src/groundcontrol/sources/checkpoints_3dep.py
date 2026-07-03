@@ -80,7 +80,12 @@ def parse(raw: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
             "coord_epoch": np.full(n, 2010.0),
             "measurement_datetime": mdt,
             "measurement_epoch": decyear(mdt) if n else pd.Series([], dtype="float64"),
-            # TODO(D3): `accuracy` units/confidence unverified -> raw only for now.
+            # `accuracy` column is authoritatively NULL for this whole release
+            # ("USGS did not require an accuracy attribute" — FGDC metadata);
+            # spec-based defaults (ASPRS 3x rule / NGS-58) pend D3. QC facts:
+            # point_type=BVA = BATHYMETRY checkpoint (exclude for topo control);
+            # source_geoid=UNK rows were never VDatum-harmonized (stale
+            # z_meter_vdatum_update). See docs/accuracy_conventions.md. TODO(D3)
             "native_x": raw.geometry.x.to_numpy() if n else np.array([]),
             "native_y": raw.geometry.y.to_numpy() if n else np.array([]),
             "native_h": pd.to_numeric(raw["z_meter_vdatum_update"], errors="coerce"),

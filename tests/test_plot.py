@@ -73,3 +73,30 @@ def test_plot_dh_map_hillshade_basemap_and_explicit_clim():
     assert sc.get_clim() == (-1, 1)
     assert ax.get_title() == "t"
     plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# scalebar
+# ---------------------------------------------------------------------------
+
+def test_nice_scale_length():
+    from groundcontrol.plot import nice_scale_length
+
+    assert nice_scale_length(10_000.0) == 2000.0   # 1/5 = 2000 -> 2 km
+    assert nice_scale_length(52_000.0) == 10_000.0  # 1/5 = 10400 -> 10 km
+    assert nice_scale_length(400.0) == 100.0        # 1/5 = 80 -> 100 m
+    assert nice_scale_length(30.0) == 5.0           # 1/5 = 6 -> 5 m
+
+
+def test_add_scalebar_artist_added():
+    import matplotlib.pyplot as plt
+
+    from groundcontrol.plot import add_scalebar
+
+    fig, ax = plt.subplots()
+    ax.set_xlim(0, 10_000)
+    ax.set_ylim(0, 10_000)
+    bar = add_scalebar(ax)
+    assert bar in ax.artists
+    fig.canvas.draw()  # renders without error
+    plt.close(fig)

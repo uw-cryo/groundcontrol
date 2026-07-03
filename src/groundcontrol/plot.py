@@ -96,3 +96,37 @@ def plot_dh_map(gdf, dh_col: str, hs=None, hs_extent=None, ax=None,
     if title:
         ax.set_title(title, fontsize=10)
     return sc
+
+
+def nice_scale_length(span: float) -> float:
+    """A round 1/2/5 x 10^k length covering roughly 1/5 of ``span``."""
+    target = span / 5.0
+    k = np.floor(np.log10(target))
+    base = target / 10.0**k
+    nice = 1.0 if base < 1.5 else (2.0 if base < 3.5 else (5.0 if base < 7.5 else 10.0))
+    return float(nice * 10.0**k)
+
+
+def add_scalebar(ax, length: float | None = None, label: str | None = None,
+                 loc: str = "lower right", color: str = "k"):
+    """Add an anchored scalebar in data units (meters for projected CRSs).
+
+    Intended companion to :func:`plot_dh_map` when axis tick labels are
+    dropped for map-style panels. ``length=None`` picks a round 1/2/5x10^k
+    value spanning ~1/5 of the current x-range; the default label renders
+    km above 1000 m. Returns the added artist.
+    """
+    from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
+
+    x0, x1 = ax.get_xlim()
+    span = abs(x1 - x0)
+    if length is None:
+        length = nice_scale_length(span)
+    if label is None:
+        label = f"{length / 1000.0:g} km" if length >= 1000 else f"{length:g} m"
+    bar = AnchoredSizeBar(ax.transData, length, label, loc,
+                          pad=0.4, sep=4, borderpad=0.6, frameon=True,
+                          size_vertical=span / 300.0, color=color)
+    bar.patch.set_alpha(0.7)
+    ax.add_artist(bar)
+    return bar

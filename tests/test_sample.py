@@ -261,3 +261,108 @@ def test_multiband_raster_rejected(tmp_path):
         dst.write(arr)
     with pytest.raises(ValueError, match="single-band"):
         sample_raster(_points([(1.0, 1.0)]), str(tmp_path / "mb.tif"))
+
+
+# ---------------------------------------------------------------------------
+# radius neighborhood sampling (median / NMAD / n over cell centers in radius)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("fixture", ["north_up_tif", "south_up_tif"])
+def test_radius_known_neighborhood_plus_pattern(fixture, request):
+    """radius=1.0 at a pixel center: the center + 4 rook neighbors, exactly."""
+    tif = request.getfixturevalue(fixture)
+    out = sample_raster(_points([(2.5, 5.5)]), tif, radius=1.0)
+    name = out.columns[-3]
+    vals = [_exp(2.5, 5.5), _exp(1.5, 5.5), _exp(3.5, 5.5), _exp(2.5, 4.5), _exp(2.5, 6.5)]
+    assert out[f"{name}_n"].iloc[0] == 5
+    assert out[name].iloc[0] == pytest.approx(np.median(vals))
+    # plane 2x+3y: |v - med| = [0, 2, 2, 3, 3] -> MAD 2 -> NMAD 2*1.4826
+    assert out[f"{name}_nmad"].iloc[0] == pytest.approx(2 * 1.4826)
+
+
+def test_radius_single_pixel(north_up_tif):
+    out = sample_raster(_points([(2.5, 5.5)]), north_up_tif, radius=0.5)
+    assert out["north_up_n"].iloc[0] == 1
+    assert out["north_up"].iloc[0] == pytest.approx(_exp(2.5, 5.5))
+    assert out["north_up_nmad"].iloc[0] == 0.0
+
+
+def test_radius_zero_neighborhood_fail_honest(north_up_tif):
+    """Point at a pixel corner, radius < half the pixel diagonal: NaN + n=0."""
+    out = sample_raster(_points([(3.0, 5.0)]), north_up_tif, radius=0.6)
+    assert out["north_up_n"].iloc[0] == 0
+    assert np.isnan(out["north_up"].iloc[0])
+    assert np.isnan(out["north_up_nmad"].iloc[0])
+
+
+def test_radius_excludes_nan_pixels_from_stats_and_n(nan_nodata_tif):
+    """NaN-nodata pixel inside the neighborhood: excluded from stats AND n."""
+    out = sample_raster(_points([(3.5, 5.5)]), nan_nodata_tif, radius=1.0)
+    # center pixel is the NaN one; the 4 rook neighbors remain
+    vals = [_exp(2.5, 5.5), _exp(4.5, 5.5), _exp(3.5, 4.5), _exp(3.5, 6.5)]
+    assert out["nan_nodata_n"].iloc[0] == 4
+    assert out["nan_nodata"].iloc[0] == pytest.approx(np.median(vals))
+    # |v - med| = [2, 2, 3, 3] -> MAD 2.5
+    assert out["nan_nodata_nmad"].iloc[0] == pytest.approx(2.5 * 1.4826)
+
+
+def test_radius_clipped_at_raster_edge(north_up_tif):
+    """Neighborhood clipped by the raster edge: fewer pixels, still finite."""
+    out = sample_raster(_points([(0.5, 0.5)]), north_up_tif, radius=1.0)
+    # only the corner pixel + its right and upper neighbors exist
+    assert out["north_up_n"].iloc[0] == 3
+    vals = [_exp(0.5, 0.5), _exp(1.5, 0.5), _exp(0.5, 1.5)]
+    assert out["north_up"].iloc[0] == pytest.approx(np.median(vals))
+
+
+def test_radius_outside_raster_is_nan(north_up_tif):
+    out = sample_raster(_points([(-5.0, 4.0)]), north_up_tif, radius=1.0)
+    assert out["north_up_n"].iloc[0] == 0 and np.isnan(out["north_up"].iloc[0])
+
+
+def test_radius_tiled_matches_single_window(tmp_path):
+    """Tile seams (B11-style identity): radius results independent of tiling."""
+    nx, ny = 64, 48
+    rng = np.random.default_rng(21)
+    arr = rng.normal(500.0, 20.0, size=(ny, nx))
+    arr[10, 12] = np.nan  # a hole near a seam
+    tif = _write_tif(tmp_path / "rtiles.tif", arr,
+                     Affine(1.0, 0.0, X0, 0.0, -1.0, Y0 + ny), nodata=np.nan)
+    xs = np.concatenate([rng.uniform(0.0, nx, 250), [15.9, 16.1, 31.5, 32.5, 16.0]])
+    ys = np.concatenate([rng.uniform(0.0, ny, 250), [16.1, 15.9, 32.5, 31.5, 16.0]])
+    pts = _points(list(zip(xs, ys)))
+    single = sample_raster(pts, tif, radius=2.5, block=4096)
+    tiled = sample_raster(pts, tif, radius=2.5, block=16)
+    for suffix in ("", "_nmad", "_n"):
+        np.testing.assert_array_equal(single[f"rtiles{suffix}"].to_numpy(),
+                                      tiled[f"rtiles{suffix}"].to_numpy())
+
+
+def test_radius_in_memory_matches_windowed(north_up_tif):
+    r = rioxarray.open_rasterio(north_up_tif).squeeze("band", drop=True)
+    mem = xr.DataArray(r.values, coords={"y": r.y.values, "x": r.x.values},
+                       dims=("y", "x"), name="north_up").rio.write_crs(CRS)
+    pts = _points([(2.5, 5.5), (0.5, 0.5), (7.9, 3.2)])
+    a = sample_raster(pts, mem, radius=1.5)
+    b = sample_raster(pts, north_up_tif, radius=1.5)
+    for suffix in ("", "_nmad", "_n"):
+        np.testing.assert_array_equal(a[f"north_up{suffix}"].to_numpy(),
+                                      b[f"north_up{suffix}"].to_numpy())
+
+
+def test_radius_diff_uses_median(north_up_tif):
+    pts = _points([(2.5, 5.5)], height=[100.0])
+    out = sample_raster(pts, north_up_tif, radius=1.0, diff=True)
+    assert out["north_up minus height"].iloc[0] == pytest.approx(
+        out["north_up"].iloc[0] - 100.0)
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0, np.nan])
+def test_radius_must_be_positive(north_up_tif, bad):
+    with pytest.raises(ValueError, match="positive"):
+        sample_raster(_points([(2.5, 5.5)]), north_up_tif, radius=bad)
+
+
+def test_radius_mutually_exclusive_with_method(north_up_tif):
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        sample_raster(_points([(2.5, 5.5)]), north_up_tif, method="nearest", radius=1.0)

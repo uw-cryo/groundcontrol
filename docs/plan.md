@@ -306,6 +306,12 @@ deciding silently:**
   signed off — validate numerically via the CRS fixture tests (CORS coord_14/coord_20 pairs incl.
   the commuted-order assertion, and the closure matrix; `docs/crs_implementation.md` §8 items
   1/2/7) before trusting the first-application path.
+  **First real-world validation (2026-07-03):** control landed via the rule (plate-fixed
+  NAD83(2011)+NAVD88 → WGS84 G1674≈ITRF2008 @ 2005.0, `tt=2005.0`) agrees with a commercial
+  producer's own plate-motion-model dual-frame DSM export at **median +6.6 mm / NMAD 0.6 mm**
+  (65 points, 3 tile pairs; predicted frame separation at those points was ~1.2 m E / 0.5 m N /
+  0.7 m h, so the agreement is diagnostic, not trivial). The CORS fixtures remain the formal
+  arbiter, but the rule now has strong independent empirical support.
 
 **CRITICAL schema decision (REVISED at owner review 2026-07-02; supersedes the hardcoded
 fetch-time pivot):** a single GeoDataFrame has exactly **one** `.crs`, so `normalize()` must

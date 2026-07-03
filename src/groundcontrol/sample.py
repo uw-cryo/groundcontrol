@@ -295,6 +295,19 @@ def sample_raster(gdf, r, col: str = "height", method: str = "linear", diff: boo
         at least one center. Points outside the raster extent are NaN/0 even
         if the radius overlaps the edge (consistent with interpolation mode).
 
+        Choosing a radius (owner guidance + empirical notes, 2026-07): scale
+        it to the ASSESSED product's geolocation class — near-zero (prefer
+        bilinear) for accurately-georeferenced lidar, ~3-4 m for ~3 m-class
+        satellite DSMs, larger for coarse products (e.g. 30 m global DEMs).
+        Empirically (0.5 m lidar DTM and 0.5 m satellite DSM, ~150 px per
+        neighborhood): the neighborhood median does NOT tighten checkpoint
+        NMAD — a *systematic* geolocation offset shifts the whole neighborhood
+        with the product, and only co-registration removes it. What radius
+        sampling buys instead: outlier/artifact robustness, comparison
+        stability before/after co-registration, and the per-point
+        ``<name>_nmad`` as a local roughness/quality flag (useful for
+        filtering assessment points).
+
     Returns
     -------
     geopandas.GeoDataFrame

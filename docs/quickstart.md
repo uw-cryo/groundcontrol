@@ -50,10 +50,10 @@ pts = transform_points(gdf, dem_crs_3d, tt=dem_epoch)   # tt per the (provisiona
 from groundcontrol.sample import sample_raster
 from groundcontrol.accuracy import resid_stats, robust_normalize
 
-pts = gdf.copy(); pts["h_ell"] = h_ell   # points must be in the raster CRS (asserted)
-out = sample_raster(pts_in_dem_crs, "dem.tif", col="h_ell", diff=True)   # bilinear
-# radius=3.5 -> neighborhood median + <name>_nmad (roughness flag) + _n; see docstring
-dh = out["<raster> minus h_ell"]
+out = sample_raster(pts, "dem.tif", col="height", diff=True)   # bilinear;
+# points must be in the raster CRS (asserted). radius=3.5 -> neighborhood median +
+# <name>_nmad (roughness flag) + _n; see the docstring for radius-choice guidance.
+dh = out["<raster> minus height"]
 stats = resid_stats(dh[robust_normalize(out, dh.name)])   # n/median/mean/nmad/std/rmse
 ```
 

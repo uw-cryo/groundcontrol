@@ -8,6 +8,12 @@ the three initial test sites. Native source metrics are always preserved in `raw
 `acc_h`/`acc_v` carry only values whose semantics are certain (see "Currently implemented").
 
 ## Owner review notes (to resolve in the next research round)
+- **NGS acc_v from netAccU (owner, 2026-07):** geoid-model error is limited (hybrid GEOID18 is
+  fitted to NAVD88 benchmarks, relative error ~1–2 cm), so the 1σ ellipsoid-height `netAccU`
+  RSS'd with an expected geoid/NAVD88 error term may be a reasonable orthometric acc_v —
+  **conditional on `vertSource`**: valid when the orthoHt derives from the ellipsoid height
+  (`GPS OBS`), irrelevant for leveled/VERTCON3 heights that never touched the ellipsoid.
+  Candidate: `acc_v(GPS OBS) = sqrt((2·netAccU/100)² + σ_geoid²)` at 95%.
 - **GPS OBS heights:** horizontal accuracy should be ~2× better than vertical for GNSS —
   but depends on single-point vs differential fix; the source class alone may not determine it.
 - **Casa Grande calibration range:** many of the NGS ADJUSTED marks there should have

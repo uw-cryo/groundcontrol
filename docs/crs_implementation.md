@@ -2,7 +2,7 @@
 
 Companion to `plan.md` — the plan defers CRS implementation detail, transform-provenance design,
 and the CRS test-fixture spec here. Synthesized from a three-agent verified review (PROJ/GDAL
-correctness; provenance/logging; validation fixtures), 2026-07-02. Claims marked **verified** were
+correctness; provenance/logging; validation fixtures), 2026-07-02; last updated 2026-07-03. Claims marked **verified** were
 reproduced locally against **pyproj 3.7.2 / PROJ 9.7.1 / EPSG v12.029 / GDAL 3.12.1 /
 geopandas 1.1.2**; everything else is doc-cited. There are many incorrect CRS resources online —
 the authorities used here are proj.org, pyproj docs, gdal.org, PROJ source, and NGS/IERS.
@@ -31,20 +31,24 @@ Therefore `crs.py` implements two explicit stages **today**, while the schema de
 records enough metadata (`frame_epoch`/`coord_epoch`/`measurement_*`, velocities, native
 coordinates) that stage 2 can be delegated to PROJ as EPSG/PROJ point-motion coverage evolves:
 
-1. **Frame transform (PROJ):** 4D transform evaluated at each point's *coordinate epoch* —
-   `transformer.transform(x, y, h, tt)` with `tt` = decimal year
-   (https://proj.org/en/stable/usage/transformation.html). Time-dependent parameters propagate as
+1. **Frame transform (PROJ):** PROJ coordinates are 4D — `(x, y, z, t)`, with `t` the
+   coordinate's time in **decimal years**. pyproj exposes it as the 4th argument of
+   `Transformer.transform(xx, yy, zz, tt)` (doubled letters = "arrays of", matching `xx/yy/zz` —
+   so `tt` is simply the array of per-point epochs). The 4D transform is evaluated at each
+   point's *coordinate epoch*: `transformer.transform(x, y, h, tt=coord_epoch)`
+   (https://proj.org/en/stable/usage/transformation.html). Time-dependent steps evaluate their
+   rate terms at each point's `t`; static steps ignore it. Time-dependent parameters propagate as
    `P(t) = P(EPOCH) + Ṗ·(t − EPOCH)`
    (https://proj.org/en/stable/operations/transformations/helmert.html). Static steps ignore `tt`,
    so always passing it is safe.
 2. **Epoch propagation (groundcontrol):** intra-frame move from the point's coordinate epoch to
-   `target_epoch`: `x += vel_enu · (target_epoch − epoch)` using per-point velocities (NGL/MIDAS),
+   `target_epoch`: `x += vel_enu · (target_epoch − coord_epoch)` using per-point velocities (NGL/MIDAS),
    a plate-motion model, or — if neither exists — leave the point at its own epoch and surface the
    `velocity·Δt` bound in the report. An ITRF-at-fixed-epoch target **requires** stage 2 for every
    ITRF-native source (NGL, ICESat-2); plate-fixed targets (NAD83(2011)) make stage 2 ≈ 0 by
    construction.
 
-Key semantics (fixes plan Appendix B2's conflation):
+Key semantics (the conflation plan Appendix B2 warns about):
 
 - `t_epoch=2010` is a **fixed parameter of the EPSG operation** (EPSG:8970 "ITRF2014 to
   NAD83(2011) (1)", accuracy 0 m; EPSG:10334 for ITRF2020) — the parameter reference epoch. It
@@ -53,9 +57,18 @@ Key semantics (fixes plan Appendix B2's conflation):
   (`helmert.cpp`: `t_obs = (t == HUGE_VAL) ? t_epoch : t`) — results bit-identical to
   `tt=2010.0`. Omitting `tt` is therefore accidentally correct for NGS 2010.00 coordinates and
   silently wrong for everything else. Always pass `tt`.
+- **Which epoch goes in `tt` — PROVISIONAL (owner sign-off deferred until fixture numbers exist;
+  §8 tests 1, 2, and 7 are the numerical arbiter — the CORS coord_20 commuted-order assertion
+  directly tests this rule):** dynamic-frame source →
+  `tt = coord_epoch`, then stage 2 moves the point to `target_epoch`. **Plate-fixed source →
+  dynamic target → `tt = target_epoch`:** plate-fixed coordinates are epoch-invariant in their own
+  frame, and the time-dependent Helmert's rate terms *are* the plate motion — evaluating at the
+  target epoch lands directly at `target_epoch`. This is why stage 2 ≈ 0 for those rows, and why
+  §4's first-application example passes `transform(lon, lat, H, 2005.0)` for a NAD83(2011)
+  source.
 - **Three distinct epochs, all preserved in the schema with descriptive names (owner decision
-  2026-07-03):** `coord_epoch` — the coordinate epoch (when the coordinate values are valid; the
-  **only** epoch transforms consume — feeds the 4D `tt`, anchors velocity·Δt); `frame_epoch` —
+  2026-07-03):** `coord_epoch` — the coordinate epoch (when the coordinate values are valid; feeds the 4D
+  `tt` for dynamic-frame sources — see the tt rule in §1 — and anchors velocity·Δt); `frame_epoch` —
   the realization's reference epoch (NAD83(2011) = 2010.00; positions are *reduced to* it; NaN
   for dynamic ITRF/IGS frames; **QC role:** `coord_epoch ≠ frame_epoch` on a plate-fixed frame
   flags an unreduced position); `measurement_datetime` (datetime64, UTC — human-friendly) +
@@ -130,7 +143,7 @@ out = t.transform(x, y, h, tt, errcheck=True)     # only_best failures return in
 
 ## 4. Targets without EPSG codes — programmatic 3D UTM construction
 
-**Verified:** EPSG v12.029 has no CONUS "UTM / ITRF2008" zones (only Mexico, EPSG:6366-6372). The
+**Verified:** EPSG v12.029 has no CONUS "UTM / ITRF2008" zones (only Mexico, EPSG:6366-6371). The
 first-application target "UTM / ITRF2008 epoch 2005.0 / HAE" is constructed programmatically:
 
 ```python
@@ -194,7 +207,7 @@ loop granularity). Fields and the verified pyproj API for each:
 | `environment` | `pyproj.__version__`, `proj_version_str`, `pyproj.database.get_database_metadata()` for `EPSG.VERSION/EPSG.DATE/PROJ.VERSION/PROJ_DATA.VERSION` (verified: v12.029 / 2025-10-03 / 9.7.1 / 1.24), `network.is_network_enabled()`, datadir paths. |
 
 **Non-PROJ operations are first-class records** (`op_kind`): (a) velocity propagation
-(`pos(target_epoch) = pos(epoch) + vel_enu·Δt`, model = MIDAS/plate), (b) NGL position-at-epoch
+(`pos(target_epoch) = pos(coord_epoch) + vel_enu·Δt`, model = MIDAS/plate), (b) NGL position-at-epoch
 (path A window parameters, steps.txt segmentation, or path B MIDAS). Without these the audit chain
 has gaps exactly where the epoch logic is most bespoke.
 
@@ -209,7 +222,7 @@ get the sidecar only (+ a `# provenance:` header comment in CSV).
 
 **7.3 Schema impact: one column.** `transform_id` (categorical string, e.g.
 `"ngs:EPSG6318+5703:t01"`; chains get composite ids `"t02+t01"`, ordered) joins each row to its
-`transforms[]` entry. The **audit invariant**: `native_x/y/h + native_crs + epoch + transform_id`
+`transforms[]` entry. The **audit invariant**: `native_x/y/h + native_crs + coord_epoch + transform_id`
 + the recorded pipeline + pinned grids reproduce every coordinate exactly via
 `Transformer.from_pipeline(pipeline).transform(...)`. `crs.replay(gdf, provenance)` asserts this
 in tests — the round-trip *is* the audit test.

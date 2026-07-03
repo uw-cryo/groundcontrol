@@ -58,7 +58,8 @@ This is an **accuracy-assessment + control-fetch** library, **not** an ASP GCP-i
 > Increment 1.5; `GnssProvider` named in the Deferred section though decision 4/the NGL note defer
 > it; the schema-table `geometry` row vs the CRITICAL single-CRS decision) have been **harmonized**
 > in this merge: NGL is marked Increment 1.5, the deferred section uses the minimal `Provider`
-> interface, and the schema table reflects the single canonical `EPSG:7912` frame.
+> interface, and the schema table reflected the then-current single canonical `EPSG:7912`
+> frame — since superseded by the 2026-07-02 revision below.
 >
 > **Revision (2026-07-02, owner review):** the hardcoded single canonical frame (`EPSG:7912`) is
 > superseded by a **user-defined target 3D CRS + epoch** — see the revised CRITICAL schema
@@ -72,6 +73,9 @@ This is an **accuracy-assessment + control-fetch** library, **not** an ASP GCP-i
   points (CSV/GPKG/parquet)** — + a `fetch_control(aoi)` dispatcher + export (GeoParquet/CSV/KML)
   + the `fetch_control` CLI. Deliverable: "given an AOI, return/export available control points."
   No DEM, no accuracy yet.
+  **First consumer (drives the acceptance bar): the `lidar_tools` sparse datum check** — fast,
+  CRS-consistent 3DEP/NGS control compared up front against a small clipped EPT sample, replacing
+  a full-EPT-rasterize-then-check workflow (see decision 6).
   **Source choice rationale (adversarial-review change):** the MVP trades the *hardest* source for
   the *easiest*. 3DEP is one `gpd.read_file(bbox=...)` (trivial); NGS is a documented REST API
   (moderate); **`user_points` is pure offline I/O** — no network/key — so it gives the MVP a fully
@@ -88,9 +92,10 @@ This is an **accuracy-assessment + control-fetch** library, **not** an ASP GCP-i
   + `assess_dem` CLI (reusing the upstream primitives). Adds "given a DEM, assess it."
 - **Increment 3 — optional COP30 datum diagnosis:** global reference-DEM fetch (OpenTopography
   via `fetch_dem`) + DEM-vs-COP30 vertical-datum check, off by default behind one flag.
-- **Deferred (stubs + notes only):** user-CSV loader polish, lidar_tools dense-3DEP reference DEM,
-  point-cloud inputs, secondary GNSS networks (GAGE/EPN/IGS), ASP `pc_align`, upstream
-  refactor-to-import.
+- **Deferred (stubs + notes only):** **ICESat-2 global control (important — the global
+  dense-control path; see Deferred section)**, user-CSV loader polish, lidar_tools dense-3DEP
+  reference DEM, point-cloud inputs, secondary GNSS networks (GAGE/EPN/IGS), ASP `pc_align`,
+  upstream refactor-to-import.
 
 Each increment is independently shippable; later items never block the MVP. The full
 module/structure below is the *target* — Increment 1 only needs schema, crs (minimal), sources
@@ -106,7 +111,8 @@ module/structure below is the *target* — Increment 1 only needs schema, crs (m
    + accuracy stats are tagged *interim* in the private repo's `utils` module and explicitly belong here; the private repo's
    notebooks will `import groundcontrol` once it exists. **Coordination — PENDING (not yet
    implemented as of 2026-06-27):** the private accuracy repo is about to be refactored to **isolate the block-wise
-   sampling and a shared block-wise raster read/write tile-iterator** — logic today duplicated
+   sampling and a shared block-wise raster read/write tile-iterator** (re-checked 2026-07-03:
+   still not implemented — the sampling functions are unchanged since 2026-06-27) — logic today duplicated
    across the private repo's `sample_raster` / `_sample_parallel` / `_sample_tile_worker` / `classify_points`
    / `mask_raster` / `classify_mask_raster` (both the read-tile→sample path and the
    read→process→write-tile path). groundcontrol hosts the canonical isolated form; that one
@@ -138,6 +144,18 @@ module/structure below is the *target* — Increment 1 only needs schema, crs (m
    two efforts converge rather than fork. The dense-3DEP-lidar-reference-DEM
    accuracy path (DEM-vs-DEM) is therefore a v2 follow-on; v1 assesses against sparse control
    points only.
+   **However (owner, 2026-07-03): lidar_tools' *sparse datum check* is the MVP's first consumer.**
+   Its current `confirm_3dep_vertical(raster_fn)` runs only *after* the full EPT → raster mosaic
+   exists, and diagnoses geoid-vs-ellipsoid by COP30 differencing over WorldCover bare/sparse
+   (±3 m tolerance). groundcontrol enables the **up-front sparse variant**: fetch 3DEP checkpoints
+   and/or NGS points for the AOI (fast; rigorous 3D CRS per `docs/crs_implementation.md`),
+   lidar_tools clips a **small EPT sample at those point locations** (PDAL stays on its side), and
+   a thin groundcontrol point-vs-point compare (per-point neighborhood median dz + `resid_stats`;
+   the clipped sample arrives as arrays/parquet — **no PDAL dependency in groundcontrol**) flags
+   the vertical datum *before* the expensive full-EPT processing, with cm–dm sensitivity vs the
+   ±3 m raster check. Deliverable split: `fetch_control` + CRS consistency = Increment 1; the thin
+   compare utility rides with Increment 2's accuracy primitives (or a minimal version earlier if
+   lidar_tools needs it).
 7. **GNSS station positions via Nevada Geodetic Lab (NGL) are a v1 source (specifically
    Increment 1.5, per decision 4), and are global.** NGL is the primary global provider (>19k
    stations, daily PPP time series back to ~1996, free public file server, no key).
@@ -166,7 +184,7 @@ can later do `from groundcontrol.accuracy import resid_stats`):
 groundcontrol/
 ├── pyproject.toml                 # setuptools, name="groundcontrol", python>=3.10
 ├── README.md                      # overview, install, quickstart
-├── LICENSE                        # match uw-cryo convention (BSD/MIT)
+├── LICENSE                        # MIT (uw-cryo convention: lidar_tools + coincident are MIT)
 ├── src/groundcontrol/
 │   ├── __init__.py
 │   ├── schema.py                  # the normalized control-point schema (central abstraction)
@@ -174,7 +192,7 @@ groundcontrol/
 │   │                              #   3D_CRS_Transformation_Resources recipes; reuses its WKTs)
 │   ├── sources/
 │   │   ├── __init__.py            # fetch_control(aoi, sources, target_crs=, target_epoch=) dispatcher
-│   │   ├── base.py                # Provider protocol; GnssProvider base (epoch/frame aware)
+│   │   ├── base.py                # minimal Provider contract (v1); GnssProvider extracted in v2
 │   │   ├── ngs.py                 # NGS/OPUS API fetch + parse
 │   │   ├── ngl.py                 # Nevada Geodetic Lab GNSS time series (global, Increment 1.5)
 │   │   ├── checkpoints_3dep.py    # USGS 3DEP national checkpoint DB (bbox read)
@@ -215,13 +233,13 @@ code is source-agnostic:
 |---|---|
 | `source` | `ngs` / `opus` / `ngl` / `3dep_checkpoint` / `user` |
 | `id` | station PID / 4-char GNSS ID / checkpoint id / user id |
-| `geometry` | point in the **user-chosen target 3D CRS + epoch** (one frame per file, recorded in file-level metadata — see the CRITICAL schema decision below); never per-row mixed-CRS |
+| `geometry` | **2D point** in the **user-chosen target 3D CRS + epoch** (vertical lives in `height` — see D1; one frame per file, recorded in file-level metadata — see the CRITICAL schema decision below); never per-row mixed-CRS |
 | `height` | scalar height in the target frame (HAE unless the target's vertical axis is orthometric); original value in `native_h` |
 | `height_datum` | provenance: original datum, e.g. `NAVD88` (orthometric) / ellipsoidal |
 | `horizontal_crs`, `vertical_crs` | **provenance of the original values only** (e.g. `EPSG:6318+5703`); geometry itself is always in the user-chosen target frame |
 | `ref_frame` | realization for GNSS sources: `IGS20` / `IGS14` / plate-fixed (e.g. `NA`) |
 | `frame_epoch` | the realization's reference epoch (decimal year; `2010.00` for NAD83(2011) — published positions are *reduced to* this epoch; NaN for dynamic ITRF/IGS frames). QC role: `coord_epoch ≠ frame_epoch` on a plate-fixed frame flags an unreduced position |
-| `coord_epoch` | **coordinate epoch** (decimal year) — when the coordinate values are valid (NGS datasheet `2010.00`; GNSS solution day); the ONLY epoch transforms consume (feeds the 4D `tt`, anchors velocity·Δt propagation) |
+| `coord_epoch` | **coordinate epoch** (decimal year) — when the coordinate values are valid (NGS datasheet `2010.00`; GNSS solution day); supplies the transform's per-point **time coordinate** (`tt` — pyproj's 4th transform argument, `Transformer.transform(xx, yy, zz, tt)`; PROJ coordinates are 4D) for dynamic-frame sources (plate-fixed→dynamic rows evaluate at `target_epoch` — tt rule, `docs/crs_implementation.md` §1); anchors velocity·Δt propagation |
 | `point_type` | `gnss` / `monument` / `NVA` / `VVA` / `control` |
 | `acc_h`, `acc_v` | reported accuracy; for GNSS, per-axis `sig_e/sig_n/sig_u` in `raw` |
 | `vel_e`, `vel_n`, `vel_u` | nullable per-axis velocities (m/yr; MIDAS for GNSS, NaN otherwise) — drive propagation to `target_epoch` |
@@ -234,8 +252,9 @@ code is source-agnostic:
 **Time metadata principle (owner review 2026-07-03): preserve more, collapse nothing — with
 descriptive names.** Three decimal-year epoch columns plus one human-friendly datetime, NaN/NaT
 where unknown or inapplicable, each with a distinct consumer:
-- `coord_epoch` — when the coordinate values are valid. **The only epoch transforms consume**
-  (feeds the 4D `tt`; anchors velocity·Δt propagation).
+- `coord_epoch` — when the coordinate values are valid. **The per-point epoch the 4D transform
+  consumes** (`tt` for dynamic-frame sources; plate-fixed→dynamic rows evaluate at `target_epoch`
+  — tt rule, `docs/crs_implementation.md` §1; anchors velocity·Δt propagation).
 - `frame_epoch` — the realization's reference epoch (NAD83(2011) = `2010.00`; NaN for dynamic
   frames). **QC:** plate-fixed positions are published *reduced to* this epoch, so
   `coord_epoch ≠ frame_epoch` mechanically flags an unreduced position (e.g. raw user RTK).
@@ -258,6 +277,28 @@ dispatcher for failed/empty sources so concat never breaks).
 frozen** — recorded fixtures from each real source are expected to force design and schema
 updates. Freeze only after every Increment-1 source (3DEP, NGS/OPUS, user points — then NGL in
 1.5) has a committed fixture that round-trips `normalize()` → export → read-back cleanly.
+
+**Open schema decisions (D1–D5) — adjudicate before freeze; mark `TODO(D#)` in code rather than
+deciding silently:**
+- **D1 geometry dimensionality** (current lean, reflected in the table): 2D POINT + `height`
+  column with a matching CRS label. Alternative: 3D POINT Z.
+- **D2 `point_type` split:** `marker_type` (gnss / monument / checkpoint) + `assessment_class`
+  (NVA / VVA / none) — the current single column conflates instrument and land-cover taxonomies
+  (A3's `Control` vs lowercase casing also unresolved).
+- **D3 accuracy convention:** `acc_h`/`acc_v` as 1-σ meters (`acc_h = √(σe²+σn²)`); promote
+  `sig_e/n/u` to nullable columns; convert NGS 95% network accuracy at ingest (vertical ÷ 1.96,
+  horizontal circular ÷ ≈ 1.7308).
+- **D4 provenance dedup:** drop `height_datum` (keep `vertical_crs`); `ref_frame` authoritative
+  for all geodetic sources; NGS `lastRecovered` → `measurement_datetime`; the NGS `observed` API
+  field → `raw`.
+- **D5 `raw` physical type — decide AT scaffold (blocks `schema.empty()`):** JSON-string column;
+  Python dicts do not survive the GeoParquet/CSV round-trip the freeze gate requires.
+- **D6 tt rule — PROVISIONAL, revisit with fixture numbers (owner, 2026-07-03):** which epoch
+  feeds the 4D time argument (dynamic source → `coord_epoch` + stage-2 propagation;
+  plate-fixed→dynamic → `target_epoch`, the Helmert rate terms supplying plate motion). Not yet
+  signed off — validate numerically via the CRS fixture tests (CORS coord_14/coord_20 pairs incl.
+  the commuted-order assertion, and the closure matrix; `docs/crs_implementation.md` §8 items
+  1/2/7) before trusting the first-application path.
 
 **CRITICAL schema decision (REVISED at owner review 2026-07-02; supersedes the hardcoded
 fetch-time pivot):** a single GeoDataFrame has exactly **one** `.crs`, so `normalize()` must
@@ -365,8 +406,8 @@ the San Francisco notebook cells ~289–372):**
 **Global reference DEM (COP30) — `refdem.py` (v1 optional), reusing `fetch_dem`:**
 - Fetch COP30 (and optionally COP90/NASADEM/SRTM/ALOS) for the AOI via OpenTopography. **Reuse
   `fetch_dem`** (`opentopo_utils.get_dem()` + its horizontal/vertical-datum dicts) rather than
-  re-implementing — depend on it (pip install from GitHub) or vendor the ~70-line `opentopo_utils`
-  with attribution if packaging is awkward. `OT_API_KEY` via env (documented; demo key fallback).
+  re-implementing — **vendor the ~120-line `opentopo_utils` with attribution (the default** — GitHub-only
+  `fetch_dem` cannot be a PyPI dependency; a live `fetch_dem` import is dev-only convenience**)**. `OT_API_KEY` via env (documented; demo key fallback).
 - `diagnose_vertical_datum(dem, cop30)`: transform both to a common frame via `crs.py`
   (EGM2008/`EPSG:3855` ↔ ellipsoid; `3D_CRS_Transformation_Resources/globaldems/COP30_hh_7912.vrt`
   is the canonical reproject path), difference over bare/stable ground (worldcover bare class),
@@ -408,7 +449,7 @@ vertical frame.
 
 **Figures — from the private accuracy repo's `plot` module:**
 - `plot_residual_before_after`, `plot_residual_page`, `plot_pc_align_errors`,
-  `plot_offset_vectors` → `plot.py` (drop the P3D/3DEP triangle-closure-specific figures;
+  `plot_offset_vectors` → `plot.py` (drop the project-specific triangle-closure figures;
   keep the generic residual map / histogram / offset-vector primitives).
 
 **Generic sub-logic re-expressed (NOT moved) from kh9 scripts:**
@@ -428,7 +469,8 @@ vertical frame.
 - `scripts/fetch_control.py --aoi aoi.geojson --sources ngs,ngl,3dep --out control.parquet [--kml]`
   `[--target-crs EPSG:9989|wkt2-file] [--target-epoch 2015.5] [--time-range 2014-01-01:2016-01-01]`
   → calls `groundcontrol.sources.fetch_control(aoi, sources, target_crs=, target_epoch=)`,
-  normalizes every source into the user-chosen target 3D CRS/epoch (default ITRF2020 `EPSG:9989`),
+  normalizes every source into the user-chosen target 3D CRS/epoch (default ITRF2020 `EPSG:9989`;
+  `--target-epoch` is **required** whenever the target frame is dynamic, incl. the default),
   writes GeoParquet/CSV/KML. `--time-range` applies to GNSS time-series sources (NGL);
   fixed-coordinate sources are transformed per-datum into the target.
 - `scripts/assess_dem.py --dem dem.tif [--aoi aoi.geojson] [--sources ...] --outdir out/`
@@ -439,12 +481,19 @@ vertical frame.
   `plot.py` figures + an HTML/markdown `report.py` summary. With `--reference-dem cop30` it also
   fetches COP30 (`refdem.py`) and runs the DEM-vs-COP30 vertical-datum diagnosis (off by default).
 - Expose both as `console_scripts` entry points (`groundcontrol-fetch`, `groundcontrol-assess`).
+  Entry points import from `src/groundcontrol/cli.py`; `scripts/*.py` are thin wrappers (a console
+  script cannot live outside the package). Acceptance-test lines that say `fetch_control …` are
+  shorthand for `groundcontrol-fetch …`.
 
 ## Packaging & dependencies
 
 `pyproject.toml` (setuptools, src-layout). Core deps (all pip-installable, no PDAL/conda
 requirement in v1): `numpy`, `pandas`, `geopandas`, `pyproj`, `shapely`, `rasterio`,
 `rioxarray`, `requests`, `matplotlib`, `pyarrow` (GeoParquet). Python `>=3.10`.
+**Version floors (implied by the verified directives — state them in pyproject):** `pyproj>=3.5`
+(`only_best`; wheels bundle PROJ ≥9.2), `geopandas>=1.0` (`read_parquet` bbox), `shapely>=2.0`,
+`pyarrow>=14`. GDAL Python bindings (`osgeo`) are **not core** — soft-import for DEM
+coordinate-epoch reads (Increment 2) with an actionable error (or a `[gdal]` extra).
 
 **Packaging fixes (adversarial review):**
 - **`fetch_dem` must NOT be a hard dependency** — PyPI rejects direct-URL (`git+https://…`) deps,
@@ -478,6 +527,10 @@ schema-valid frame (possibly zero rows, but always the full normalized columns v
 schema frame and the CLI exits non-zero. A unit test mocks one source raising and asserts the
 others still return. This makes "degrade gracefully per-source" (e.g. NGS/3DEP empty over Iceland)
 a defined behavior, not a hope.
+**Transform placement (scaffold clarification):** providers return **native-frame, schema-shaped**
+frames ("schema-valid" for a provider = shape/dtype-valid in its native frame); the **dispatcher**
+performs the CRS landing into the target per (source × native-datum subset) via `crs.py`;
+`normalize()` handles columns/dtypes/validation only.
 
 **Transform provenance & logging (owner review 2026-07-02 — full verified spec in
 `docs/crs_implementation.md` §7):** silent wrong transforms are this library's primary failure
@@ -517,10 +570,15 @@ payload as every raise — logging never replaces the raise (B6's `NoTransformPa
   cloud against control or difference against the 3DEP reference.
 - **ASP co-registration (optional).** Thin wrappers around `pc_align` reusing the
   `parse_pc_align_log` helpers, behind `[asp]`. Core accuracy path stays differencing-only.
-- **ICESat-2 as a control source (v2).** `icesat2.py` fetching ATL06-class elevations (e.g. via
-  SlideRule) as globally-distributed control. Frame is **release-dependent** (ITRF2014 ≤ rel006,
-  ITRF2020 from v7 — see the CRITICAL schema decision), which the user-defined-target design
-  absorbs naturally; record the release/frame per point in provenance.
+- **ICESat-2 as a control source (v2 — IMPORTANT: the primary *global* dense-control path).**
+  `icesat2.py` querying ATL06-class elevations (e.g. via SlideRule) for arbitrary global AOIs.
+  NGS/OPUS/3DEP are CONUS-bound and NGL is point-sparse, so ICESat-2 is what makes "control
+  anywhere on Earth" real (Iceland-class sites and beyond). Deliberately **not first round**, but
+  the schema is designed for it now: per-point `coord_epoch` = acquisition time,
+  `measurement_datetime` native, per-granule `ref_frame` **release-dependent** (ITRF2014 ≤ rel006,
+  ITRF2020 from ATL03 v7 — see the CRITICAL schema decision), all absorbed by the
+  user-defined-target design; record release/frame per point in provenance. Quality filtering via
+  the standard flags; `marker_type`/assessment-class mapping decided at implementation.
 - **Secondary GNSS networks (v2).** `gage.py` (EarthScope/GAGE REST web service, Americas),
   `epn.py` (EUREF EPN SINEX/SSC, Europe, ETRFxx frames), `igs.py` (IGS repro3/ITRF2020 SINEX,
   sparse global datum anchor) — each implementing the minimal `Provider` interface; the
@@ -551,7 +609,9 @@ payload as every raise — logging never replaces the raise (B6's `NoTransformPa
    contract only — **defer `GnssProvider`** to when the 2nd GNSS network exists, per adversarial
    review; building it against one implementer is interface-by-speculation), `sources/checkpoints_3dep.py`
    (national bbox read — easiest), `sources/ngs.py` (NGS/OPUS, port from the casagrande notebook),
-   `sources/user_points.py` (offline CSV/GPKG/parquet → `schema.normalize`), and the
+   `sources/user_points.py` (offline CSV/GPKG/parquet → `schema.normalize`; **input contract —
+   default pending owner blessing:** `--user-crs EPSG:xxxx[+yyyy] --user-epoch 2010.0` plus
+   optional column-mapping flags with defaults `x,y,h` / `lon,lat,h`; unmapped columns → `raw`), and the
    `fetch_control(aoi, sources, …)` dispatcher with the failure/empty contract above. **Split each
    network source into `fetch()` (network) + `parse()` (pure)** so the parse half is always
    CI-covered offline.
@@ -567,22 +627,25 @@ payload as every raise — logging never replaces the raise (B6's `NoTransformPa
 6. **plot + report + assess_dem CLI:** `plot.py` figures, `report.py`, end-to-end `assess_dem.py`.
 
 **Increment 3 — optional COP30 datum diagnosis**
-7. **refdem:** `refdem.py` COP30 fetch via `fetch_dem` + `diagnose_vertical_datum`; wire
+7. **refdem:** `refdem.py` COP30 fetch via the vendored `opentopo_utils` + `diagnose_vertical_datum`; wire
    `--reference-dem cop30` into `assess_dem.py`.
 
 **Cross-cutting (as each increment lands)**
 8. **notebooks + docs:** generalized example notebook(s); `docs/` pages (control_sources incl.
    verified NGL endpoints, crs_datum_epochs, accuracy_methods).
 9. **deferred stubs:** `pointcloud.py` NotImplementedError + `[pdal]`/`[stac]`/`[lidar]`/`[asp]`
-   extras; user-CSV loader; secondary-GNSS provider stubs — notes only.
+   extras; user-CSV loader polish; secondary-GNSS provider stubs — notes only.
 
 ## Verification
 
 **Test fixtures & prerequisites (adversarial review — none of these existed; without them not one
 acceptance test was runnable):** the source repos (`casagrande` + the private accuracy repo) and their DEMs are NOT
 in this environment, so the deliverables must include committed fixtures:
-- `tests/data/casa_grande.geojson` — an inline AOI with literal bbox coordinates (define them in
-  the plan/repo; do not reference the inaccessible casagrande repo).
+- `tests/data/casa_grande.geojson` — the AOI bbox, **defined here** (recovered from the source
+  notebook's stored output; the polygon file lives on offline media):
+  `(-111.89736772738966, 32.6429637773595, -111.58046670965014, 32.913396504245796)`
+  (minlon, minlat, maxlon, maxlat; EPSG:4326). This exact bbox is what drove `ngs_query_bbox` in
+  the source notebook, so the NGS count/ID regression target is meaningful against it.
 - A small committed **synthetic GeoTIFF** with known pixel values for `test_sample.py` (covering
   north-up **and** south-up transforms, and a NaN-nodata float raster — see Appendix B bugs).
 - Hand-computed numeric fixtures for `test_accuracy.py` (NVA/VVA/RMSE@95% with expected values).
@@ -625,13 +688,13 @@ in this environment, so the deliverables must include committed fixtures:
   - `crs.py`: NAD83(2011)↔WGS84 round-trip within transform accuracy; **plus a *vertical* test the
     original plan lacked (adversarial review): `EPSG:6318+5703 → 7912 → 6318+5703` closure, and a
     fixed-point fixture asserting ellipsoidal height ≈ orthometric + GEOID18 N at a known CONUS
-    point** — this catches a reversed `vgridshift` (a ~25 m blunder a horizontal-only test misses).
+    point** — this catches a reversed `vgridshift` (a ≈2N ~30 m blunder a horizontal-only test misses).
     `decyear` polymorphic over scalar/Series (the test must match the chosen signature).
   - `crs.py` **target-frame acceptance (first application):** transform a fixture control set into
     the two real delivery frames — **UTM / ITRF2008 epoch 2005.0 / HAE** and **UTM / NAD83(2011) /
     HAE** — and into ITRF2020 (`EPSG:9989`); assert round-trip closure within transform accuracy,
     and that the plate-fixed↔plate-fixed path is a near-no-op (no spurious geoid/Helmert hops).
-  - `schema.py`: heterogeneous source frames normalize to **one canonical CRS** + identical
+  - `schema.py`: heterogeneous source frames normalize to the single user-chosen target CRS (one per file) + identical
     columns/dtypes; `schema.empty()` is concat-compatible with populated frames.
   - `accuracy.py` (Increment 2): `med_nmad`/`resid_stats`/RMSE@95% vs hand-computed fixtures.
   - `sample.py` (Increment 2): sampling a synthetic GeoTIFF returns known values; CRS-transform path.
@@ -771,6 +834,11 @@ per-datum loop — re-implement to transform only the matching-datum subset (see
 nva = chk[chk['point_type'] == 'NVA']        # point_type ∈ {NVA, VVA, Control}
 # height column is chk_z (sometimes h/z); reproject to working CRS via .to_crs(...)
 ```
+**Verify at implementation (do not assume):** the checkpoint **vertical datum** and
+**`coord_epoch`** are not stated anywhere here — resolve from the ScienceBase item metadata
+(presumptive NAD83(2011) + NAVD88 @ 2010.0; confirm before the schema freeze). The `.to_crs`
+comment above is display-only shorthand — heights route through `crs.py` per
+`docs/crs_implementation.md` §5.
 
 ### A4. CRS / epoch recipes — `3D_CRS_Transformation_Resources` → `crs.py`
 
@@ -917,7 +985,7 @@ The Appendix A snippets are verbatim and carry real bugs — **do not copy them 
   returns zero stations). Use `((lon+180)%360)-180` and apply it to both `DataHoldings.txt` `Long`
   (0–360) and tenv3 `_longitude`. Test a CONUS station (expect negative lon) and an antimeridian case.
 - **B2 — GEOID18 direction + per-point epoch (`crs.py`).** Orthometric→ellipsoid **adds** N
-  (`h = H + N`); a reversed pipeline gives a ~−25 m blunder. The horizontal-only round-trip in the
+  (`h = H + N`); a reversed pipeline gives a ≈2N blunder (~30 m at the Colorado fixture point). The horizontal-only round-trip in the
   original verification would NOT catch it — add the vertical sign + closure tests (see Verification).
   Also: each point's own `coord_epoch` must drive the time-dependent Helmert (as the 4th transform
   argument `tt`), not a single hardcoded 2010 — that value is both the NAD83 frame's reference

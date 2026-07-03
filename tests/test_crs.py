@@ -106,3 +106,75 @@ def test_get_transformer_raises_no_path_not_indexerror(monkeypatch):
         get_transformer("EPSG:4326", "EPSG:32612")
     assert "allow_ballpark=False" in str(ei.value)
     assert "unavailable_operations" in ei.value.diagnostics
+
+
+# ---------------------------------------------------------------------------
+# transform_points — the packaged quickstart §2 pattern
+# ---------------------------------------------------------------------------
+
+def _pts_gdf(crs="EPSG:4979", vertical=None):
+    import geopandas as gpd
+    import pandas as pd
+    from shapely.geometry import Point
+    g = gpd.GeoDataFrame(
+        {"height": [100.0, 200.0],
+         "transform_id": pd.array([pd.NA, pd.NA], dtype="string")},
+        geometry=[Point(-111.7, 32.8), Point(-111.6, 32.9)], crs=crs)
+    if vertical is not None:
+        g["vertical_crs"] = pd.array([vertical, vertical], dtype="string")
+    return g
+
+
+def test_transform_points_3d_source_to_utm3d():
+    from groundcontrol.crs import transform_points
+    import pyproj
+    target = pyproj.CRS("EPSG:32612").to_3d()
+    out = transform_points(_pts_gdf("EPSG:4979"), target, tt=2020.0)
+    # geographic->projected conversion: heights unchanged, x/y in meters
+    assert out["height"].tolist() == [100.0, 200.0]
+    assert 380_000 < out.geometry.x.iloc[0] < 440_000
+    assert out.crs.equals(target)
+    assert out["transform_id"].iloc[0].startswith("transform_points:")
+
+
+def test_transform_points_infers_compound_from_vertical_crs(monkeypatch):
+    """2D gdf.crs + uniform vertical_crs column -> compound source string."""
+    import groundcontrol.crs as gc
+    captured = {}
+
+    class _T:
+        description, accuracy = "fake", 0.1
+
+        def transform(self, x, y, z, t, errcheck=False):
+            return x, y, z, t
+
+    def fake_get_transformer(src, tgt, aoi_bounds_4326=None):
+        captured["src"] = src
+        return _T()
+
+    monkeypatch.setattr(gc, "get_transformer", fake_get_transformer)
+    g = _pts_gdf("EPSG:6318", vertical="EPSG:5703")
+    gc.transform_points(g, "EPSG:7912", tt=2010.0)
+    assert captured["src"] == "EPSG:6318+5703"
+
+
+def test_transform_points_refuses_ambiguous_vertical():
+    from groundcontrol.crs import transform_points
+    import pandas as pd
+    import pytest as _pt
+    g = _pts_gdf("EPSG:6318", vertical="EPSG:5703")
+    g.loc[g.index[1], "vertical_crs"] = "EPSG:7968"  # mixed
+    with _pt.raises(ValueError, match="uniform"):
+        transform_points(g, "EPSG:7912", tt=2010.0)
+    g2 = _pts_gdf("EPSG:6318")  # no vertical info at all
+    with _pt.raises(ValueError, match="vertical"):
+        transform_points(g2, "EPSG:7912", tt=2010.0)
+
+
+def test_transform_points_requires_finite_tt():
+    from groundcontrol.crs import transform_points
+    import numpy as np
+    import pytest as _pt
+    with _pt.raises(ValueError, match="tt"):
+        transform_points(_pts_gdf("EPSG:4979"), "EPSG:7912",
+                         tt=np.array([2020.0, np.nan]))

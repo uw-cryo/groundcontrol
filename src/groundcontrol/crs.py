@@ -165,6 +165,73 @@ def get_transformer(source_crs, target_crs, aoi_bounds_4326=None) -> pyproj.Tran
 # NGS realization mapping + per-datum horizontal landing (plan B7)
 # ---------------------------------------------------------------------------
 
+def transform_points(gdf, target_crs, tt, height_col: str = "height",
+                     source_crs=None, aoi_bounds_4326=None):
+    """Transform 2D-geometry + height-column points into a target 3D frame.
+
+    The packaged form of the canonical pattern in docs/quickstart.md §2: ONE
+    3D/4D transformer applied to (x, y, h, tt) arrays — heights are never
+    routed through ``to_crs`` (crs_implementation §5).
+
+    Parameters
+    ----------
+    gdf : GeoDataFrame with 2D point geometry and a numeric ``height_col``.
+    target_crs : the DEM/working frame — EPSG string, WKT2, or ``pyproj.CRS``
+        (3D or compound; a declared frame overriding a lying embedded WKT is
+        the caller's responsibility — see quickstart).
+    tt : scalar decimal year or per-row array/Series — the 4D time coordinate.
+        REQUIRED and explicit: per the provisional D6 rule (TODO(D6)), pass the
+        target/product epoch for plate-fixed sources going to a dynamic frame,
+        or per-row ``coord_epoch`` for dynamic-frame sources.
+    source_crs : source 3D/compound CRS. Default: ``gdf.crs`` if it is already
+        compound/3D; else built from ``gdf.crs`` + a single uniform non-null
+        ``vertical_crs`` column value. Anything ambiguous raises (fail-loud —
+        never guess a vertical datum).
+    aoi_bounds_4326 : optional degrees bounds for operation selection;
+        defaults to the gdf's bounds in EPSG:4326.
+
+    Returns a copy: geometry in ``target_crs`` (2D points), ``height_col``
+    replaced by the transformed height, and ``transform_id`` stamped when the
+    column exists. Other provenance columns (``native_*``) are untouched.
+    """
+    import geopandas as gpd
+
+    if source_crs is None:
+        if gdf.crs is None:
+            raise ValueError("gdf has no CRS and source_crs was not given")
+        if gdf.crs.is_compound or len(gdf.crs.axis_info) == 3:
+            source_crs = gdf.crs
+        elif "vertical_crs" in gdf.columns:
+            vcodes = gdf["vertical_crs"].dropna().unique()
+            if len(vcodes) != 1 or gdf["vertical_crs"].isna().any():
+                raise ValueError(
+                    f"vertical_crs is not a single uniform value ({list(vcodes)!r}); "
+                    "pass source_crs explicitly — the vertical datum is never guessed")
+            auth = gdf.crs.to_authority()
+            source_crs = f"{auth[0]}:{auth[1]}+{str(vcodes[0]).split(':')[-1]}"
+        else:
+            raise ValueError("cannot infer the source vertical datum; pass source_crs")
+    if aoi_bounds_4326 is None:
+        aoi_bounds_4326 = tuple(gdf.geometry.to_crs(4326).total_bounds)  # AOI use only
+    t = get_transformer(source_crs, target_crs, aoi_bounds_4326=aoi_bounds_4326)
+    h = pd.to_numeric(gdf[height_col], errors="raise").to_numpy(dtype="float64")
+    tt_arr = np.full(len(gdf), float(tt)) if np.isscalar(tt) else np.asarray(tt, dtype="float64")
+    if np.isnan(tt_arr).any():
+        raise ValueError("tt contains NaN — every point needs an epoch (D6 rule)")
+    x, y, h2, _ = t.transform(gdf.geometry.x.to_numpy(), gdf.geometry.y.to_numpy(),
+                              h, tt_arr, errcheck=True)
+    out = gdf.copy()
+    out["geometry"] = gpd.points_from_xy(x, y)
+    out = out.set_crs(target_crs, allow_override=True)
+    out[height_col] = h2
+    if "transform_id" in out.columns:
+        out["transform_id"] = (
+            f"transform_points:{source_crs}->{target_crs}|acc={t.accuracy}m")
+    logger.info("transform_points: %d pts %s -> %s | %s | accuracy %s m",
+                len(out), source_crs, target_crs, t.description, t.accuracy)
+    return out
+
+
 #: NGS datasheet ``posDatum`` / OPUS ``refFrame`` strings -> EPSG geographic 2D CRS.
 #: State HPGN/HARN readjustments are labelled by year (1991-1999) on datasheets;
 #: they are all NAD83(HARN) EPSG:4152 for transformation purposes (NADCON5).

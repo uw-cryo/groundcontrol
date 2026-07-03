@@ -36,16 +36,13 @@ The DEM's 3D CRS + epoch are **your declared inputs** (embedded WKTs often lie â
 delivery metadata). One 3D transformer on arrays, per `docs/crs_implementation.md`:
 
 ```python
-import numpy as np
-from groundcontrol.crs import get_transformer
+from groundcontrol.crs import transform_points
 
-t = get_transformer("EPSG:6318+5703", dem_crs_3d, aoi_bounds_4326=bounds)  # fail-loud
-E, N, h_ell, _ = t.transform(gdf.geometry.x, gdf.geometry.y, gdf["height"],
-                             np.full(len(gdf), dem_epoch), errcheck=True)  # tt: D6 rule
+pts = transform_points(gdf, dem_crs_3d, tt=dem_epoch)   # tt per the (provisional) D6 rule
+# source vertical datum is inferred from the uniform vertical_crs column, or pass
+# source_crs="EPSG:6318+5703" explicitly; anything ambiguous raises (never guessed).
+# Returns a copy: geometry in the DEM frame, `height` transformed (HAE), fail-loud.
 ```
-
-(A packaged `transform_points()`/`assess_dem` wrapper is coming; this is the canonical
-pattern it will wrap.)
 
 ## 3. Sample the DEM + accuracy stats
 

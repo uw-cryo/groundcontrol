@@ -205,9 +205,13 @@ def land_horizontal(gdf, target: str = "EPSG:6318", datum_col: str = "horizontal
 
     Groups rows by ``datum_col`` (per-row EPSG strings) and transforms each
     subset with its own transformer built from the **subset's** bounds (B7a).
-    Heights are untouched: the current sources carry NAVD88 *orthometric*
-    heights, which are invariant under NAD83 horizontal realization changes —
-    ellipsoidal heights would not be (B7b); those remain provenance in ``raw``.
+    Heights are untouched — valid ONLY because the current sources carry
+    *published orthometric* heights (vertical-datum quantities that no
+    horizontal realization transform operates on). **Ellipsoidal heights are
+    NOT invariant** — NADCON5 carries explicit eht-shift grids (empirically:
+    NCAT HARN->2011 shifts eht by −0.072 m at Casa Grande) — so any future
+    ellipsoidal-height path must transform h here as part of landing (B7b),
+    and must never recompute H = h − N across a realization change.
 
     Sets a per-subset ``transform_id`` and the single target CRS on return.
     Original per-row provenance (``horizontal_crs``/``native_*``) is preserved.

@@ -52,6 +52,16 @@ def test_parse_nde_sample():
     assert out["ref_frame"].notna().all()
 
 
+def test_vert_crs_mapping_is_honest():
+    """vertical_crs maps the actual vertDatum string; unknown -> NA, never assumed."""
+    import pandas as pd
+    s = pd.Series(["NAVD 88", "NGVD 29", " ", "", None])
+    out = ngs._vert_crs(s)
+    assert out.iloc[0] == "EPSG:5703"
+    assert out.iloc[1] == "EPSG:7968"
+    assert out.iloc[2:].isna().all()
+
+
 def test_parse_nde_empty():
     out = ngs.parse_nde([])
     assert len(out) == 0

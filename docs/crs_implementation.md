@@ -173,6 +173,19 @@ WKT files; the constructed WKT2 is exported into output metadata for provenance.
   `height`. Source construction: `CRS("EPSG:6318+5703")` or `pyproj.crs.CompoundCRS(...)` — the
   `CRS(6318)+CRS(5703)` addition syntax is invalid (**verified `TypeError`**). Promote 2D targets
   with `CRS.to_3d()`. This is also the resolution of plan B7(b).
+- **Height invariance under horizontal realization changes (owner-challenged, verified
+  2026-07-03):** *published orthometric* heights (NAVD88/NGVD29 values) are vertical-datum
+  quantities — no NAD83 realization transform operates on them; carrying them unchanged through
+  a horizontal landing is correct by construction. **Ellipsoidal heights are NOT invariant:**
+  NADCON5 defines eht-shift grids (HARN onward; 1986 is a 2D datum with no ellipsoid heights) —
+  empirically, NCAT `NAD83(HARN)→NAD83(2011)` at Casa Grande with `eht=400.000` returns
+  `399.928` (−7.2 cm). Consequences: (a) an ellipsoidal-height path must transform h during
+  landing; (b) never recompute `H = h − N` across a realization change with an unchanged N;
+  (c) GNSS-derived orthometric values embed derivation lineage (geoid model + realization-era h)
+  — an accuracy/consistency dimension (`vertSource`/`geoidModel` provenance), not a correction.
+  Also: NGS `vertDatum` is not always NAVD88 (blank and NGVD29 marks exist) — `vertical_crs`
+  must map the actual string (`NAVD 88`→5703, `NGVD 29`→7968 m) and be NA when unknown, never
+  assumed.
 
 ## 6. DEM side — coordinate epoch on rasters
 

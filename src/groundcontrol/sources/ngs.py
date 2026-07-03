@@ -103,6 +103,19 @@ def _frame_fields(datum: pd.Series) -> tuple[pd.Series, pd.Series]:
     return ref, frame_epoch
 
 
+def _vert_crs(vert_datum: pd.Series) -> pd.Series:
+    """Honest per-row vertical CRS from the NGS ``vertDatum`` string.
+
+    NAVD 88 -> EPSG:5703; NGVD 29 -> EPSG:7968 (m); blank/unknown -> NA (never
+    assumed — downstream vertical reconciliation must refuse NA, not guess).
+    """
+    s = vert_datum.astype("string").str.upper().str.replace(" ", "", regex=False)
+    out = pd.Series(pd.NA, index=vert_datum.index, dtype="string")
+    out[s.str.contains("NAVD88", na=False)] = "EPSG:5703"
+    out[s.str.contains("NGVD29", na=False)] = "EPSG:7968"
+    return out
+
+
 def parse_nde(records: list[dict]) -> gpd.GeoDataFrame:
     """NDE datasheet records -> schema-shaped native-frame GeoDataFrame."""
     df = pd.DataFrame(records)
@@ -124,12 +137,16 @@ def parse_nde(records: list[dict]) -> gpd.GeoDataFrame:
             "id": df["pid"].astype("string"),
             "point_type": pd.Series(["monument"] * len(df), dtype="string"),  # TODO(D2)
             # orthoHt is the well-populated height; ellipHeight is often blank.
-            # NAVD88 orthometric heights are invariant under NAD83 horizontal
-            # realization changes -> the B7 landing is horizontal-only (B7b).
+            # PUBLISHED orthometric heights are vertical-datum quantities and do
+            # not change under horizontal realization transforms -> the B7
+            # landing is horizontal-only for this path. Ellipsoidal heights are
+            # NOT invariant (NADCON5 carries eht shifts; NCAT HARN->2011 moves
+            # eht by -0.072 m at Casa Grande) — an ellipHeight path must
+            # transform h during landing (B7b).
             "height": ortho,
             "height_datum": df.get("vertDatum", pd.Series(index=df.index)).astype("string"),
             "horizontal_crs": h_crs,
-            "vertical_crs": pd.Series(["EPSG:5703"] * len(df), dtype="string"),
+            "vertical_crs": _vert_crs(df.get("vertDatum", pd.Series(index=df.index))),
             "ref_frame": ref_frame,
             "frame_epoch": frame_epoch,
             "coord_epoch": _num(df, "epoch").fillna(frame_epoch),

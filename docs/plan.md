@@ -388,6 +388,13 @@ NGL is a plain Apache file server; v1 implements the station-index → per-stati
     time-specific Helmerts; naive IGS codes crash or **silently no-op**) — label IGS14 data
     `EPSG:7912` and IGS20 `EPSG:9989` at ingestion, keep `ref_frame` as provenance, and unit-test
     the alias (`docs/crs_implementation.md` §3).
+  - **Antenna height (owner, 2026-07):** GNSS antennas sit on tripods/pillars/cylinders ~1–2 m
+    above the ground surface that a lidar/stereo DSM/DTM actually sees — the assessment path must
+    remove a (hopefully known) antenna height before differencing. tenv3 carries a per-epoch
+    `_ant(m)` column: carry it per point, and document the antenna-vs-ground correction as an
+    explicit assessment step (fine-resolution DSMs may also resolve the monument itself).
+  - **Index parse gotcha (verified live):** `StaOrigName` can contain spaces — parse
+    `DataHoldings.txt` with a bounded split (12 fields max), never naive whitespace tokenization.
   - Live test: `DataHoldings.txt` = 23,605 stations; `…/IGS14/tenv3/IGS14/00NA.tenv3` = 200, ~650 KB.
 - **Position at an arbitrary epoch / time-range** (the requested feature; lives in `ngl.py`):
   (A) sample the daily series — nearest day or step-aware window median (use the `_latitude/

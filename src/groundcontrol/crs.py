@@ -200,18 +200,47 @@ def ngs_datum_to_epsg(datum: str) -> str:
     )
 
 
+def is_dynamic_frame(crs_like) -> bool:
+    """True when the CRS's datum is a *dynamic* reference frame (ITRF/IGS...).
+
+    Dynamic-frame coordinates are only meaningful with a coordinate epoch —
+    time-dependent transforms must be evaluated at each point's
+    ``coord_epoch`` (crs_implementation §1).
+    """
+    datum = pyproj.CRS(crs_like).datum
+    return datum is not None and "dynamic" in (datum.type_name or "").lower()
+
+
 def land_horizontal(gdf, target: str = "EPSG:6318", datum_col: str = "horizontal_crs"):
     """Land a mixed-realization frame horizontally into one target CRS (plan B7).
 
     Groups rows by ``datum_col`` (per-row EPSG strings) and transforms each
     subset with its own transformer built from the **subset's** bounds (B7a).
-    Heights are untouched — valid ONLY because the current sources carry
-    *published orthometric* heights (vertical-datum quantities that no
-    horizontal realization transform operates on). **Ellipsoidal heights are
-    NOT invariant** — NADCON5 carries explicit eht-shift grids (empirically:
-    NCAT HARN->2011 shifts eht by −0.072 m at Casa Grande) — so any future
-    ellipsoidal-height path must transform h here as part of landing (B7b),
-    and must never recompute H = h − N across a realization change.
+
+    **Epoch handling — TODO(D6), provisional tt rule (crs_implementation §1):**
+    when a subset's source CRS is a *dynamic* frame (ITRF/IGS — e.g. NGL's
+    aliased ``EPSG:7912``/``EPSG:9989``), the per-row ``coord_epoch`` is
+    passed as the 4th transform argument ``tt`` so time-dependent Helmerts
+    (ITRF2014->NAD83(2011), EPSG:8970) are evaluated at each point's own
+    coordinate epoch. An omitted ``tt`` silently evaluates at the operation's
+    fixed ``t_epoch`` (2010.0) — plate-velocity x delta-t wrong (cm-dm) for
+    2015-2025 coordinates (verified: ~1.8 cm/yr horizontal for CONUS). A
+    dynamic-frame subset without a usable ``coord_epoch`` therefore raises —
+    silently landing it at 2010.0 is exactly the failure mode this library
+    exists to prevent. Static operations ignore ``tt``, so plate-fixed
+    subsets keep the 2D path.
+
+    Heights are untouched — valid for the plate-fixed sources ONLY because
+    they carry *published orthometric* heights (vertical-datum quantities
+    that no horizontal realization transform operates on). **Ellipsoidal
+    heights are NOT invariant** — NADCON5 carries explicit eht-shift grids
+    (empirically: NCAT HARN->2011 shifts eht by −0.072 m at Casa Grande) — so
+    any future ellipsoidal-height path must transform h here as part of
+    landing (B7b), and must never recompute H = h − N across a realization
+    change. Dynamic-frame sources (NGL) carry *ellipsoidal* heights: those
+    ride through as native-frame values with honest provenance labels
+    (``height_datum='ellipsoidal'`` + frame code in ``vertical_crs``) until
+    the full 3D landing (crs_implementation §5) lands.
 
     Sets a per-subset ``transform_id`` and the single target CRS on return.
     Original per-row provenance (``horizontal_crs``/``native_*``) is preserved.
@@ -229,10 +258,32 @@ def land_horizontal(gdf, target: str = "EPSG:6318", datum_col: str = "horizontal
             continue
         bounds = tuple(sub.geometry.total_bounds)  # subset AOI, in degrees (B7a)
         t = get_transformer(datum, target, aoi_bounds_4326=bounds)
-        x, y = t.transform(sub.geometry.x.to_numpy(), sub.geometry.y.to_numpy(),
-                           errcheck=True)
+        xs = sub.geometry.x.to_numpy()
+        ys = sub.geometry.y.to_numpy()
+        if is_dynamic_frame(datum):
+            # TODO(D6): provisional — dynamic source frame -> tt = coord_epoch
+            if "coord_epoch" not in sub.columns:
+                raise ValueError(
+                    f"dynamic-frame subset {datum!r} has no coord_epoch column; "
+                    "cannot evaluate the time-dependent transform (an omitted tt "
+                    "silently lands at the operation's t_epoch — see "
+                    "docs/crs_implementation.md §1)"
+                )
+            tt = sub["coord_epoch"].to_numpy(dtype="float64")
+            if np.isnan(tt).any():
+                raise ValueError(
+                    f"dynamic-frame subset {datum!r} has NaN coord_epoch for "
+                    f"{int(np.isnan(tt).sum())}/{len(tt)} rows; refusing to land "
+                    "(NaN tt propagates to NaN coordinates)"
+                )
+            # tt passed -> pyproj returns (x, y, tt); tt is echoed, not consumed
+            x, y, _ = t.transform(xs, ys, tt=tt, errcheck=True)
+            tid = f"land:{datum}->{target}|acc={t.accuracy}m|tt=coord_epoch"
+        else:
+            x, y = t.transform(xs, ys, errcheck=True)
+            tid = f"land:{datum}->{target}|acc={t.accuracy}m"
         out.loc[idx, "geometry"] = gpd.points_from_xy(x, y)
-        out.loc[idx, "transform_id"] = f"land:{datum}->{target}|acc={t.accuracy}m"
+        out.loc[idx, "transform_id"] = tid
         logger.info("landed %d rows %s -> %s (%s, accuracy %s m)",
                     len(idx), datum, target, t.description, t.accuracy)
     return out.set_crs(target, allow_override=True)

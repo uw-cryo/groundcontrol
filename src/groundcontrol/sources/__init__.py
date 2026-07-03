@@ -6,11 +6,15 @@ non-empty frames and returns ``(combined_gdf, status)`` where ``status`` maps
 source -> {n_rows, error}. On total failure: an empty schema frame.
 
 Transform placement: providers return native-frame, schema-shaped frames; the
-dispatcher performs the CRS landing. **Interim MVP landing:** all current
-sources are NAD83(2011)-family CONUS products and are landed horizontally in
-``EPSG:6318`` with NAVD88 heights in ``height`` — a near-no-op consistent with
-the plan's plate-fixed "simple path". Full user-chosen target 3D CRS + epoch
-landing (docs/crs_implementation.md §1-§5) is TODO and requesting it raises.
+dispatcher performs the CRS landing. **Interim MVP landing:** all sources are
+landed horizontally in ``EPSG:6318``. For the NAD83(2011)-family CONUS
+products this is a near-no-op (plate-fixed "simple path") with NAVD88 heights
+in ``height``. The NGL GNSS source is dynamic-frame (ITRF-aliased):
+``crs.land_horizontal`` evaluates its time-dependent Helmert at each row's
+``coord_epoch`` (the provisional D6 tt rule, docs/crs_implementation.md §1)
+and its ellipsoidal heights ride through with honest provenance labels. Full
+user-chosen target 3D CRS + epoch landing (§1-§5) is TODO and requesting it
+raises.
 """
 
 from __future__ import annotations
@@ -21,7 +25,7 @@ import geopandas as gpd
 import pandas as pd
 
 from groundcontrol import crs, schema
-from groundcontrol.sources import checkpoints_3dep, ngs
+from groundcontrol.sources import checkpoints_3dep, ngl, ngs
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -31,6 +35,7 @@ PROVIDERS = {
     "3dep": (checkpoints_3dep.fetch, checkpoints_3dep.parse),
     "ngs": (ngs.fetch_nde, ngs.parse_nde),
     "opus": (ngs.fetch_opus, ngs.parse_opus),
+    "ngl": (ngl.fetch, ngl.parse),
 }
 
 #: Interim MVP landing frame (see module docstring).

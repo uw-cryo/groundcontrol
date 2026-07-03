@@ -831,14 +831,19 @@ per-datum loop — re-implement to transform only the matching-datum subset (see
 ```python
 # .gpkg path:    chk = gpd.read_file(url, bbox=tuple(aoi_gdf.total_bounds))   # EPSG:4326
 # .parquet path: chk = gpd.read_parquet(url, bbox=tuple(aoi_gdf.total_bounds))  # GeoPandas>=1.0
-nva = chk[chk['point_type'] == 'NVA']        # point_type ∈ {NVA, VVA, Control}
-# height column is chk_z (sometimes h/z); reproject to working CRS via .to_crs(...)
+nva = chk[chk['point_type'] == 'NVA']        # point_type ∈ {NVA, VVA, BVA, Unknown}
+# harmonized height column: z_meter_vdatum_update (m); measurement date: datetime
 ```
-**Verify at implementation (do not assume):** the checkpoint **vertical datum** and
-**`coord_epoch`** are not stated anywhere here — resolve from the ScienceBase item metadata
-(presumptive NAD83(2011) + NAVD88 @ 2010.0; confirm before the schema freeze). The `.to_crs`
-comment above is display-only shorthand — heights route through `crs.py` per
-`docs/crs_implementation.md` §5.
+**RESOLVED — verified against the real file (2026-07, 145,299 rows; implemented in
+`sources/checkpoints_3dep.py`):** the parquet **declares its own CRS** — compound **`EPSG:6349`
+(NAD83(2011) + NAVD88 height, frame anchor epoch 2010)** — so the vertical datum and
+`coord_epoch` (2010.0, reduced) come from the data, not assumption. `point_type` is
+**`{NVA, VVA, BVA, Unknown}`** (there is no `Control` class, contrary to earlier drafts of this
+appendix). The harmonized NAVD88 height is **`z_meter_vdatum_update`** (m); per-point source
+provenance (`source_geoid` GEOID03→GEOID18, source EPSGs/units,
+`source_easting/northing/elevation`), a `datetime` measurement date, and an `accuracy` column
+(units/confidence unverified → kept in `raw`, TODO(D3)) are all present. Heights route through
+`crs.py` per `docs/crs_implementation.md` §5.
 
 ### A4. CRS / epoch recipes — `3D_CRS_Transformation_Resources` → `crs.py`
 

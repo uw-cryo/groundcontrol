@@ -21,3 +21,4 @@ venv/
 
 # Local scratch
 *.log
+sandbox/

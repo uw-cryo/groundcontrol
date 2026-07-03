@@ -1,0 +1,8 @@
+{
+"type": "FeatureCollection",
+"name": "casa_grande",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+"features": [
+{ "type": "Feature", "properties": { "name": "casa_grande" }, "geometry": { "type": "Polygon", "coordinates": [ [ [ -111.580466709650139, 32.642963777359498 ], [ -111.580466709650139, 32.913396504245796 ], [ -111.897367727389664, 32.913396504245796 ], [ -111.897367727389664, 32.642963777359498 ], [ -111.580466709650139, 32.642963777359498 ] ] ] } }
+]
+}

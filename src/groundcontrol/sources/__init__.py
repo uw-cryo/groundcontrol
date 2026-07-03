@@ -37,14 +37,19 @@ PROVIDERS = {
 _INTERIM_LANDING_CRS = "EPSG:6318"
 
 
-def _aoi_bounds(aoi) -> tuple[float, float, float, float]:
-    """Accept (minx, miny, maxx, maxy) EPSG:4326, a GeoDataFrame, or a vector-file path."""
+def _aoi_bounds_and_poly(aoi):
+    """Accept (minx, miny, maxx, maxy) EPSG:4326, a GeoDataFrame, or a vector-file path.
+
+    Returns ``(bounds_4326, polygon_or_None)`` — sources fetch by bbox; the
+    dispatcher clips the combined result to the polygon when one was given.
+    """
     if isinstance(aoi, (tuple, list)) and len(aoi) == 4:
-        return tuple(float(v) for v in aoi)
-    if isinstance(aoi, str):
+        return tuple(float(v) for v in aoi), None
+    if isinstance(aoi, (str, bytes)) or hasattr(aoi, "__fspath__"):
         aoi = gpd.read_file(aoi)
     if isinstance(aoi, gpd.GeoDataFrame):
-        return tuple(aoi.to_crs(4326).total_bounds)
+        aoi4326 = aoi.to_crs(4326)
+        return tuple(aoi4326.total_bounds), aoi4326.union_all()
     raise TypeError(f"unsupported AOI type: {type(aoi)!r}")
 
 
@@ -60,7 +65,7 @@ def fetch_control(aoi, sources=("3dep", "ngs", "opus"), target_crs=None, target_
             "(docs/crs_implementation.md §1-§5); current output is the interim "
             f"{_INTERIM_LANDING_CRS} + NAVD88 landing."
         )
-    bounds = _aoi_bounds(aoi)
+    bounds, poly = _aoi_bounds_and_poly(aoi)
     frames: list[gpd.GeoDataFrame] = []
     status: dict[str, dict] = {}
     for name in sources:
@@ -85,6 +90,13 @@ def fetch_control(aoi, sources=("3dep", "ngs", "opus"), target_crs=None, target_
                 "landing is implemented (full target landing TODO)"
             )
     combined = gpd.GeoDataFrame(pd.concat(frames, ignore_index=True), crs=frames[0].crs)
+    if poly is not None:
+        # polygon AOI: keep only points inside (sources fetched by bbox).
+        # NAD83(2011) vs WGS84 polygon frames differ at the ~1 m level —
+        # negligible for AOI membership at these scales.
+        n0 = len(combined)
+        combined = combined[combined.geometry.within(poly)].reset_index(drop=True)
+        logger.info("polygon clip: %d -> %d points", n0, len(combined))
     schema.validate(combined)
     logger.info("fetch_control: %d points | %s", len(combined),
                 {k: v["n_rows"] for k, v in status.items()})

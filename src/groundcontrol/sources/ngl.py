@@ -273,6 +273,41 @@ def parse_tenv3(text: str) -> pd.DataFrame:
     return df.sort_values("date").reset_index(drop=True)
 
 
+def read_tenv3(station: str, frame: str = "IGS14",
+               max_age_days: float = INDEX_MAX_AGE_DAYS) -> pd.DataFrame:
+    """Full daily position time series for one NGL station (cached download).
+
+    The station-level companion to :func:`fetch` (which reduces each series to
+    a position-at-epoch): fetches the complete ``tenv3`` file for ``station``
+    in ``frame`` from :data:`TENV3_URL` (doubled frame directory — verified
+    gotcha, module docstring), caches the text in the groundcontrol cache dir
+    (``ngl_<STA>_<frame>.tenv3``; refreshed when older than ``max_age_days``),
+    and returns :func:`parse_tenv3`'s cleaned, date-sorted DataFrame.
+
+    Useful columns: ``date``/``decyear`` (plan-B9 pair), ``east``/``north``/
+    ``up`` (m, fractional parts relative to the integer ``e0``/``n0``/``u0``
+    references), ``sig_e``/``sig_n``/``sig_u`` per-solution formal sigmas,
+    ``ant`` antenna height, and full ``latitude``/``longitude``/``height``.
+
+    Raises ``ValueError`` for an unknown frame and ``requests.HTTPError`` for
+    a missing station/series (404: indexed station without a series in that
+    frame directory).
+    """
+    if frame not in FRAME_TO_EPSG:
+        raise ValueError(f"unknown NGL frame {frame!r}; supported: {sorted(FRAME_TO_EPSG)}")
+    station = str(station).strip().upper()
+    local = cache_dir() / f"ngl_{station}_{frame}.tenv3"
+    stale = (not local.exists()
+             or (time.time() - local.stat().st_mtime) > max_age_days * 86400)
+    if stale:
+        url = TENV3_URL.format(frame=frame, sta=station)
+        logger.info("downloading %s -> %s", url, local)
+        r = requests.get(url, timeout=120)
+        r.raise_for_status()
+        local.write_text(r.text)
+    return parse_tenv3(local.read_text())
+
+
 def _median_lon(lon: np.ndarray) -> float:
     """Median longitude, antimeridian-safe (a +/-180-straddling window would
     otherwise median to ~0)."""

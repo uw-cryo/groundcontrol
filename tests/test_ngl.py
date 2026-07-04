@@ -116,6 +116,48 @@ def test_parse_tenv3_columns_and_values():
     assert ts["height"].between(700, 707).all()  # CLV1 ellipsoidal height ~703 m
 
 
+def test_read_tenv3_offline_from_cache(tmp_path, monkeypatch):
+    """read_tenv3 serves a fresh cached file with NO network hit."""
+    monkeypatch.setenv("GROUNDCONTROL_CACHE_DIR", str(tmp_path))
+    (tmp_path / "ngl_CLV1_IGS14.tenv3").write_text(_tenv3_text())
+
+    def _boom(*a, **k):
+        raise AssertionError("network hit despite fresh cache")
+
+    monkeypatch.setattr(ngl.requests, "get", _boom)
+    ts = ngl.read_tenv3("clv1")  # station ID normalized to upper case
+    assert len(ts) == 60
+    assert ngl._TENV3_REQUIRED <= set(ts.columns)
+    assert ts["date"].is_monotonic_increasing
+    # full up = integer reference + fractional part must equal the height column
+    up_full = ts["u0"].to_numpy() + ts["up"].to_numpy()
+    np.testing.assert_allclose(up_full, ts["height"].to_numpy(), atol=1e-5)
+
+
+def test_read_tenv3_stale_cache_refreshes(tmp_path, monkeypatch):
+    import os
+    monkeypatch.setenv("GROUNDCONTROL_CACHE_DIR", str(tmp_path))
+    local = tmp_path / "ngl_CLV1_IGS14.tenv3"
+    local.write_text("stale")
+    eight_days_ago = pd.Timestamp.now().timestamp() - 8 * 86400
+    os.utime(local, (eight_days_ago, eight_days_ago))
+
+    class _Resp:
+        text = _tenv3_text()
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(ngl.requests, "get", lambda *a, **k: _Resp())
+    assert len(ngl.read_tenv3("CLV1")) == 60
+    assert "CLV1" in local.read_text()  # cache was rewritten
+
+
+def test_read_tenv3_unknown_frame_raises():
+    with pytest.raises(ValueError, match="IGS14"):
+        ngl.read_tenv3("CLV1", frame="ITRF97")
+
+
 def test_coord_epoch_crosscheck_yymmmdd_vs_decimal_year():
     """Plan B9: every tenv3 row carries BOTH representations — they must agree."""
     ts = ngl.parse_tenv3(_tenv3_text())

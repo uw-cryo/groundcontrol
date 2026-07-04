@@ -44,8 +44,13 @@ already antenna-reference-point solutions; ``ant_m`` documents the monument
 setup — a 0.0 value means no antenna-height information, not "on the
 ground"). Fine-resolution DSMs may also resolve the monument itself.
 
-TODO(1.5b): steps.txt discontinuity handling (clip the median window to the
-segment between adjacent equipment/earthquake steps, plan B10) and MIDAS
+Step discontinuities (plan 1.5b/B10): :func:`read_steps` fetches/parses the
+``steps.txt`` database of equipment (type 1) and earthquake (type 2) offsets
+so callers can split a station's series into clean segments (abrupt height
+jumps from antenna swaps must never leak into positions or rates).
+
+TODO(1.5b): step-aware window clipping inside :func:`_select_window` (clip
+the median window to the segment between adjacent steps, plan B10) and MIDAS
 velocities (``vel_e/n/u`` + path-B extrapolation outside the station span).
 """
 
@@ -72,6 +77,8 @@ logger.addHandler(logging.NullHandler())
 INDEX_URL = "https://geodesy.unr.edu/NGLStationPages/DataHoldings.txt"
 #: doubled frame directory — verified live 2026-06-26 (plan A2).
 TENV3_URL = "https://geodesy.unr.edu/gps_timeseries/{frame}/tenv3/{frame}/{sta}.tenv3"
+#: station step (discontinuity) database — plan A2/B10.
+STEPS_URL = "https://geodesy.unr.edu/NGLStationPages/steps.txt"
 
 #: IGS frame -> aliased ITRF EPSG code (docs/crs_implementation.md §3).
 #: NEVER use the EPSG IGS codes (9018/10178...): pyproj cannot instantiate the
@@ -306,6 +313,91 @@ def read_tenv3(station: str, frame: str = "IGS14",
         r.raise_for_status()
         local.write_text(r.text)
     return parse_tenv3(local.read_text())
+
+
+def parse_steps(text: str) -> pd.DataFrame:
+    """Parse the NGL ``steps.txt`` discontinuity database (plan 1.5b/B10).
+
+    Two whitespace-delimited row shapes share the first three columns
+    ``site  YYMMMDD  type``; the trailing fields vary by type, so every row
+    is split with a **bounded** ``split(None, 3)`` first (the DataHoldings
+    lesson: never naive whitespace tokenization):
+
+    - type ``1`` (equipment change, plan A2): one trailing field -> ``event``
+      (e.g. ``Antenna_Type_Changed``; may be ``Unknown``).
+    - type ``2`` (earthquake): four trailing fields -> ``threshold_km`` (the
+      magnitude-dependent inclusion radius), ``distance_km`` (station to
+      epicenter), ``magnitude``, ``event_id`` (USGS).
+
+    Returns a DataFrame with columns ``sta, date, type, event, threshold_km,
+    distance_km, magnitude, event_id`` sorted by station then date; the
+    type-specific columns are NA where they do not apply. ``YYMMMDD`` uses a
+    2-digit year (``%y`` pivot: 69-99 -> 19xx), same convention as tenv3.
+    """
+    rows = []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        parts = line.split(None, 3)  # bounded: trailing fields vary by type
+        if len(parts) < 4:
+            raise ValueError(f"steps.txt line {lineno} has {len(parts)} fields "
+                             f"(need >= 4): {line!r}")
+        sta, date, typ, rest = parts[0], parts[1], parts[2], parts[3]
+        if typ == "1":
+            rows.append({"sta": sta, "date": date, "type": 1,
+                         "event": rest.strip()})
+        elif typ == "2":
+            tail = rest.split(None, 3)
+            if len(tail) != 4:
+                raise ValueError(f"steps.txt line {lineno}: type-2 row needs 4 "
+                                 f"trailing fields, got {len(tail)}: {line!r}")
+            rows.append({"sta": sta, "date": date, "type": 2,
+                         "threshold_km": float(tail[0]),
+                         "distance_km": float(tail[1]),
+                         "magnitude": float(tail[2]),
+                         "event_id": tail[3].strip()})
+        else:
+            raise ValueError(f"steps.txt line {lineno}: unknown step type "
+                             f"{typ!r} (expected 1 or 2): {line!r}")
+    df = pd.DataFrame(rows, columns=["sta", "date", "type", "event",
+                                     "threshold_km", "distance_km",
+                                     "magnitude", "event_id"])
+    if len(df):
+        df["date"] = pd.to_datetime(df["date"], format="%y%b%d", utc=True)
+        for col in ("sta", "event", "event_id"):
+            df[col] = df[col].astype("string")
+    return df.sort_values(["sta", "date"], kind="stable").reset_index(drop=True)
+
+
+def read_steps(station: str | None = None,
+               max_age_days: float = INDEX_MAX_AGE_DAYS) -> pd.DataFrame:
+    """Station step (discontinuity) table — cached download (plan 1.5b/B10).
+
+    Fetches :data:`STEPS_URL` once and caches the text in the groundcontrol
+    cache dir (``ngl_steps.txt``, refreshed when older than ``max_age_days``
+    — the DataHoldings pattern), returning :func:`parse_steps`'s DataFrame,
+    optionally filtered to one ``station`` (ID normalized to upper case).
+
+    Plan 1.5b / Appendix B10: step dates split a station's daily series into
+    clean segments — a position window or velocity fit must not straddle a
+    type-1 equipment change (antenna/receiver swaps cause abrupt, purely
+    instrumental height jumps) or a type-2 earthquake offset. This delivers
+    the data half; the step-aware window clipping in :func:`_select_window`
+    remains TODO(1.5b).
+    """
+    local = cache_dir() / "ngl_steps.txt"
+    stale = (not local.exists()
+             or (time.time() - local.stat().st_mtime) > max_age_days * 86400)
+    if stale:
+        logger.info("downloading %s -> %s", STEPS_URL, local)
+        r = requests.get(STEPS_URL, timeout=120)
+        r.raise_for_status()
+        local.write_text(r.text)
+    steps = parse_steps(local.read_text())
+    if station is not None:
+        sta = str(station).strip().upper()
+        steps = steps[steps["sta"] == sta].reset_index(drop=True)
+    return steps
 
 
 def _median_lon(lon: np.ndarray) -> float:

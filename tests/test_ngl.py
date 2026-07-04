@@ -158,6 +158,76 @@ def test_read_tenv3_unknown_frame_raises():
         ngl.read_tenv3("CLV1", frame="ITRF97")
 
 
+# ---------------------------------------------------------------------------
+# steps.txt (plan 1.5b/B10) — fixture: 15 real lines recorded live 2026-07-04
+# (9 type-1 incl. an "Unknown" event, 6 type-2 incl. pre-2000 dates for the
+# %y century pivot; Las Vegas stations + GOL2 for the 1994 Northridge row)
+# ---------------------------------------------------------------------------
+
+def _steps_text():
+    return (DATA / "ngl_steps_sample.txt").read_text()
+
+
+def test_parse_steps_both_types_bounded_split():
+    st = ngl.parse_steps(_steps_text())
+    assert len(st) == 15
+    assert list(st.columns) == ["sta", "date", "type", "event", "threshold_km",
+                                "distance_km", "magnitude", "event_id"]
+    assert st["type"].isin([1, 2]).all()
+    eq, ev = st[st["type"] == 2], st[st["type"] == 1]
+    assert len(ev) == 9 and len(eq) == 6
+    # type-specific columns are NA exactly where they do not apply
+    assert ev["event"].notna().all()
+    assert ev[["threshold_km", "distance_km", "magnitude"]].isna().all().all()
+    assert ev["event_id"].isna().all()
+    assert eq["event"].isna().all()
+    assert eq[["threshold_km", "distance_km", "magnitude"]].notna().all().all()
+    # known type-1 row (antenna change -> abrupt instrumental height jump)
+    nvbm = st[(st["sta"] == "NVBM") & (st["type"] == 1)]
+    assert "Antenna_and_Radome_Type_Changed" in set(nvbm["event"])
+    assert pd.Timestamp("2016-11-15", tz="UTC") in set(nvbm["date"])
+    # known type-2 row, all four trailing fields
+    apex = st[(st["sta"] == "APEX") & (st["type"] == 2)].iloc[0]
+    assert apex["date"] == pd.Timestamp("1999-10-16", tz="UTC")  # %y pivot: 99 -> 1999
+    assert apex["threshold_km"] == pytest.approx(575.440)
+    assert apex["distance_km"] == pytest.approx(225.783)
+    assert apex["magnitude"] == pytest.approx(7.1)
+    assert apex["event_id"] == "ci9108652"
+    # century pivot both ways: 94 -> 1994, 10 -> 2010
+    assert st[st["sta"] == "GOL2"]["date"].iloc[0].year == 1994
+    assert st[st["sta"] == "CLV1"]["date"].iloc[0].year == 2010
+    # sorted by station then date
+    assert st.equals(st.sort_values(["sta", "date"], kind="stable")
+                     .reset_index(drop=True))
+
+
+def test_parse_steps_malformed_rows_raise():
+    with pytest.raises(ValueError, match="line 1"):
+        ngl.parse_steps("NVBM  16NOV15  1\n")  # type-1 without an event
+    with pytest.raises(ValueError, match="type-2"):
+        ngl.parse_steps("NVBM  10APR04  2   645.654   409.795\n")
+    with pytest.raises(ValueError, match="unknown step type"):
+        ngl.parse_steps("NVBM  10APR04  3  what\n")
+
+
+def test_read_steps_offline_from_cache(tmp_path, monkeypatch):
+    """read_steps serves a fresh cached file with NO network hit."""
+    monkeypatch.setenv("GROUNDCONTROL_CACHE_DIR", str(tmp_path))
+    (tmp_path / "ngl_steps.txt").write_text(_steps_text())
+
+    def _boom(*a, **k):
+        raise AssertionError("network hit despite fresh cache")
+
+    monkeypatch.setattr(ngl.requests, "get", _boom)
+    st = ngl.read_steps()
+    assert len(st) == 15
+    # station filter normalizes case; NVBM has 2 equipment + 2 earthquake rows
+    nvbm = ngl.read_steps("nvbm")
+    assert (nvbm["sta"] == "NVBM").all()
+    assert nvbm["type"].value_counts().to_dict() == {1: 2, 2: 2}
+    assert nvbm["date"].is_monotonic_increasing
+
+
 def test_coord_epoch_crosscheck_yymmmdd_vs_decimal_year():
     """Plan B9: every tenv3 row carries BOTH representations — they must agree."""
     ts = ngl.parse_tenv3(_tenv3_text())

@@ -1,0 +1,15 @@
+0ARJ  96JUN28  1  Radome_Type_Changed
+APEX  99SEP04  1  Radome_Type_Changed
+LVWD  03DEC02  1  Antenna_Type_Changed
+LVWD  06JUN01  1  Receiver_Make_and_Model_Changed
+NVBM  16NOV15  1  Antenna_and_Radome_Type_Changed
+NVCA  15DEC23  1  Antenna_and_Radome_Type_Changed
+NVCA  15DEC23  1  Elevation_Cutoff_Changed
+UNR1  05APR20  1  Receiver_Make_and_Model_Changed
+NVBM  07FEB27  1  Unknown
+GOL2  94JAN17  2   363.078   201.965  6.7 ci3144585
+APEX  99OCT16  2   575.440   225.783  7.1 ci9108652
+CLV1  10APR04  2   645.654   436.832  7.2 ci14607652
+NVBM  10APR04  2   645.654   409.795  7.2 ci14607652
+NVBM  19JUL04  2   257.040   213.532  6.4 ci38443183
+UNR1  19JUL06  2   575.440   218.521  7.1 ci38457511

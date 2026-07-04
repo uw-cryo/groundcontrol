@@ -228,6 +228,81 @@ def test_read_steps_offline_from_cache(tmp_path, monkeypatch):
     assert nvbm["date"].is_monotonic_increasing
 
 
+# ---------------------------------------------------------------------------
+# MIDAS velocities (Blewitt et al. 2016) — fixture: 9 real midas.IGS14.txt
+# rows recorded live 2026-07-04 (Las Vegas CLV1/NVCA/UNR1, Bay Area
+# P224/SLAC/TIBB, Casa Grande AZCG/CAS7, and 00NA whose raw longitude is
+# -229.156 — the continuous-longitude wrap case)
+# ---------------------------------------------------------------------------
+
+def _midas_text():
+    return (DATA / "ngl_midas_sample.txt").read_text()
+
+
+def test_parse_midas_layout_and_values():
+    df = ngl.parse_midas(_midas_text())
+    assert list(df.columns) == ngl._MIDAS_COLUMNS  # 27 readme columns
+    assert len(df) == 9
+    r = df.set_index("sta").loc["CLV1"]
+    # velocities/uncertainties are m/yr; n_steps = steps ASSUMED from steps.txt
+    assert r["vel_u"] == pytest.approx(-0.001612)
+    assert r["sig_vel_u"] == pytest.approx(0.000514)
+    assert r["n_steps"] == 4
+    assert df["n_steps"].dtype == "int64"
+    assert (df["duration_yr"] > 0).all()
+    assert (df["t1"] > df["t0"]).all()
+    # B1 wrap: 00NA comes as lon -229.156 (< -180!) -> +130.844 (Australia)
+    assert df.set_index("sta").loc["00NA", "lon"] == pytest.approx(130.844, abs=1e-3)
+    assert df["lon"].between(-180, 180).all()
+    assert df["sta"].is_monotonic_increasing
+
+
+def test_parse_midas_layout_drift_raises():
+    with pytest.raises(ValueError, match="27"):
+        ngl.parse_midas("AAAA MIDAS5 2008.0 2018.0 10.0\n")  # wrong column count
+    # a single short row among good ones must fail loud, not NaN-fill
+    with pytest.raises(ValueError, match="row"):
+        ngl.parse_midas(_midas_text() + "ZZZZ MIDAS5 2008.0 2018.0 10.0 1 2 3\n")
+
+
+def test_read_midas_offline_from_cache(tmp_path, monkeypatch):
+    """read_midas serves a fresh cached file with NO network hit."""
+    monkeypatch.setenv("GROUNDCONTROL_CACHE_DIR", str(tmp_path))
+    (tmp_path / "ngl_midas_IGS14.txt").write_text(_midas_text())
+
+    def _boom(*a, **k):
+        raise AssertionError("network hit despite fresh cache")
+
+    monkeypatch.setattr(ngl.requests, "get", _boom)
+    df = ngl.read_midas()  # frame="IGS14" default matches the cache name
+    assert len(df) == 9
+    assert {"vel_u", "sig_vel_u", "n_steps"} <= set(df.columns)
+
+
+def test_read_midas_stale_cache_refreshes(tmp_path, monkeypatch):
+    import os
+    monkeypatch.setenv("GROUNDCONTROL_CACHE_DIR", str(tmp_path))
+    local = tmp_path / "ngl_midas_IGS14.txt"
+    local.write_text("stale")
+    eight_days_ago = pd.Timestamp.now().timestamp() - 8 * 86400
+    os.utime(local, (eight_days_ago, eight_days_ago))
+
+    class _Resp:
+        text = _midas_text()
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(ngl.requests, "get", lambda *a, **k: _Resp())
+    assert len(ngl.read_midas("IGS14")) == 9
+    assert "CLV1" in local.read_text()  # cache was rewritten
+
+
+def test_read_midas_empty_frame_raises():
+    with pytest.raises(ValueError, match="frame"):
+        ngl.read_midas("  ")
+
+
 def test_coord_epoch_crosscheck_yymmmdd_vs_decimal_year():
     """Plan B9: every tenv3 row carries BOTH representations — they must agree."""
     ts = ngl.parse_tenv3(_tenv3_text())

@@ -4,8 +4,9 @@ Global daily GNSS position time series from the University of Nevada, Reno
 Geodetic Laboratory (plan Appendix A2; endpoints verified live 2026-06-26).
 Citation: Blewitt G., Hammond W.C. & Kreemer C. (2018), *Harnessing the GPS
 data explosion for interdisciplinary science*, Eos, 99,
-https://doi.org/10.1029/2018EO104623. (MIDAS velocities — Blewitt et al.
-2016 — arrive with Increment 1.5b.)
+https://doi.org/10.1029/2018EO104623. (Station-level MIDAS velocities —
+Blewitt et al. 2016 — via :func:`read_midas`; wiring them into parse()'s
+per-point ``vel_e/n/u`` + path-B extrapolation remains TODO(1.5b).)
 
 Pattern: one cached station-index GET (``DataHoldings.txt``) -> bbox +
 temporal filter -> per-station ``tenv3`` fetch (throttled) -> position at the
@@ -79,6 +80,10 @@ INDEX_URL = "https://geodesy.unr.edu/NGLStationPages/DataHoldings.txt"
 TENV3_URL = "https://geodesy.unr.edu/gps_timeseries/{frame}/tenv3/{frame}/{sta}.tenv3"
 #: station step (discontinuity) database — plan A2/B10.
 STEPS_URL = "https://geodesy.unr.edu/NGLStationPages/steps.txt"
+#: MIDAS velocity solutions (Blewitt et al. 2016). Lives under /velocities/ —
+#: the gps_timeseries/<FRAME>/midas/ path linked from the portal 404s
+#: (verified live 2026-07-04).
+MIDAS_URL = "https://geodesy.unr.edu/velocities/midas.{frame}.txt"
 
 #: IGS frame -> aliased ITRF EPSG code (docs/crs_implementation.md §3).
 #: NEVER use the EPSG IGS codes (9018/10178...): pyproj cannot instantiate the
@@ -398,6 +403,89 @@ def read_steps(station: str | None = None,
         sta = str(station).strip().upper()
         steps = steps[steps["sta"] == sta].reset_index(drop=True)
     return steps
+
+
+#: midas.<frame>.txt column layout, from the official readme
+#: (https://geodesy.unr.edu/velocities/midas.readme.txt) and verified against
+#: the live IGS14 file 2026-07-04 (every row has exactly 27 fields).
+#: Velocities/uncertainties are m/yr; ``n_steps`` is the number of steps
+#: ASSUMED by MIDAS from the steps.txt database — the only per-station
+#: step-count metadata NGL publishes beyond steps.txt itself.
+_MIDAS_COLUMNS = [
+    "sta", "version", "t0", "t1", "duration_yr",          # 1-5
+    "n_epochs", "n_good", "n_pairs",                      # 6-8
+    "vel_e", "vel_n", "vel_u",                            # 9-11  (m/yr)
+    "sig_vel_e", "sig_vel_n", "sig_vel_u",                # 12-14 (m/yr)
+    "off_e", "off_n", "off_u",                            # 15-17 offset @ t0 (m)
+    "frac_out_e", "frac_out_n", "frac_out_u",             # 18-20
+    "sd_pairs_e", "sd_pairs_n", "sd_pairs_u",             # 21-23
+    "n_steps",                                            # 24
+    "lat", "lon", "hgt",                                  # 25-27
+]
+
+
+def parse_midas(text: str) -> pd.DataFrame:
+    """Parse a MIDAS velocity file (``midas.<frame>.txt``) into a DataFrame.
+
+    Column layout per :data:`_MIDAS_COLUMNS` (readme verified against the
+    live file). Headerless whitespace-delimited rows; every row must carry
+    exactly 27 fields (fail loud on layout drift — the DataHoldings lesson).
+    Longitude comes 0-360-ish continuous (observed < -180 too) and gets the
+    plan-B1 wrap.
+    """
+    df = pd.read_csv(io.StringIO(text), sep=r"\s+", header=None)
+    if df.shape[1] != len(_MIDAS_COLUMNS):
+        raise ValueError(
+            f"MIDAS file has {df.shape[1]} columns; expected "
+            f"{len(_MIDAS_COLUMNS)} ({_MIDAS_COLUMNS})"
+        )
+    df.columns = _MIDAS_COLUMNS
+    bad = df.isna().any(axis=1)
+    if bad.any():
+        raise ValueError(
+            f"MIDAS file has {int(bad.sum())} short/unparseable row(s), "
+            f"first at line {int(np.flatnonzero(bad)[0]) + 1}"
+        )
+    for col in ("sta", "version"):
+        df[col] = df[col].astype("string")
+    for col in ("n_epochs", "n_good", "n_pairs", "n_steps"):
+        df[col] = df[col].astype("int64")
+    df["lon"] = _wrap_lon(df["lon"].to_numpy())
+    return df.sort_values("sta", kind="stable").reset_index(drop=True)
+
+
+def read_midas(frame: str = "IGS14",
+               max_age_days: float = INDEX_MAX_AGE_DAYS) -> pd.DataFrame:
+    """MIDAS station velocities — cached download (Blewitt et al. 2016).
+
+    NGL's step-resistant velocity estimator (median of all data-pair slopes;
+    steps assumed at steps.txt dates — no step detection). Fetches
+    :data:`MIDAS_URL` for ``frame`` once, caches the text in the
+    groundcontrol cache dir (``ngl_midas_<frame>.txt``, refreshed when older
+    than ``max_age_days`` — the DataHoldings pattern) and returns
+    :func:`parse_midas`'s DataFrame (velocities in **m/yr**; see
+    :data:`_MIDAS_COLUMNS`).
+
+    ``frame="IGS14"`` is verified live; NGL also publishes plate-fixed
+    variants (``NA``, ``PA``, ...) at the same URL pattern — an unknown code
+    fails loud with an HTTPError 404 (``midas.IGS20.txt`` does NOT exist as
+    of 2026-07-04). Note the IGS14 file is a full-network weekly product:
+    stations absent from it (e.g. too-new stations) simply have no MIDAS
+    velocity yet.
+    """
+    frame = str(frame).strip()
+    if not frame:
+        raise ValueError("frame must be a non-empty MIDAS frame code, e.g. 'IGS14'")
+    local = cache_dir() / f"ngl_midas_{frame}.txt"
+    stale = (not local.exists()
+             or (time.time() - local.stat().st_mtime) > max_age_days * 86400)
+    if stale:
+        url = MIDAS_URL.format(frame=frame)
+        logger.info("downloading %s -> %s", url, local)
+        r = requests.get(url, timeout=300)
+        r.raise_for_status()
+        local.write_text(r.text)
+    return parse_midas(local.read_text())
 
 
 def _median_lon(lon: np.ndarray) -> float:

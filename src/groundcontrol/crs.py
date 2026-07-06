@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import warnings
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 import pandas as pd
@@ -354,3 +355,380 @@ def land_horizontal(gdf, target: str = "EPSG:6318", datum_col: str = "horizontal
         logger.info("landed %d rows %s -> %s (%s, accuracy %s m)",
                     len(idx), datum, target, t.description, t.accuracy)
     return out.set_crs(target, allow_override=True)
+
+
+# ---------------------------------------------------------------------------
+# Stage 2 — intra-frame epoch propagation (crs_implementation.md §1 stage 2)
+# ---------------------------------------------------------------------------
+# Stage 1 (transform_points / land_horizontal above) changes *frame* at each
+# point's coordinate epoch — PROJ then relabels, not propagates, the output
+# epoch (§1). Stage 2 here is the missing intra-frame move from each point's
+# coord_epoch to a user-chosen target_epoch:
+#     x += vel_enu · (target_epoch − coord_epoch)
+# using per-point ENU velocities (NGL/MIDAS) where they exist, else a
+# plate-motion model, else a no-op with the velocity·Δt bound surfaced (§1,
+# §7.1 op_kind "velocity propagation"). It composes with stage 1 by running in
+# the (geographic) dynamic source frame either before or after the frame
+# transform — the coord_20 truth test asserts the two orders commute to mm
+# (§8 test 2). An ITRF-at-fixed-epoch target *requires* stage 2 for every
+# ITRF-native source; plate-fixed targets make it ≈ 0 by construction.
+
+#: Coarse global upper bound on horizontal plate speed (m/yr) used only to
+#: *report* the velocity·Δt uncertainty of rows left un-propagated (no
+#: per-point velocity, no plate model). Owner decision (dshean 2026-07-05):
+#: the bound must cover the fastest plate motion anywhere (~0.1 up to
+#: ~0.16 m/yr), not a typical CONUS rate (~0.02 m/yr). This is a reporting
+#: bound only — it is never applied to a coordinate. Replace with a real
+#: per-row rate once a plate table is bundled.
+PLATE_MOTION_RATE_BOUND = 0.16
+
+
+@runtime_checkable
+class PlateMotionModel(Protocol):
+    """Interface for a plate-motion velocity source (the stage-2 PMM fallback).
+
+    A model returns the per-point ENU velocity (m/yr) at a location, used to
+    propagate rows that carry no per-point (MIDAS) velocity. :class:`EulerPoleModel`
+    is a concrete, fully-tested implementation; **no published ITRF/NA plate
+    table is bundled yet** (the caller supplies the pole) — see the module /
+    summary flag.
+    """
+
+    name: str
+
+    def velocity_enu(self, lon, lat, h=0.0):  # -> (v_e, v_n, v_u) arrays, m/yr
+        ...
+
+
+def enu_to_ecef(e, n, u, lon, lat):
+    """Rotate a local ENU vector to ECEF at geodetic ``(lon, lat)`` (degrees).
+
+    Columns of the rotation are the ECEF components of the East/North/Up unit
+    vectors. The inverse is :func:`ecef_to_enu`. Applying an ENU velocity as if
+    it were ECEF (skipping this rotation) is the classic bug the §8-test-6
+    ENU→ECEF check catches.
+    """
+    lam = np.radians(lon)
+    phi = np.radians(lat)
+    sl, cl = np.sin(lam), np.cos(lam)
+    sp, cp = np.sin(phi), np.cos(phi)
+    x = -sl * e - sp * cl * n + cp * cl * u
+    y = cl * e - sp * sl * n + cp * sl * u
+    z = cp * n + sp * u
+    return x, y, z
+
+
+def ecef_to_enu(x, y, z, lon, lat):
+    """Rotate an ECEF vector to local ENU at geodetic ``(lon, lat)`` (degrees).
+
+    Transpose of :func:`enu_to_ecef` (an orthonormal rotation).
+    """
+    lam = np.radians(lon)
+    phi = np.radians(lat)
+    sl, cl = np.sin(lam), np.cos(lam)
+    sp, cp = np.sin(phi), np.cos(phi)
+    e = -sl * x + cl * y
+    n = -sp * cl * x - sp * sl * y + cp * z
+    u = cp * cl * x + cp * sl * y + sp * z
+    return e, n, u
+
+
+def _ellipsoid_params(crs_like) -> tuple[float, float]:
+    """(semi-major axis a [m], first eccentricity squared e²) for a CRS's ellipsoid."""
+    ell = pyproj.CRS(crs_like).ellipsoid
+    a = float(ell.semi_major_metre)
+    rf = ell.inverse_flattening
+    f = 0.0 if not rf else 1.0 / float(rf)
+    return a, f * (2.0 - f)
+
+
+def _geodetic_to_ecef(lon, lat, h, a, e2):
+    """Geodetic (lon, lat deg; h m) -> ECEF (X, Y, Z m). Closed form."""
+    lam = np.radians(lon)
+    phi = np.radians(lat)
+    sphi, cphi = np.sin(phi), np.cos(phi)
+    n = a / np.sqrt(1.0 - e2 * sphi ** 2)
+    x = (n + h) * cphi * np.cos(lam)
+    y = (n + h) * cphi * np.sin(lam)
+    z = (n * (1.0 - e2) + h) * sphi
+    return x, y, z
+
+
+def _apply_enu_displacement(lon, lat, h, d_e, d_n, d_u, a, e2):
+    """Move geodetic (lon, lat deg; h m) by an ENU displacement (m).
+
+    Uses the local radii of curvature (meridian ``M``, prime-vertical ``N``).
+    Exact to well below 1 µm for the decimetre-scale displacements stage 2
+    produces (linearisation error ~ (d/R)²·d ≈ 1e-15 m); the §8-test-6 ENU→ECEF
+    rotation is the independent oracle the tests cross-check this against.
+    """
+    lat_rad = np.radians(lat)
+    sin_lat = np.sin(lat_rad)
+    cos_lat = np.cos(lat_rad)
+    w = np.sqrt(1.0 - e2 * sin_lat ** 2)
+    m = a * (1.0 - e2) / w ** 3        # meridian radius of curvature
+    n = a / w                          # prime-vertical radius of curvature
+    dlat = np.degrees(d_n / (m + h))
+    dlon = np.degrees(d_e / ((n + h) * cos_lat))
+    return lon + dlon, lat + dlat, h + d_u
+
+
+class EulerPoleModel:
+    """Rigid-plate ENU velocities from an Euler pole (a concrete PMM fallback).
+
+    The caller supplies the rotation pole (geographic lat/lon of the pole and
+    the angular rate in degrees/Myr) — **no published plate parameters are
+    hardcoded** (deferred; see the summary flag). Velocity at a point is the
+    rigid-body ``v = Ω × r`` in ECEF, rotated to local ENU, so a pure-horizontal
+    plate rotation yields ~zero vertical velocity.
+    """
+
+    def __init__(self, pole_lat_deg, pole_lon_deg, rate_deg_per_myr,
+                 name="euler", ellipsoid="EPSG:7912"):
+        self.pole_lat_deg = float(pole_lat_deg)
+        self.pole_lon_deg = float(pole_lon_deg)
+        self.rate_deg_per_myr = float(rate_deg_per_myr)
+        self.name = str(name)
+        self._a, self._e2 = _ellipsoid_params(ellipsoid)
+        omega = np.radians(self.rate_deg_per_myr) * 1e-6  # rad/yr
+        plam = np.radians(self.pole_lon_deg)
+        pphi = np.radians(self.pole_lat_deg)
+        self._omega_ecef = omega * np.array([
+            np.cos(pphi) * np.cos(plam),
+            np.cos(pphi) * np.sin(plam),
+            np.sin(pphi),
+        ])
+
+    def velocity_enu(self, lon, lat, h=0.0):
+        """ENU velocity (m/yr) at geodetic ``(lon, lat)`` (degrees). Vectorized."""
+        lon = np.asarray(lon, dtype="float64")
+        lat = np.asarray(lat, dtype="float64")
+        h = np.broadcast_to(np.asarray(h, dtype="float64"), lon.shape)
+        x, y, z = _geodetic_to_ecef(lon, lat, h, self._a, self._e2)
+        wx, wy, wz = self._omega_ecef
+        vx = wy * z - wz * y
+        vy = wz * x - wx * z
+        vz = wx * y - wy * x
+        return ecef_to_enu(vx, vy, vz, lon, lat)
+
+
+def check_frame_epoch_reduced(gdf, *, tol_yr: float = 1e-6, on_violation: str = "warn"):
+    """QC (§1): plate-fixed rows must be reduced to their ``frame_epoch``.
+
+    A plate-fixed realization publishes positions *reduced to* its reference
+    epoch, so a finite ``frame_epoch`` with ``coord_epoch != frame_epoch``
+    mechanically flags an unreduced position (e.g. raw RTK). Dynamic frames
+    carry NaN ``frame_epoch`` and are skipped. Returns the boolean violation
+    mask; ``on_violation='raise'`` raises instead of warning.
+    """
+    if "frame_epoch" not in gdf.columns or "coord_epoch" not in gdf.columns:
+        return np.zeros(len(gdf), dtype=bool)
+    fe = pd.to_numeric(gdf["frame_epoch"], errors="coerce").to_numpy(dtype="float64")
+    ce = pd.to_numeric(gdf["coord_epoch"], errors="coerce").to_numpy(dtype="float64")
+    plate_fixed = np.isfinite(fe)
+    bad = plate_fixed & np.isfinite(ce) & (np.abs(ce - fe) > tol_yr)
+    if bad.any():
+        msg = (f"{int(bad.sum())} plate-fixed row(s) have coord_epoch != frame_epoch "
+               f"(unreduced position; crs_implementation.md §1 QC)")
+        if on_violation == "raise":
+            raise ValueError(msg)
+        warnings.warn(msg, stacklevel=2)
+    return bad
+
+
+def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "height",
+                    coord_epoch_col: str = "coord_epoch",
+                    vel_cols=("vel_e", "vel_n", "vel_u"), plate_model=None,
+                    on_nan_epoch: str = "raise",
+                    residual_rate_m_per_yr: float = PLATE_MOTION_RATE_BOUND,
+                    qc_frame_epoch: bool = True):
+    """Stage 2: propagate each point from its ``coord_epoch`` to ``target_epoch``.
+
+    ``x += vel_enu · (target_epoch − coord_epoch)`` (crs_implementation.md §1).
+    Operates in the point's own (geographic) dynamic frame — run it before or
+    after the stage-1 frame transform (:func:`transform_points` /
+    :func:`land_horizontal`); the two orders commute to mm (§8 test 2). Only the
+    geometry x/y and ``height_col`` move; ``coord_epoch`` is advanced to
+    ``target_epoch`` for every propagated row.
+
+    Velocity source, in priority order (§1):
+
+    1. **per-point** ENU velocities from ``vel_cols`` (all three finite) — MIDAS
+       for GNSS;
+    2. **plate-motion model** ``plate_model`` (a :class:`PlateMotionModel`, e.g.
+       :class:`EulerPoleModel`) for rows lacking per-point velocities;
+    3. **none** — the row is left at its own epoch and its ``velocity·Δt`` bound
+       is surfaced (WARNING log + ``gdf.attrs['epoch_propagation']`` report).
+
+    Parameters
+    ----------
+    gdf : GeoDataFrame with 2D geographic point geometry (lon/lat degrees) and a
+        numeric ``height_col`` (ellipsoidal). Its CRS (or ``source_crs``) must be
+        **geographic** — projected input raises (project *after* stage 2).
+    target_epoch : scalar decimal year to propagate every row to.
+    source_crs : geographic CRS to use when ``gdf.crs`` is None (e.g. NGL native
+        frames land un-set); supplies the ellipsoid for the ENU→geodetic step.
+    plate_model : optional :class:`PlateMotionModel` fallback (priority 2).
+    on_nan_epoch : ``'raise'`` (default) — a row with a usable velocity but NaN
+        ``coord_epoch`` raises (a NaN Δt would propagate to NaN coordinates);
+        ``'skip'`` leaves it un-propagated with a warning (§8 test 9 policy flag).
+    residual_rate_m_per_yr : reporting-only rate for the un-propagated
+        ``velocity·Δt`` bound (see :data:`PLATE_MOTION_RATE_BOUND`).
+    qc_frame_epoch : run :func:`check_frame_epoch_reduced` (warn) first.
+
+    Returns a copy: propagated geometry/height, advanced ``coord_epoch``,
+    ``transform_id`` appended with a ``prop:`` tag, and a
+    ``gdf.attrs['epoch_propagation']`` report (counts, models used, max applied
+    displacement, and the surfaced residual-bound array).
+    """
+    import geopandas as gpd
+
+    target_epoch = float(target_epoch)
+    if not np.isfinite(target_epoch):
+        raise ValueError(f"target_epoch must be finite, got {target_epoch!r}")
+
+    out = gdf.copy()
+    crs_like = out.crs if out.crs is not None else source_crs
+    if crs_like is None:
+        raise ValueError(
+            "propagate_epoch needs a geographic CRS: gdf.crs is None and "
+            "source_crs was not given (the ENU→geodetic step needs the ellipsoid)")
+    crs_obj = pyproj.CRS(crs_like)
+    if not crs_obj.is_geographic:
+        raise ValueError(
+            f"propagate_epoch expects geographic lon/lat coordinates; got "
+            f"{crs_obj.name!r} (projected). Run stage 2 before projecting.")
+    a, e2 = _ellipsoid_params(crs_obj)
+
+    if qc_frame_epoch:
+        check_frame_epoch_reduced(out)
+
+    n = len(out)
+    report = {
+        "target_epoch": target_epoch, "crs": str(crs_obj.to_authority() or crs_obj.name),
+        "n_total": n, "n_propagated": 0, "n_noop": n,
+        "models": {"per_point": 0, "plate": 0, "none": n},
+        "plate_model": getattr(plate_model, "name", None),
+        "max_applied_displacement_m": 0.0,
+        "residual_rate_m_per_yr": float(residual_rate_m_per_yr),
+        "max_residual_bound_m": 0.0,
+        "residual_bound_m": [0.0] * n,
+    }
+    if n == 0:
+        out.attrs["epoch_propagation"] = report
+        return out
+
+    def _col(name):
+        if name in out.columns:
+            return pd.to_numeric(out[name], errors="coerce").to_numpy(dtype="float64")
+        return np.full(n, np.nan)
+
+    lon = out.geometry.x.to_numpy(dtype="float64")
+    lat = out.geometry.y.to_numpy(dtype="float64")
+    h = pd.to_numeric(out[height_col], errors="raise").to_numpy(dtype="float64")
+    ve, vn, vu = (_col(c) for c in vel_cols)
+
+    has_vel = np.isfinite(ve) & np.isfinite(vn) & np.isfinite(vu)
+    partial = (np.isfinite(ve) | np.isfinite(vn) | np.isfinite(vu)) & ~has_vel
+    if partial.any():
+        warnings.warn(
+            f"{int(partial.sum())} row(s) have a partial ENU velocity (some but not "
+            "all of vel_e/n/u finite); treating them as having no per-point velocity",
+            stacklevel=2)
+
+    model_label = np.where(has_vel, "per_point", "none").astype(object)
+    if plate_model is not None:
+        need = ~has_vel
+        if need.any():
+            pe, pn, pu = plate_model.velocity_enu(lon[need], lat[need], h[need])
+            ve[need], vn[need], vu[need] = pe, pn, pu
+            filled = need.copy()
+            filled[need] = np.isfinite(pe) & np.isfinite(pn) & np.isfinite(pu)
+            model_label[filled] = "plate"
+
+    ce = _col(coord_epoch_col)
+    dt = target_epoch - ce
+    movable = np.isfinite(ve) & np.isfinite(vn) & np.isfinite(vu)
+
+    nan_epoch = movable & ~np.isfinite(ce)
+    if nan_epoch.any():
+        if on_nan_epoch == "raise":
+            raise ValueError(
+                f"{int(nan_epoch.sum())} row(s) have a usable velocity but NaN "
+                f"{coord_epoch_col!r}; a NaN Δt would propagate to NaN coordinates. "
+                "Fix the epoch or pass on_nan_epoch='skip' to leave them un-propagated.")
+        if on_nan_epoch != "skip":
+            raise ValueError(f"on_nan_epoch must be 'raise' or 'skip', got {on_nan_epoch!r}")
+        warnings.warn(
+            f"{int(nan_epoch.sum())} row(s) with velocity but NaN {coord_epoch_col!r} "
+            "left un-propagated (on_nan_epoch='skip')", stacklevel=2)
+        movable = movable & ~nan_epoch
+        model_label[nan_epoch] = "none"
+
+    moved = movable
+    lon2, lat2, h2 = lon.copy(), lat.copy(), h.copy()
+    disp = np.zeros(n)
+    if moved.any():
+        d_e = ve[moved] * dt[moved]
+        d_n = vn[moved] * dt[moved]
+        d_u = vu[moved] * dt[moved]
+        lo, la, hh = _apply_enu_displacement(
+            lon[moved], lat[moved], h[moved], d_e, d_n, d_u, a, e2)
+        lon2[moved], lat2[moved], h2[moved] = lo, la, hh
+        disp[moved] = np.sqrt(d_e ** 2 + d_n ** 2 + d_u ** 2)
+
+    ce_out = ce.copy()
+    ce_out[moved] = target_epoch
+
+    # velocity·Δt bound for the rows we could NOT propagate (surface, don't hide)
+    noop = ~moved
+    bound = np.zeros(n)
+    finite_dt_noop = noop & np.isfinite(dt)
+    bound[finite_dt_noop] = np.abs(dt[finite_dt_noop]) * float(residual_rate_m_per_yr)
+
+    # write coordinates / epoch back
+    out["geometry"] = gpd.points_from_xy(lon2, lat2)
+    out[height_col] = h2
+    if coord_epoch_col in out.columns:
+        out[coord_epoch_col] = ce_out
+
+    # transform_id: append a compact provenance tag (chain-ordered)
+    tag = np.where(
+        moved,
+        np.where(model_label == "plate",
+                 f"prop:plate[{getattr(plate_model, 'name', 'plate')}]->{target_epoch:g}",
+                 f"prop:per_point->{target_epoch:g}"),
+        "prop:noop",
+    )
+    if "transform_id" in out.columns:
+        existing = out["transform_id"].tolist()
+        chained = [t if pd.isna(e) else f"{e}+{t}" for e, t in zip(existing, tag)]
+        out["transform_id"] = pd.array(chained, dtype="string")
+
+    # report + fail-loud-adjacent surfacing
+    report.update(
+        n_propagated=int(moved.sum()), n_noop=int(noop.sum()),
+        models={
+            "per_point": int((model_label == "per_point").sum()),
+            "plate": int((model_label == "plate").sum()),
+            "none": int((model_label == "none").sum()),
+        },
+        max_applied_displacement_m=float(disp.max()),
+        max_residual_bound_m=float(bound.max()),
+        residual_bound_m=[float(b) for b in bound],
+    )
+    out.attrs["epoch_propagation"] = report
+
+    logger.info(
+        "propagate_epoch -> %g: %d/%d propagated (per_point=%d, plate=%d), "
+        "%d no-op | max applied %.4f m | max residual bound %.4f m",
+        target_epoch, report["n_propagated"], n, report["models"]["per_point"],
+        report["models"]["plate"], report["n_noop"],
+        report["max_applied_displacement_m"], report["max_residual_bound_m"])
+    if report["max_residual_bound_m"] > 1e-4:
+        warnings.warn(
+            f"{report['n_noop']} row(s) left at their own epoch (no usable velocity); "
+            f"un-propagated velocity·Δt bound up to {report['max_residual_bound_m']:.3f} m "
+            f"(at rate {residual_rate_m_per_yr} m/yr) — see attrs['epoch_propagation']",
+            stacklevel=2)
+    return out

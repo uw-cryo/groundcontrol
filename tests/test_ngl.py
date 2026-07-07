@@ -39,13 +39,30 @@ def _tenv3_text():
     return (DATA / "ngl_CLV1_IGS14_sample.tenv3").read_text()
 
 
-def _raw(frame="IGS14", epoch=None, time_range=None, sta="CLV1"):
-    """Build a fetch()-shaped payload from the offline fixtures."""
+_MIDAS_VEL_COLS = ["vel_e", "vel_n", "vel_u", "sig_vel_e", "sig_vel_n", "sig_vel_u"]
+
+
+def _midas_map():
+    """station id -> MIDAS velocity sub-dict, from the offline fixture."""
+    m = ngl.parse_midas((DATA / "ngl_midas_sample.txt").read_text())
+    return {str(r["sta"]): {c: float(r[c]) for c in _MIDAS_VEL_COLS}
+            for _, r in m.iterrows()}
+
+
+def _raw(frame="IGS14", epoch=None, time_range=None, sta="CLV1", with_midas=True):
+    """Build a fetch()-shaped payload from the offline fixtures.
+
+    ``with_midas`` mirrors ``fetch(with_velocities=True)``: attach the station's
+    own MIDAS velocity (or None if absent from the fixture) to ``meta['midas']``.
+    """
     idx = _index()
     row = idx[idx["sta"] == sta].iloc[0]
+    meta = ngl._station_meta(row)
+    if with_midas:
+        meta["midas"] = _midas_map().get(sta)
     return {
         "frame": frame, "epoch": epoch, "time_range": time_range,
-        "stations": [{"meta": ngl._station_meta(row), "tenv3": _tenv3_text()}],
+        "stations": [{"meta": meta, "tenv3": _tenv3_text()}],
     }
 
 
@@ -401,7 +418,10 @@ def test_parse_schema_valid_and_frame_aliased():
     assert r["measurement_datetime"].year == 2017
     # accuracy stays NaN (TODO D3); sigmas + antenna height live in raw
     assert np.isnan(r["acc_h"]) and np.isnan(r["acc_v"])
-    assert np.isnan(r["vel_e"])  # MIDAS is 1.5b
+    # per-point MIDAS velocity now joined by station ID (was 1.5b)
+    assert r["vel_e"] == pytest.approx(-0.015169)  # CLV1 MIDAS (Blewitt 2016), m/yr
+    assert r["vel_n"] == pytest.approx(-0.008432)
+    assert r["vel_u"] == pytest.approx(-0.001612)
     payload = json.loads(r["raw"])
     assert payload["n_solutions_used"] > 0
     assert 0 < payload["sig_e_m"] < 0.01
@@ -419,6 +439,30 @@ def test_parse_igs20_aliases_to_itrf2020():
     assert (out["horizontal_crs"] == "EPSG:9989").all()
     assert (out["vertical_crs"] == "EPSG:9989").all()
     assert (out["ref_frame"] == "IGS20").all()
+
+
+def test_parse_joins_midas_velocity_and_sigmas():
+    """fetch(with_velocities=True) -> meta['midas'] -> per-point vel_e/n/u + sig in raw."""
+    r = ngl.parse(_raw(epoch=2017.95)).iloc[0]
+    assert (r["vel_e"], r["vel_n"], r["vel_u"]) == pytest.approx(
+        (-0.015169, -0.008432, -0.001612))  # CLV1 MIDAS IGS14, m/yr
+    payload = json.loads(r["raw"])
+    assert payload["sig_vel_e"] == pytest.approx(0.000197)
+    assert payload["sig_vel_u"] == pytest.approx(0.000514)
+
+
+def test_parse_without_midas_leaves_velocity_nan():
+    """No MIDAS attached (with_velocities=False, or station absent) -> honest NaN."""
+    r = ngl.parse(_raw(epoch=2017.95, with_midas=False)).iloc[0]
+    assert np.isnan(r["vel_e"]) and np.isnan(r["vel_n"]) and np.isnan(r["vel_u"])
+    payload = json.loads(r["raw"])
+    assert payload["sig_vel_e"] is None  # no MIDAS solution -> None, not fabricated
+
+
+def test_midas_velocity_map_absent_station_is_none():
+    """Station-ID join: a station not in the MIDAS file maps to None (NaN velocity)."""
+    vmap = _midas_map()
+    assert "CLV1" in vmap and vmap.get("NOPE") is None
 
 
 def test_unknown_frame_raises():
@@ -569,6 +613,10 @@ def test_fetch_las_vegas_live():
     assert r["horizontal_crs"] == "EPSG:7912"
     assert r["coord_epoch"] > 2000
     assert "ant_m" in json.loads(r["raw"])
+    # with_velocities=True (default): the station carries its own MIDAS velocity
+    # when it has a MIDAS solution (finite & cm/yr-scale) — else honest NaN.
+    v = r["vel_e"]
+    assert np.isnan(v) or abs(v) < 0.1  # m/yr
     # and it lands (time-dependent Helmert with per-row tt)
     landed = land_horizontal(out, target="EPSG:6318")
     assert landed.crs.to_epsg() == 6318

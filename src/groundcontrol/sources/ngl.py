@@ -4,9 +4,14 @@ Global daily GNSS position time series from the University of Nevada, Reno
 Geodetic Laboratory (plan Appendix A2; endpoints verified live 2026-06-26).
 Citation: Blewitt G., Hammond W.C. & Kreemer C. (2018), *Harnessing the GPS
 data explosion for interdisciplinary science*, Eos, 99,
-https://doi.org/10.1029/2018EO104623. (Station-level MIDAS velocities —
-Blewitt et al. 2016 — via :func:`read_midas`; wiring them into parse()'s
-per-point ``vel_e/n/u`` + path-B extrapolation remains TODO(1.5b).)
+https://doi.org/10.1029/2018EO104623. Station-level MIDAS velocities (Blewitt
+et al. 2016) are downloaded/parsed by :func:`read_midas` and, when
+``fetch(with_velocities=True)`` (the default), joined by station ID into each
+station's own per-point ``vel_e/n/u`` (the tier-1 velocity
+:func:`groundcontrol.crs.propagate_epoch` consumes). Spatial interpolation of
+this network to arbitrary (non-station) points lives in
+:mod:`groundcontrol.velocity`. Path-B MIDAS extrapolation of a *position*
+outside a station's daily-series span remains TODO(1.5b).
 
 Pattern: one cached station-index GET (``DataHoldings.txt``) -> bbox +
 temporal filter -> per-station ``tenv3`` fetch (throttled) -> position at the
@@ -51,8 +56,9 @@ so callers can split a station's series into clean segments (abrupt height
 jumps from antenna swaps must never leak into positions or rates).
 
 TODO(1.5b): step-aware window clipping inside :func:`_select_window` (clip
-the median window to the segment between adjacent steps, plan B10) and MIDAS
-velocities (``vel_e/n/u`` + path-B extrapolation outside the station span).
+the median window to the segment between adjacent steps, plan B10) and path-B
+MIDAS *position* extrapolation outside a station's daily-series span (the
+per-point velocity join itself is done — see the MIDAS note above).
 """
 
 from __future__ import annotations
@@ -210,8 +216,38 @@ def _station_meta(row) -> dict:
 # fetch — network half (index + per-station tenv3)
 # ---------------------------------------------------------------------------
 
+#: MIDAS is published for IGS14 only (``midas.IGS20.txt`` does not exist —
+#: read_midas docstring). Inter-realization velocity differences (ITRF2014 vs
+#: ITRF2020) are sub-mm/yr, so IGS14 MIDAS velocities are reused for an IGS20
+#: source with a logged note; the residual (<~0.7 mm/yr x delta-t) is well
+#: below the decimetre budget the epoch propagation targets.
+_MIDAS_FRAME = "IGS14"
+
+
+def _midas_velocity_map(frame: str) -> dict:
+    """``{station_id: {vel_e/n/u, sig_vel_e/n/u}}`` from MIDAS (cached), or ``{}``.
+
+    Source-agnostic velocities are keyed by the 4-char station ID for the
+    station-ID join in :func:`fetch` -> :func:`parse` (each GNSS mark carries
+    its OWN MIDAS velocity). Never raises: a missing/unreachable MIDAS file
+    logs a warning and yields an empty map (velocities stay NaN — honest).
+    """
+    if frame != _MIDAS_FRAME:
+        logger.info("NGL: MIDAS published for %s only; reusing %s velocities for "
+                    "frame %s (sub-mm/yr inter-realization difference)",
+                    _MIDAS_FRAME, _MIDAS_FRAME, frame)
+    try:
+        m = read_midas(frame=_MIDAS_FRAME)
+    except Exception as e:  # network/404/parse — degrade to no velocities
+        logger.warning("NGL: MIDAS velocities unavailable (%s: %s); vel_e/n/u stay NaN",
+                       type(e).__name__, e)
+        return {}
+    cols = ["vel_e", "vel_n", "vel_u", "sig_vel_e", "sig_vel_n", "sig_vel_u"]
+    return {str(r["sta"]): {c: float(r[c]) for c in cols} for _, r in m.iterrows()}
+
+
 def fetch(aoi_bounds_4326, frame: str = "IGS14", epoch=None, time_range=None,
-          max_stations: int | None = None) -> dict:
+          max_stations: int | None = None, with_velocities: bool = True) -> dict:
     """Fetch raw per-station NGL data for an AOI.
 
     Parameters
@@ -223,9 +259,13 @@ def fetch(aoi_bounds_4326, frame: str = "IGS14", epoch=None, time_range=None,
         datetimes; mutually exclusive with ``epoch``.
     max_stations : optional cap on the number of stations fetched (stations
         are sorted by ID for determinism; used by tests/previews).
+    with_velocities : attach each station's own MIDAS ENU velocity (one extra
+        cached GET) to ``meta['midas']`` for :func:`parse` -> ``vel_e/n/u``.
+        Default True; set False to skip the MIDAS fetch entirely.
 
     Returns the raw payload consumed by :func:`parse` (which is pure/offline):
-    ``{"frame", "epoch", "time_range", "stations": [{"meta", "tenv3"}, ...]}``.
+    ``{"frame", "epoch", "time_range", "stations": [{"meta", "tenv3"}, ...]}``
+    where each ``meta`` carries an optional ``midas`` velocity sub-dict.
     """
     if frame not in FRAME_TO_EPSG:
         raise ValueError(f"unknown NGL frame {frame!r}; supported: {sorted(FRAME_TO_EPSG)}")
@@ -253,6 +293,10 @@ def fetch(aoi_bounds_4326, frame: str = "IGS14", epoch=None, time_range=None,
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         results = list(ex.map(_get, (row for _, row in sel.iterrows())))
     stations = [s for s in results if s is not None]
+    if with_velocities:
+        vmap = _midas_velocity_map(frame)
+        for s in stations:
+            s["meta"]["midas"] = vmap.get(s["meta"]["sta"])  # None if absent
     return {
         "frame": frame,
         "epoch": None if epoch is None else float(epoch),
@@ -577,6 +621,13 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
                 meta.get("dtbeg"), meta.get("dtend"))
             continue
         pos = _position_from_window(win)
+        # station's OWN MIDAS ENU velocity (m/yr), station-ID join attached by
+        # fetch(with_velocities=True). None -> vel_e/n/u stay NaN (honest: the
+        # station has no MIDAS solution yet, e.g. too-new). This is the tier-1
+        # per-point velocity propagate_epoch consumes for the station itself;
+        # arbitrary (non-station) points are filled by spatial interpolation of
+        # this same network in groundcontrol.velocity (fill_velocities).
+        mv = meta.get("midas") or {}
         records.append({
             "id": meta["sta"],
             "point_type": "gnss",  # TODO(D2)
@@ -593,7 +644,9 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
             # sigmas, not a calibrated accuracy — medians carried in raw. TODO(D3)
             "acc_h": np.nan,
             "acc_v": np.nan,
-            "vel_e": np.nan, "vel_n": np.nan, "vel_u": np.nan,  # TODO(1.5b) MIDAS
+            "vel_e": mv.get("vel_e", np.nan),   # MIDAS (Blewitt et al. 2016)
+            "vel_n": mv.get("vel_n", np.nan),
+            "vel_u": mv.get("vel_u", np.nan),
             "native_x": pos["lon"],
             "native_y": pos["lat"],
             "native_h": pos["height"],
@@ -611,6 +664,10 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
                 # antenna height (m) above the ground/monument the DSM/DTM
                 # sees — assessment must remove it before differencing
                 "ant_m": pos["ant_m"],
+                # MIDAS velocity formal sigmas (m/yr), where a solution exists
+                "sig_vel_e": mv.get("sig_vel_e"),
+                "sig_vel_n": mv.get("sig_vel_n"),
+                "sig_vel_u": mv.get("sig_vel_u"),
             }),
         })
     if not records:

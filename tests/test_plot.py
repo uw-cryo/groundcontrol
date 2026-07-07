@@ -8,7 +8,9 @@ import geopandas as gpd
 import numpy as np
 import pytest
 
-from groundcontrol.plot import hillshade, plot_dh_map
+import pandas as pd
+
+from groundcontrol.plot import hillshade, plot_dh_map, plot_velocity_vectors
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +74,61 @@ def test_plot_dh_map_hillshade_basemap_and_explicit_clim():
     assert len(ax.images) == 1  # the hillshade layer
     assert sc.get_clim() == (-1, 1)
     assert ax.get_title() == "t"
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# plot_velocity_vectors (horizontal quiver map) — light smoke tests (headless)
+# ---------------------------------------------------------------------------
+
+def _stations():
+    """A small synthetic MIDAS-style network (m/yr) around a Las-Vegas-ish
+    centroid: coherent SW motion, a few mm/yr of vertical scatter."""
+    rng = np.random.default_rng(0)
+    lon0, lat0 = -115.15, 36.10
+    lon = lon0 + rng.uniform(-0.4, 0.4, 20)
+    lat = lat0 + rng.uniform(-0.4, 0.4, 20)
+    return pd.DataFrame({
+        "sta": [f"S{i:02d}" for i in range(20)],
+        "lon": lon, "lat": lat,
+        "vel_e": np.full(20, -0.013) + rng.normal(0, 0.0005, 20),  # ~ -13 mm/yr E
+        "vel_n": np.full(20, -0.009) + rng.normal(0, 0.0005, 20),  # ~ -9 mm/yr N
+        "vel_u": rng.normal(0, 0.002, 20),                          # +/- few mm/yr
+    })
+
+
+def test_plot_velocity_vectors_no_aoi_returns_fig(tmp_path):
+    import matplotlib.pyplot as plt
+
+    out = tmp_path / "vv_noaoi.png"
+    fig = plot_velocity_vectors(_stations(), out_fn=out)
+    assert fig is not None
+    assert out.exists()
+    ax = fig.axes[0]
+    assert any(isinstance(c, matplotlib.quiver.Quiver) for c in ax.collections)
+    plt.close(fig)
+
+
+def test_plot_velocity_vectors_bbox_aoi_and_overlay():
+    import matplotlib.pyplot as plt
+
+    # bbox AOI (minlon, minlat, maxlon, maxlat) with stations both in and out
+    fig = plot_velocity_vectors(_stations(), aoi=(-115.3, 35.95, -115.0, 36.25),
+                                buffer_km=40, title="synthetic")
+    ax = fig.axes[0]
+    assert "inside AOI" in ax.get_title()
+    # quivers for inside + buffer + (possibly) the interp overlay
+    assert sum(isinstance(c, matplotlib.quiver.Quiver) for c in ax.collections) >= 1
+    plt.close(fig)
+
+
+def test_plot_velocity_vectors_color_by_vertical_adds_colorbar():
+    import matplotlib.pyplot as plt
+
+    fig = plot_velocity_vectors(_stations(), aoi=(-115.3, 35.95, -115.0, 36.25),
+                                color_by_vertical=True)
+    # a colorbar axes is added alongside the map axes
+    assert len(fig.axes) >= 2
     plt.close(fig)
 
 

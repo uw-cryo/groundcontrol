@@ -388,10 +388,10 @@ class PlateMotionModel(Protocol):
     """Interface for a plate-motion velocity source (the stage-2 PMM fallback).
 
     A model returns the per-point ENU velocity (m/yr) at a location, used to
-    propagate rows that carry no per-point (MIDAS) velocity. :class:`EulerPoleModel`
-    is a concrete, fully-tested implementation; **no published ITRF/NA plate
-    table is bundled yet** (the caller supplies the pole) — see the module /
-    summary flag.
+    propagate rows that carry no per-point (MIDAS) velocity.
+    :class:`EulerPoleModel` is the generic concrete implementation (caller
+    supplies the pole); :class:`ITRF2020PMM` bundles the published ITRF2020
+    plate poles (Altamimi et al. 2023), e.g. ``ITRF2020PMM("NOAM")``.
     """
 
     name: str
@@ -499,6 +499,28 @@ class EulerPoleModel:
             np.sin(pphi),
         ])
 
+    @classmethod
+    def from_angular_velocity(cls, wx, wy, wz, *, unit, name="euler",
+                              ellipsoid="EPSG:7912"):
+        """Build from a cartesian angular velocity (ECEF x/y/z components).
+
+        ``unit`` is explicit — no default — because published tables use both
+        conventions: ``'deg/Myr'`` (the ITRF2020-PMM.dat product file) and
+        ``'mas/yr'`` (Altamimi et al. 2023 Table 1; 1 deg/Myr = 3.6 mas/yr).
+        Converts to the pole lat/lon + rate form and reuses ``__init__`` (the
+        ``_omega_ecef`` path), so both construction routes are one code path.
+        """
+        scale = {"deg/Myr": 1.0, "mas/yr": 1.0 / 3.6}.get(unit)
+        if scale is None:
+            raise ValueError(f"unit must be 'deg/Myr' or 'mas/yr', got {unit!r}")
+        wx, wy, wz = float(wx) * scale, float(wy) * scale, float(wz) * scale
+        rate = float(np.sqrt(wx ** 2 + wy ** 2 + wz ** 2))  # deg/Myr
+        if rate == 0.0:
+            raise ValueError("zero angular velocity (wx = wy = wz = 0)")
+        pole_lat = float(np.degrees(np.arctan2(wz, np.hypot(wx, wy))))
+        pole_lon = float(np.degrees(np.arctan2(wy, wx)))
+        return cls(pole_lat, pole_lon, rate, name=name, ellipsoid=ellipsoid)
+
     def velocity_enu(self, lon, lat, h=0.0):
         """ENU velocity (m/yr) at geodetic ``(lon, lat)`` (degrees). Vectorized."""
         lon = np.asarray(lon, dtype="float64")
@@ -510,6 +532,88 @@ class EulerPoleModel:
         vy = wz * x - wx * z
         vz = wx * y - wy * x
         return ecef_to_enu(vx, vy, vz, lon, lat)
+
+
+# ---------------------------------------------------------------------------
+# ITRF2020 plate motion model (Altamimi et al. 2023) — bundled pole table (C1)
+# ---------------------------------------------------------------------------
+
+#: ITRF2020-PMM rotation-pole cartesian angular velocities, **deg/Myr**
+#: (ECEF x/y/z), transcribed verbatim from the ITRF product file (Table S1)
+#: https://itrf.ign.fr/docs/solutions/itrf2020/ITRF2020-PMM.dat
+#: (Altamimi, Métivier, Rebischung, Kreemer & Parsons 2023, ITRF2020 Plate
+#: Motion Model, Geophys. Res. Lett. 50, e2023GL106373,
+#: doi:10.1029/2023GL106373). Paper Table 1 lists the same poles in mas/yr;
+#: 1 deg/Myr = 3.6 mas/yr (NOAM cross-check: 0.0126*3.6 = 0.045 ✓).
+ITRF2020_PMM_DEG_PER_MYR: dict[str, tuple[float, float, float]] = {
+    "AMUR": (-0.0364, -0.1532, 0.2325),
+    "ANTA": (-0.0746, -0.0866, 0.1882),
+    "ARAB": (0.3135, -0.0406, 0.3994),
+    "AUST": (0.4132, 0.3265, 0.3398),
+    "CARB": (0.0576, -0.3949, 0.2017),
+    "EURA": (-0.0237, -0.1442, 0.2091),
+    "INDI": (0.3159, 0.0037, 0.4010),
+    "NAZC": (-0.0907, -0.4336, 0.4459),
+    "NOAM": (0.0126, -0.1849, -0.0272),
+    "NUBI": (0.0250, -0.1625, 0.1991),
+    "PCFC": (-0.1122, 0.2836, -0.5984),
+    "SOAM": (-0.0725, -0.0784, -0.0437),
+    "SOMA": (-0.0225, -0.1997, 0.2401),
+}
+
+#: ITRF2020-PMM origin rate bias (mm/yr, ECEF Tx/Ty/Tz), same product file.
+#: ITRF advisory: "Users are advised to add the estimated ORB to the
+#: horizontal velocities predicted by the ITRF2020 PMM rotation poles."
+ITRF2020_ORB_MM_PER_YR: tuple[float, float, float] = (0.37, 0.35, 0.74)
+
+
+class ITRF2020PMM:
+    """ITRF2020 plate-motion velocities (Altamimi et al. 2023) — a stage-2 PMM.
+
+    ``plate`` (e.g. ``'NOAM'``) selects a fixed plate from
+    :data:`ITRF2020_PMM_DEG_PER_MYR` — correct for single-plate AOIs (Las
+    Vegas, Casa Grande) and needs no boundary data. ``plate=None`` (per-point
+    plate assignment from bundled boundaries) is the C2 sub-step — not yet
+    implemented.
+
+    ``apply_orb=True`` (default, per the ITRF advisory) adds the origin-rate
+    bias translation to the **horizontal** (E/N) velocity components only: a
+    rigid plate rotation predicts ~zero vertical motion, and the ORB's
+    vertical projection is origin drift, not plate motion.
+    """
+
+    def __init__(self, plate, *, apply_orb=True, ellipsoid="EPSG:7912"):
+        self.plate = None if plate is None else str(plate).upper()
+        self.apply_orb = bool(apply_orb)
+        self._ellipsoid = ellipsoid
+        if self.plate is not None:
+            if self.plate not in ITRF2020_PMM_DEG_PER_MYR:
+                raise KeyError(
+                    f"unknown ITRF2020-PMM plate {self.plate!r}; available: "
+                    f"{sorted(ITRF2020_PMM_DEG_PER_MYR)}")
+            wx, wy, wz = ITRF2020_PMM_DEG_PER_MYR[self.plate]
+            self._pole = EulerPoleModel.from_angular_velocity(
+                wx, wy, wz, unit="deg/Myr", name=f"ITRF2020:{self.plate}",
+                ellipsoid=ellipsoid)
+        orb = "+ORB" if self.apply_orb else ""
+        self.name = f"ITRF2020-PMM[{self.plate or 'auto'}]{orb}"
+
+    def velocity_enu(self, lon, lat, h=0.0):
+        """ENU velocity (m/yr) at geodetic ``(lon, lat)`` (degrees). Vectorized."""
+        lon = np.asarray(lon, dtype="float64")
+        lat = np.asarray(lat, dtype="float64")
+        h = np.broadcast_to(np.asarray(h, dtype="float64"), lon.shape)
+        if self.plate is None:
+            raise NotImplementedError(
+                "ITRF2020PMM(plate=None) per-point plate assignment needs the "
+                "bundled PB2002 boundaries (C2) — pass an explicit plate")
+        ve, vn, vu = self._pole.velocity_enu(lon, lat, h)
+        if self.apply_orb:
+            tx, ty, tz = (t * 1e-3 for t in ITRF2020_ORB_MM_PER_YR)  # -> m/yr
+            oe, on, _ou = ecef_to_enu(tx, ty, tz, lon, lat)
+            ve = ve + oe
+            vn = vn + on
+        return ve, vn, vu
 
 
 def check_frame_epoch_reduced(gdf, *, tol_yr: float = 1e-6, on_violation: str = "warn"):

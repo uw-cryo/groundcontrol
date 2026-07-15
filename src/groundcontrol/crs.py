@@ -566,15 +566,73 @@ ITRF2020_PMM_DEG_PER_MYR: dict[str, tuple[float, float, float]] = {
 #: horizontal velocities predicted by the ITRF2020 PMM rotation poles."
 ITRF2020_ORB_MM_PER_YR: tuple[float, float, float] = (0.37, 0.35, 0.74)
 
+#: PB2002 (Bird 2003) two-letter plate codes -> the ITRF2020-PMM plates that
+#: model them. Points on any other PB2002 plate (e.g. JF Juan de Fuca, CO
+#: Cocos) get NaN velocity, so propagate_epoch leaves them un-moved and
+#: surfaces the epoch_residual_m bound instead of inventing motion.
+_PB2002_TO_ITRF: dict[str, str] = {
+    "AF": "NUBI", "AM": "AMUR", "AN": "ANTA", "AR": "ARAB", "AU": "AUST",
+    "CA": "CARB", "EU": "EURA", "IN": "INDI", "NA": "NOAM", "NZ": "NAZC",
+    "PA": "PCFC", "SA": "SOAM", "SO": "SOMA",
+}
+
+_pb2002_plates_cache = None
+
+
+def _pb2002_plates():
+    """Bundled decimated PB2002 plate polygons (Bird 2003), lazy + cached.
+
+    Sourced via fraxen/tectonicplates (ODC-By 1.0) and decimated for
+    packaging — see ``src/groundcontrol/data/README.md`` for attribution and
+    the decimation parameters.
+    """
+    global _pb2002_plates_cache
+    if _pb2002_plates_cache is None:
+        from importlib.resources import as_file, files
+
+        import geopandas as gpd
+        src = files("groundcontrol").joinpath("data/pb2002_plates_decimated.geojson")
+        with as_file(src) as path:
+            _pb2002_plates_cache = gpd.read_file(path)[["Code", "geometry"]]
+    return _pb2002_plates_cache
+
+
+def assign_plate(lon, lat):
+    """ITRF2020-PMM plate name for each geodetic ``(lon, lat)`` (degrees).
+
+    Vectorized point-in-polygon assignment against the bundled PB2002
+    boundaries, mapped to the 13 ITRF2020-PMM plates. Returns an object array
+    of plate names with ``None`` for points on plates the PMM does not model
+    (e.g. Juan de Fuca) or inside boundary-zone slivers. Longitudes are
+    wrapped to [-180, 180), so 0..360 inputs are handled.
+    """
+    import geopandas as gpd
+
+    lon = np.atleast_1d(np.asarray(lon, dtype="float64"))
+    lat = np.atleast_1d(np.asarray(lat, dtype="float64"))
+    lon_w = ((lon + 180.0) % 360.0) - 180.0
+    plates = _pb2002_plates()
+    pts = gpd.GeoDataFrame(
+        geometry=gpd.points_from_xy(lon_w.ravel(), lat.ravel()), crs=plates.crs)
+    joined = gpd.sjoin(pts, plates, how="left", predicate="within")
+    codes = joined.groupby(level=0)["Code"].first()  # dedupe boundary double-hits
+    mapped = np.array(
+        [_PB2002_TO_ITRF.get(c) if isinstance(c, str) else None
+         for c in codes.reindex(range(len(pts)))], dtype=object)
+    return mapped.reshape(lon.shape)
+
 
 class ITRF2020PMM:
     """ITRF2020 plate-motion velocities (Altamimi et al. 2023) — a stage-2 PMM.
 
     ``plate`` (e.g. ``'NOAM'``) selects a fixed plate from
     :data:`ITRF2020_PMM_DEG_PER_MYR` — correct for single-plate AOIs (Las
-    Vegas, Casa Grande) and needs no boundary data. ``plate=None`` (per-point
-    plate assignment from bundled boundaries) is the C2 sub-step — not yet
-    implemented.
+    Vegas, Casa Grande) and needs no boundary data. ``plate=None`` assigns
+    each point to a plate via the bundled PB2002 boundaries
+    (:func:`assign_plate`) — needed where an AOI straddles a boundary (San
+    Francisco: NOAM/PCFC across the San Andreas). Points on plates the PMM
+    does not model get NaN velocity, so :func:`propagate_epoch` leaves them
+    un-moved and surfaces the ``epoch_residual_m`` bound.
 
     ``apply_orb=True`` (default, per the ITRF advisory) adds the origin-rate
     bias translation to the **horizontal** (E/N) velocity components only: a
@@ -586,6 +644,7 @@ class ITRF2020PMM:
         self.plate = None if plate is None else str(plate).upper()
         self.apply_orb = bool(apply_orb)
         self._ellipsoid = ellipsoid
+        self._poles: dict[str, EulerPoleModel] = {}
         if self.plate is not None:
             if self.plate not in ITRF2020_PMM_DEG_PER_MYR:
                 raise KeyError(
@@ -604,16 +663,34 @@ class ITRF2020PMM:
         lat = np.asarray(lat, dtype="float64")
         h = np.broadcast_to(np.asarray(h, dtype="float64"), lon.shape)
         if self.plate is None:
-            raise NotImplementedError(
-                "ITRF2020PMM(plate=None) per-point plate assignment needs the "
-                "bundled PB2002 boundaries (C2) — pass an explicit plate")
-        ve, vn, vu = self._pole.velocity_enu(lon, lat, h)
+            ve, vn, vu = self._velocity_by_boundary(lon, lat, h)
+        else:
+            ve, vn, vu = self._pole.velocity_enu(lon, lat, h)
         if self.apply_orb:
             tx, ty, tz = (t * 1e-3 for t in ITRF2020_ORB_MM_PER_YR)  # -> m/yr
             oe, on, _ou = ecef_to_enu(tx, ty, tz, lon, lat)
             ve = ve + oe
             vn = vn + on
         return ve, vn, vu
+
+    def _velocity_by_boundary(self, lon, lat, h):
+        """plate=None path: per-point PB2002 assignment, NaN off-model."""
+        shape = lon.shape
+        lon, lat, h = np.atleast_1d(lon), np.atleast_1d(lat), np.atleast_1d(h)
+        codes = assign_plate(lon, lat)
+        ve = np.full(lon.shape, np.nan)
+        vn = np.full(lon.shape, np.nan)
+        vu = np.full(lon.shape, np.nan)
+        for code in {c for c in codes.ravel() if c}:
+            pole = self._poles.get(code)
+            if pole is None:
+                wx, wy, wz = ITRF2020_PMM_DEG_PER_MYR[code]
+                pole = self._poles[code] = EulerPoleModel.from_angular_velocity(
+                    wx, wy, wz, unit="deg/Myr", name=f"ITRF2020:{code}",
+                    ellipsoid=self._ellipsoid)
+            m = codes == code
+            ve[m], vn[m], vu[m] = pole.velocity_enu(lon[m], lat[m], h[m])
+        return ve.reshape(shape), vn.reshape(shape), vu.reshape(shape)
 
 
 def check_frame_epoch_reduced(gdf, *, tol_yr: float = 1e-6, on_violation: str = "warn"):

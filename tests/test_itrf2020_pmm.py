@@ -18,6 +18,7 @@ from groundcontrol.crs import (
     ITRF2020_PMM_DEG_PER_MYR,
     ITRF2020PMM,
     EulerPoleModel,
+    assign_plate,
     propagate_epoch,
 )
 
@@ -81,10 +82,46 @@ def test_unknown_plate_raises_with_available_list():
         ITRF2020PMM("JFDF")
 
 
-def test_plate_none_not_yet_implemented():
-    pmm = ITRF2020PMM(None)
-    with pytest.raises(NotImplementedError, match="PB2002"):
-        pmm.velocity_enu([LV_LON], [LV_LAT])
+def test_plate_none_matches_fixed_plate_on_plate_interior():
+    """plate=None (bundled PB2002 assignment) reproduces the fixed-plate
+    velocity exactly for a point in the NOAM interior."""
+    v_auto = np.array(ITRF2020PMM(None)
+                      .velocity_enu([LV_LON], [LV_LAT], [LV_H])).ravel()
+    v_fixed = np.array(ITRF2020PMM("NOAM")
+                       .velocity_enu([LV_LON], [LV_LAT], [LV_H])).ravel()
+    assert v_auto == pytest.approx(v_fixed, abs=1e-15)
+
+
+def test_assign_plate_known_points_and_antimeridian():
+    codes = assign_plate(
+        [LV_LON, -157.86, 2.35, 179.5, -179.5],  # LV, Honolulu, Paris, mid-PCFC
+        [LV_LAT, 21.31, 48.85, 5.0, 5.0])
+    assert list(codes) == ["NOAM", "PCFC", "EURA", "PCFC", "PCFC"]
+
+
+def test_san_andreas_straddle_resolves_two_plates():
+    """The C2 motivating case: an AOI straddling the San Andreas gets NOAM on
+    one side, PCFC on the other, with the ~5 cm/yr relative motion between."""
+    lons, lats = np.array([-122.42, -123.8]), np.array([37.77, 37.5])
+    assert list(assign_plate(lons, lats)) == ["NOAM", "PCFC"]
+    ve, vn, _vu = ITRF2020PMM(None, apply_orb=False).velocity_enu(lons, lats)
+    rel = float(np.hypot(ve[0] - ve[1], vn[0] - vn[1]))
+    assert 0.03 < rel < 0.06  # published PA-NA relative motion ~4.6-5 cm/yr
+
+
+def test_off_model_plate_is_noop_with_residual_bound():
+    """Juan de Fuca: PB2002 assigns JF, which the ITRF2020 PMM does not model
+    -> NaN velocity -> propagate_epoch no-op + epoch_residual_m bound."""
+    assert assign_plate([-127.5], [46.0])[0] is None
+    g = gpd.GeoDataFrame(
+        {"height": [0.0], "coord_epoch": [2015.0]},
+        geometry=[Point(-127.5, 46.0)], crs="EPSG:9989")
+    with pytest.warns(UserWarning, match="velocity"):
+        out = propagate_epoch(g, target_epoch=2025.0, plate_model=ITRF2020PMM(None))
+    rep = out.attrs["epoch_propagation"]
+    assert rep["models"] == {"per_point": 0, "plate": 0, "none": 1}
+    assert out["epoch_residual_m"].iloc[0] == pytest.approx(1.6)
+    assert out.geometry.x.iloc[0] == -127.5  # un-moved
 
 
 def test_propagate_epoch_composes_and_midas_wins():

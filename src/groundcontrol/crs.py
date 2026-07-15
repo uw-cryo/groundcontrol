@@ -558,7 +558,8 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
     2. **plate-motion model** ``plate_model`` (a :class:`PlateMotionModel`, e.g.
        :class:`EulerPoleModel`) for rows lacking per-point velocities;
     3. **none** — the row is left at its own epoch and its ``velocity·Δt`` bound
-       is surfaced (WARNING log + ``gdf.attrs['epoch_propagation']`` report).
+       is surfaced (WARNING log + ``gdf.attrs['epoch_propagation']`` report +
+       the per-row ``epoch_residual_m`` column).
 
     Parameters
     ----------
@@ -577,9 +578,11 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
     qc_frame_epoch : run :func:`check_frame_epoch_reduced` (warn) first.
 
     Returns a copy: propagated geometry/height, advanced ``coord_epoch``,
-    ``transform_id`` appended with a ``prop:`` tag, and a
-    ``gdf.attrs['epoch_propagation']`` report (counts, models used, max applied
-    displacement, and the surfaced residual-bound array).
+    ``transform_id`` appended with a ``prop:`` tag, a durable per-row
+    ``epoch_residual_m`` column (0.0 for propagated rows, the velocity·Δt bound
+    for rows left un-propagated — the schema column that survives export/concat),
+    and a ``gdf.attrs['epoch_propagation']`` report (counts, models used, max
+    applied displacement, and the surfaced residual-bound array).
     """
     import geopandas as gpd
 
@@ -615,6 +618,7 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
         "residual_bound_m": [0.0] * n,
     }
     if n == 0:
+        out["epoch_residual_m"] = np.zeros(0)
         out.attrs["epoch_propagation"] = report
         return out
 
@@ -691,6 +695,9 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
     out[height_col] = h2
     if coord_epoch_col in out.columns:
         out[coord_epoch_col] = ce_out
+    # durable per-row residual (schema column) — survives export/concat where
+    # attrs evaporate: 0.0 for propagated rows, the velocity·Δt bound otherwise
+    out["epoch_residual_m"] = bound
 
     # transform_id: append a compact provenance tag (chain-ordered)
     tag = np.where(

@@ -96,6 +96,7 @@ def test_known_velocity_exact_displacement_matches_ecef_oracle():
     assert rep["max_applied_displacement_m"] == pytest.approx(
         np.sqrt((ve * dt) ** 2 + (vn * dt) ** 2 + (vu * dt) ** 2), abs=1e-9)
     assert rep["n_propagated"] == 1 and rep["models"]["per_point"] == 1
+    assert out["epoch_residual_m"].iloc[0] == 0.0  # propagated -> zero residual
 
 
 @pytest.mark.parametrize("axis,ve,vn,vu", [
@@ -163,6 +164,8 @@ def test_no_velocity_no_model_is_noop_and_surfaces_bound():
     # velocity·Δt bound = |Δt| * PLATE_MOTION_RATE_BOUND (reporting-only)
     assert rep["max_residual_bound_m"] == pytest.approx(10.0 * PLATE_MOTION_RATE_BOUND)
     assert rep["residual_bound_m"][0] == pytest.approx(1.6)
+    # durable per-row column mirrors the attrs bound (Phase B)
+    assert out["epoch_residual_m"].iloc[0] == pytest.approx(1.6)
     assert out["transform_id"].iloc[0] == "prop:noop"
 
 
@@ -312,3 +315,29 @@ def test_composes_with_land_horizontal_offline():
     assert landed.crs.to_epsg() == 6318
     assert np.isfinite(landed.geometry.x.iloc[0]) and np.isfinite(landed.geometry.y.iloc[0])
     assert landed["transform_id"].iloc[0].endswith("tt=coord_epoch")
+
+
+# ---------------------------------------------------------------------------
+# Phase B: epoch_residual_m is a durable schema column (attrs evaporate on
+# export/concat; the column must survive an io parquet round-trip)
+# ---------------------------------------------------------------------------
+
+def test_epoch_residual_column_survives_parquet_roundtrip(tmp_path):
+    from groundcontrol import io
+
+    g = _gdf(coord_epoch=2015.0)  # no velocity -> no-op with a 1.6 m bound
+    with pytest.warns(UserWarning, match="velocity"):
+        out = propagate_epoch(g, target_epoch=2025.0)
+    assert out["epoch_residual_m"].iloc[0] == pytest.approx(1.6)
+    path = io.write(out, tmp_path / "pts.parquet")
+    back = gpd.read_parquet(path)
+    assert "epoch_residual_m" in back.columns
+    assert back["epoch_residual_m"].iloc[0] == pytest.approx(1.6)
+
+
+def test_schema_normalize_carries_epoch_residual_column():
+    from groundcontrol import schema
+
+    assert "epoch_residual_m" in schema.COLUMNS
+    gdf = schema.empty()
+    assert "epoch_residual_m" in gdf.columns and gdf["epoch_residual_m"].dtype == "float64"

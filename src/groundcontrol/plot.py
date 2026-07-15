@@ -81,8 +81,12 @@ def plot_dh_map(gdf, dh_col: str, hs=None, hs_extent=None, ax=None,
     if ax is None:
         _, ax = plt.subplots(figsize=(7, 7))
     if hs is not None:
+        # 'antialiased' low-pass filters when the raster is drawn smaller
+        # than its pixel count — 'nearest' moires badly on urban-grid
+        # hillshades (David, 2026-07-15).
         ax.imshow(hs, cmap="gray", vmin=0.0, vmax=1.0, extent=hs_extent,
-                  interpolation="nearest", zorder=0)
+                  interpolation="antialiased", interpolation_stage="rgba",
+                  zorder=0)
     vals = np.asarray(gdf[dh_col], dtype="float64")
     if clim is None:
         _, nmad = med_nmad(vals)

@@ -24,6 +24,35 @@ from pyproj.transformer import TransformerGroup
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
+#: Public API (Phase D). Consumers keep the submodule-qualified convention
+#: (``from groundcontrol.crs import propagate_epoch``); nothing is re-exported
+#: from the package ``__init__``.
+__all__ = [
+    # errors
+    "NoTransformPathError",
+    # decimal-year helpers (plan B9)
+    "decyear",
+    "decyear_inv",
+    # stage 1 — frame transforms
+    "get_transformer",
+    "transform_points",
+    "land_horizontal",
+    "ngs_datum_to_epsg",
+    "is_dynamic_frame",
+    # stage 2 — intra-frame epoch propagation
+    "PLATE_MOTION_RATE_BOUND",
+    "PlateMotionModel",
+    "EulerPoleModel",
+    "ITRF2020PMM",
+    "ITRF2020_PMM_DEG_PER_MYR",
+    "ITRF2020_ORB_MM_PER_YR",
+    "assign_plate",
+    "enu_to_ecef",
+    "ecef_to_enu",
+    "check_frame_epoch_reduced",
+    "propagate_epoch",
+]
+
 
 class NoTransformPathError(RuntimeError):
     """No usable coordinate operation exists (e.g. required grid missing).

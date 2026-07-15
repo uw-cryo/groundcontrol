@@ -21,7 +21,7 @@ Line numbers refer to lidar_tools `c1b9560`.
 | `build_utm_realization_3d` (L212) + wrappers `build_utm_g2139_3d` / `build_utm_nad83_2011_3d` / `build_utm_g1674_3d` / `build_utm_itrf2020_3d` / `build_utm_itrf2008_3d` / `build_utm_itrf2014_3d` (L146–273) | — | **ported** — 3D UTM builders on explicit realizations, incl. the ITRF-alias null-tie workaround knowledge |
 | `build_utm_target` (L289) + `OUTPUT_DATUM_BUILDERS` | — | **ported** — zone + output-datum → (3D CRS, canonical WKT filename) |
 | `epoch_pinned_pipeline` (L339) | — | **ported** — its own docstring flagged it for migration; PROJ pipeline resolution with `--t_epoch` baked in (first `projinfo` subprocess use in groundcontrol) |
-| `preflight_vertical_transform` (L534) | `crs.get_transformer` (same fail-loud TransformerGroup + AOI pattern) | **ported** as `geodesy.preflight_transform`; the delta over `get_transformer`: grid auto-download, `prefer_grids=`, area-of-use containment assert, provenance dict return. `get_transformer` itself unchanged (additive rule); §7.4 `explain()` should eventually absorb both |
+| `preflight_vertical_transform` (L534) | `crs.get_transformer` (same fail-loud TransformerGroup + AOI pattern) | **ported** (same name, for a drop-in re-point); the delta over `get_transformer`: grid auto-download, `prefer_grids=`, area-of-use containment assert, provenance dict return. `get_transformer` itself unchanged (additive rule); §7.4 `explain()` should eventually absorb both |
 | `navd88_offset` (L488) | expressible via `crs.get_transformer`, no helper | **ported** — local geoid-undulation helper |
 | `write_crs_file` (L499) | — | **ported** — WKT2:2019 provenance sidecar |
 | `library_versions` (L524) | `io._environment` (partial) | **ported** — de-GDAL'd: reports PROJ/pyproj (+ GDAL only if importable) |
@@ -37,9 +37,10 @@ Line numbers refer to lidar_tools `c1b9560`.
   GDAL-dependent `set_coordinate_epoch` stays behind; `library_versions` makes
   the GDAL key optional.
 - **`projinfo` subprocess**: `epoch_pinned_pipeline` shells out to `projinfo`
-  (ships with PROJ; present transitively via the pyproj wheel). This is
-  groundcontrol's first subprocess use — isolated in `geodesy.py`, fail-loud
-  when the binary is missing.
+  (ships with PROJ builds — conda `proj` package, system PROJ; pip-wheel-only
+  envs may lack the CLI). This is groundcontrol's first subprocess use —
+  isolated in `geodesy.py`, fail-loud when the binary is missing; its tests
+  skip when `projinfo` is absent.
 - Everything else geodesy.py uses (`TransformerGroup`, `AreaOfInterest`,
   `CompoundCRS`/`ProjectedCRS`/`UTMConversion`, `pyproj.network`) is already
   satisfied by groundcontrol's `pyproj>=3.5` floor.

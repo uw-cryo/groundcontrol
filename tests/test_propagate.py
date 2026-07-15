@@ -225,6 +225,14 @@ def test_nan_coord_epoch_with_velocity_raises():
         propagate_epoch(g, target_epoch=2025.0)
 
 
+def test_nan_coord_epoch_skip_residual_is_nan_not_zero():
+    """Unknowable Δt must never be reported as a 0.0 residual (review fix)."""
+    g = _gdf(ve=0.01, vn=0.0, vu=0.0, coord_epoch=np.nan)
+    with pytest.warns(UserWarning, match="left un-propagated"):
+        out = propagate_epoch(g, target_epoch=2025.0, on_nan_epoch="skip")
+    assert np.isnan(out["epoch_residual_m"].iloc[0])
+
+
 def test_nan_coord_epoch_skip_policy_leaves_unpropagated():
     g = _gdf(ve=0.02, vn=0.0, vu=0.0, coord_epoch=np.nan)
     with pytest.warns(UserWarning):

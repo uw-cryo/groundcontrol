@@ -55,6 +55,20 @@ def test_from_angular_velocity_requires_explicit_unit():
         EulerPoleModel.from_angular_velocity(0.0, 0.0, 0.0, unit="deg/Myr")
 
 
+def test_pole_table_matches_bundled_dat_file():
+    """The transcribed dict and the bundled provenance .dat must never drift."""
+    import re
+    from importlib.resources import files
+
+    text = (files("groundcontrol") / "data" / "ITRF2020-PMM.dat").read_text()
+    rows = re.findall(
+        r"^\s+([A-Z]{4})\s+(-?[\d.]+),\s+(-?[\d.]+),\s+(-?[\d.]+),", text, re.M)
+    table = {k: (float(a), float(b), float(c)) for k, a, b, c in rows}
+    assert table == ITRF2020_PMM_DEG_PER_MYR
+    orb = re.findall(r"^T[XYZ] = (-?[\d.]+)", text, re.M)
+    assert tuple(float(v) for v in orb) == ITRF2020_ORB_MM_PER_YR
+
+
 def test_noam_conus_velocity_magnitude_and_direction():
     """NOAM ITRF velocity in the SW US: ~1.5-2 cm/yr horizontal (the ~1.65
     cm/yr §1 note), pointing W-SW, with ~zero vertical."""

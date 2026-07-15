@@ -314,9 +314,13 @@ def epoch_pinned_pipeline(src_crs, dst_crs, coord_epoch: float,
             f"projinfo returned no pipeline for {coord_epoch=}: "
             f"{out.stdout[-500:]}")
     pipe = pipelines[0]
-    epoch_tag = f"+proj=set +v_4={coord_epoch:g}"
-    missing = [s for s in ([epoch_tag] + list(require_substrings))
-               if s not in pipe]
+    # projinfo echoes the epoch with its own formatting — compare numerically,
+    # not as a formatted substring (a ':g' tag spuriously rejects e.g. 2020.15625)
+    epoch_match = re.search(r"\+proj=set \+v_4=([0-9.]+)", pipe)
+    missing = []
+    if epoch_match is None or abs(float(epoch_match.group(1)) - float(coord_epoch)) > 1e-6:
+        missing.append(f"+proj=set +v_4={coord_epoch}")
+    missing += [s for s in require_substrings if s not in pipe]
     if missing:
         raise RuntimeError(
             f"selected pipeline lacks required component(s) {missing}: {pipe}")

@@ -149,6 +149,14 @@ def test_epoch_pinned_pipeline_bakes_epoch_and_helmert():
 
 
 @pytest.mark.skipif(not _HAS_PROJINFO, reason="projinfo CLI not on PATH")
+def test_epoch_pinned_pipeline_high_precision_epoch():
+    """The epoch check compares numerically — a ':g'-formatted substring
+    spuriously rejected epochs with >6 significant figures (review fix)."""
+    pipe = epoch_pinned_pipeline("EPSG:6319", "EPSG:7912", 2020.15625)
+    assert "+v_4=2020.15625" in pipe
+
+
+@pytest.mark.skipif(not _HAS_PROJINFO, reason="projinfo CLI not on PATH")
 def test_epoch_pinned_pipeline_missing_required_substring_raises():
     with pytest.raises(RuntimeError, match="lacks required component"):
         epoch_pinned_pipeline(

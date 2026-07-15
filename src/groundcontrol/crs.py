@@ -506,10 +506,11 @@ class EulerPoleModel:
     """Rigid-plate ENU velocities from an Euler pole (a concrete PMM fallback).
 
     The caller supplies the rotation pole (geographic lat/lon of the pole and
-    the angular rate in degrees/Myr) — **no published plate parameters are
-    hardcoded** (deferred; see the summary flag). Velocity at a point is the
-    rigid-body ``v = Ω × r`` in ECEF, rotated to local ENU, so a pure-horizontal
-    plate rotation yields ~zero vertical velocity.
+    the angular rate in degrees/Myr) or a cartesian angular velocity via
+    :meth:`from_angular_velocity`; for the published ITRF2020 plate poles use
+    :class:`ITRF2020PMM` instead. Velocity at a point is the rigid-body
+    ``v = Ω × r`` in ECEF, rotated to local ENU, so a pure-horizontal plate
+    rotation yields ~zero vertical velocity.
     """
 
     def __init__(self, pole_lat_deg, pole_lon_deg, rate_deg_per_myr,
@@ -644,11 +645,14 @@ def assign_plate(lon, lat):
     pts = gpd.GeoDataFrame(
         geometry=gpd.points_from_xy(lon_w.ravel(), lat.ravel()), crs=plates.crs)
     joined = gpd.sjoin(pts, plates, how="left", predicate="within")
-    codes = joined.groupby(level=0)["Code"].first()  # dedupe boundary double-hits
-    mapped = np.array(
-        [_PB2002_TO_ITRF.get(c) if isinstance(c, str) else None
-         for c in codes.reindex(range(len(pts)))], dtype=object)
-    return mapped.reshape(lon.shape)
+    # The decimated polygons overlap slightly along boundaries (64 pairs,
+    # worst ~1 deg²), so a point can hit two plates. Keep a deterministic
+    # (alphabetical-code) choice — arbitrary either way inside the ~0.05°
+    # boundary blur, but stable across runs and geopandas versions.
+    joined = joined.sort_values("Code", kind="stable")
+    joined = joined[~joined.index.duplicated(keep="first")].sort_index()
+    mapped = joined["Code"].map(_PB2002_TO_ITRF)  # unmapped/no-hit -> NaN
+    return mapped.astype(object).where(mapped.notna(), None).to_numpy().reshape(lon.shape)
 
 
 class ITRF2020PMM:
@@ -675,16 +679,23 @@ class ITRF2020PMM:
         self._ellipsoid = ellipsoid
         self._poles: dict[str, EulerPoleModel] = {}
         if self.plate is not None:
-            if self.plate not in ITRF2020_PMM_DEG_PER_MYR:
-                raise KeyError(
-                    f"unknown ITRF2020-PMM plate {self.plate!r}; available: "
-                    f"{sorted(ITRF2020_PMM_DEG_PER_MYR)}")
-            wx, wy, wz = ITRF2020_PMM_DEG_PER_MYR[self.plate]
-            self._pole = EulerPoleModel.from_angular_velocity(
-                wx, wy, wz, unit="deg/Myr", name=f"ITRF2020:{self.plate}",
-                ellipsoid=ellipsoid)
+            self._pole_for(self.plate)  # validate + cache eagerly
         orb = "+ORB" if self.apply_orb else ""
         self.name = f"ITRF2020-PMM[{self.plate or 'auto'}]{orb}"
+
+    def _pole_for(self, code) -> EulerPoleModel:
+        """The single pole-construction path (fixed-plate and boundary cases)."""
+        pole = self._poles.get(code)
+        if pole is None:
+            if code not in ITRF2020_PMM_DEG_PER_MYR:
+                raise KeyError(
+                    f"unknown ITRF2020-PMM plate {code!r}; available: "
+                    f"{sorted(ITRF2020_PMM_DEG_PER_MYR)}")
+            wx, wy, wz = ITRF2020_PMM_DEG_PER_MYR[code]
+            pole = self._poles[code] = EulerPoleModel.from_angular_velocity(
+                wx, wy, wz, unit="deg/Myr", name=f"ITRF2020:{code}",
+                ellipsoid=self._ellipsoid)
+        return pole
 
     def velocity_enu(self, lon, lat, h=0.0):
         """ENU velocity (m/yr) at geodetic ``(lon, lat)`` (degrees). Vectorized."""
@@ -694,7 +705,7 @@ class ITRF2020PMM:
         if self.plate is None:
             ve, vn, vu = self._velocity_by_boundary(lon, lat, h)
         else:
-            ve, vn, vu = self._pole.velocity_enu(lon, lat, h)
+            ve, vn, vu = self._pole_for(self.plate).velocity_enu(lon, lat, h)
         if self.apply_orb:
             tx, ty, tz = (t * 1e-3 for t in ITRF2020_ORB_MM_PER_YR)  # -> m/yr
             oe, on, _ou = ecef_to_enu(tx, ty, tz, lon, lat)
@@ -711,14 +722,9 @@ class ITRF2020PMM:
         vn = np.full(lon.shape, np.nan)
         vu = np.full(lon.shape, np.nan)
         for code in {c for c in codes.ravel() if c}:
-            pole = self._poles.get(code)
-            if pole is None:
-                wx, wy, wz = ITRF2020_PMM_DEG_PER_MYR[code]
-                pole = self._poles[code] = EulerPoleModel.from_angular_velocity(
-                    wx, wy, wz, unit="deg/Myr", name=f"ITRF2020:{code}",
-                    ellipsoid=self._ellipsoid)
             m = codes == code
-            ve[m], vn[m], vu[m] = pole.velocity_enu(lon[m], lat[m], h[m])
+            ve[m], vn[m], vu[m] = self._pole_for(code).velocity_enu(
+                lon[m], lat[m], h[m])
         return ve.reshape(shape), vn.reshape(shape), vu.reshape(shape)
 
 
@@ -789,8 +795,9 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
 
     Returns a copy: propagated geometry/height, advanced ``coord_epoch``,
     ``transform_id`` appended with a ``prop:`` tag, a durable per-row
-    ``epoch_residual_m`` column (0.0 for propagated rows, the velocity·Δt bound
-    for rows left un-propagated — the schema column that survives export/concat),
+    ``epoch_residual_m`` column (the schema column that survives export/concat;
+    0.0 = epoch-reconciled, >0 = velocity·Δt bound for rows left un-propagated,
+    NaN = not assessable — NaN ``coord_epoch`` under ``on_nan_epoch='skip'``),
     and a ``gdf.attrs['epoch_propagation']`` report (counts, models used, max
     applied displacement, and the surfaced residual-bound array).
     """
@@ -906,8 +913,13 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
     if coord_epoch_col in out.columns:
         out[coord_epoch_col] = ce_out
     # durable per-row residual (schema column) — survives export/concat where
-    # attrs evaporate: 0.0 for propagated rows, the velocity·Δt bound otherwise
-    out["epoch_residual_m"] = bound
+    # attrs evaporate. Tri-state: 0.0 = epoch-reconciled, >0 = bounded
+    # un-propagated velocity·Δt, NaN = not assessable (NaN coord_epoch under
+    # on_nan_epoch='skip' — never claim 0.0 for an unknowable Δt; matches
+    # schema.normalize's NaN for never-propagated frames)
+    col_bound = bound.copy()
+    col_bound[noop & ~np.isfinite(dt)] = np.nan
+    out["epoch_residual_m"] = col_bound
 
     # transform_id: append a compact provenance tag (chain-ordered)
     tag = np.where(

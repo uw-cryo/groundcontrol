@@ -194,3 +194,27 @@ def test_expand_attributes_lifts_raw_fields():
     assert g.columns.tolist() == ["raw", "geometry"]       # input not mutated
     sel = out["ngs_stamping"].str.contains("ARMY MAP", na=False)
     assert sel.tolist() == [True, False, False]
+
+
+def test_family_dz_figures_smoke(tmp_path):
+    from groundcontrol.figures import default_ngs_best, family_dz_figures
+    n = 12
+    src = (["3dep"] * 4 + ["opus"] * 2 + ["ngs"] * 6)
+    ptype = (["NVA", "NVA", "VVA", "VVA"] + ["gnss"] * 2 + ["monument"] * 6)
+    raw = [None] * 6 + [json.dumps({"posSource": "ADJUSTED", "vertSource": "GPS OBS"})] * 3 \
+        + [json.dumps({"posSource": "SCALED", "vertSource": "VERTCON3"})] * 3
+    g = gpd.GeoDataFrame(
+        {"source": src, "point_type": ptype, "raw": raw,
+         "ref_frame": ["NAD83(2011)"] * 6 + ["NAD 83(2011)"] * 3 + ["NAD 83(1986)"] * 3,
+         "dh_DSM_before": np.linspace(-0.1, 0.1, n),
+         "dh_DTM_before": np.append(np.linspace(-0.1, 0.1, n - 1), np.nan)},
+        geometry=gpd.points_from_xy(np.linspace(0, 100, n), np.linspace(0, 80, n)),
+        crs="EPSG:32611")
+    best = default_ngs_best(g)
+    assert best.sum() == 3          # ADJUSTED + GPS OBS rows only
+    out = family_dz_figures(g, None, tmp_path, "syn")
+    names = sorted(p.name for p in out)
+    assert names == sorted(f"syn_dz_{fam}_{prod}.png"
+                           for fam in ("3dep", "gnss", "ngs_best")
+                           for prod in ("DSM", "DTM"))
+    assert all(p.exists() for p in out)

@@ -26,13 +26,16 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-#: point_type -> (marker, color, size, zorder, label). NVA above VVA (zorder).
+#: point_type -> (marker, color, size, zorder, label). GNSS/OPUS plots BEHIND
+#: the 3DEP checkpoints; NVA above VVA (owner figure review, 2026-07-15).
 POINT_STYLE = {
     "monument": ("+", "#111111", 30, 4, "NGS monument"),
-    "VVA": ("s", "#E69F00", 45, 5, "3DEP VVA"),
-    "gnss": ("*", "#0033A0", 90, 6, "GNSS/OPUS"),
+    "gnss": ("*", "#0033A0", 90, 5, "GNSS/OPUS"),
+    "VVA": ("s", "#E69F00", 45, 6, "3DEP VVA"),
     "NVA": ("o", "#C00000", 55, 7, "3DEP NVA"),
 }
+#: legend order: the two 3DEP checkpoint classes adjacent, then GNSS, then NGS.
+LEGEND_ORDER = ("NVA", "VVA", "gnss", "monument")
 _INK, _MUT = "#222222", "#777777"
 _FACETS = ("posSource", "vertSource", "vertOrder")
 
@@ -75,10 +78,18 @@ def _relief(ax, dem_tif, hs_tif, cmap, dem_alpha, fig):
     return ext
 
 
-def _finish_map(ax, aoi_gdf):
+def _finish_map(ax, aoi_gdf, clip_to_aoi=True):
+    """Ticks off + scalebar. With ``clip_to_aoi`` the axes are limited to the
+    AOI bounds and the dashed outline is dropped (redundant when the map IS
+    the AOI); pass False to keep the outline on un-clipped maps."""
     from .plot import add_scalebar
     if aoi_gdf is not None:
-        aoi_gdf.boundary.plot(ax=ax, color=_INK, lw=1.0, ls="--", alpha=0.45)
+        if clip_to_aoi:
+            b = aoi_gdf.total_bounds
+            ax.set_xlim(b[0], b[2])
+            ax.set_ylim(b[1], b[3])
+        else:
+            aoi_gdf.boundary.plot(ax=ax, color=_INK, lw=1.0, ls="--", alpha=0.45)
     ax.set_xticks([])
     ax.set_yticks([])
     add_scalebar(ax)
@@ -87,7 +98,7 @@ def _finish_map(ax, aoi_gdf):
 def standard_control_figures(control, aoi, outdir, site_name, *,
                              dem_tif=None, hs_tif=None, cmap=None,
                              dem_alpha=0.4, midas_frame="IGS14",
-                             buffer_km=60.0, dpi=200):
+                             buffer_km=60.0, clip_to_aoi=True, dpi=200):
     """Write the default control figure bundle for a site; returns paths."""
     import geopandas as gpd
     import matplotlib
@@ -113,7 +124,7 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
     # ---- 1. control map ---------------------------------------------------
     fig, ax = plt.subplots(figsize=(10.5, 10))
     _relief(ax, dem_tif, hs_tif, cmap, dem_alpha, fig)
-    handles = []
+    by_type = {}
     for ptype, (mk, col, sz, zo, lab) in POINT_STYLE.items():
         sub = ctl[ctl.point_type == ptype]
         if not len(sub):
@@ -121,12 +132,14 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
         ax.scatter(sub.geometry.x, sub.geometry.y, marker=mk, s=sz, c=col,
                    linewidths=1.1 if mk == "+" else 0.5,
                    edgecolors="white" if mk != "+" else col, zorder=zo)
-        handles.append(Line2D([], [], marker=mk, ls="", color=col, ms=9,
-                              label=f"{lab} (n={len(sub)})"))
-    handles.append(Line2D([], [], ls="--", color=_INK, alpha=0.45,
-                          label="AOI"))
+        by_type[ptype] = Line2D([], [], marker=mk, ls="", color=col, ms=9,
+                                label=f"{lab} (n={len(sub)})")
+    handles = [by_type[p] for p in LEGEND_ORDER if p in by_type]
+    if not clip_to_aoi:
+        handles.append(Line2D([], [], ls="--", color=_INK, alpha=0.45,
+                              label="AOI"))
     ax.legend(handles=handles, loc="lower left", fontsize=9, framealpha=0.92)
-    _finish_map(ax, aoi_p)
+    _finish_map(ax, aoi_p, clip_to_aoi)
     ax.set_title(f"{site_name} — control points ({len(ctl)} usable)",
                  fontsize=11, color=_INK)
     fig.tight_layout()
@@ -152,7 +165,7 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
                 ax.scatter(s.geometry.x, s.geometry.y, s=16, marker="o",
                            c=cyc[i % 6], edgecolors="white", linewidths=0.4,
                            zorder=5, label=f"{v} ({len(s)})")
-            _finish_map(ax, aoi_p)
+            _finish_map(ax, aoi_p, clip_to_aoi)
             ax.legend(loc="lower left", fontsize=7.5, framealpha=0.9)
             ax.set_title(f"NGS monuments by {key}", fontsize=10, color=_INK)
         fig.suptitle(f"{site_name} — NGS monument datasheet attributes "
@@ -282,4 +295,138 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         plt.close(fig)
         out.append(fp)
         logger.info("wrote %s", fp)
+    return out
+
+
+#: family key -> (title, [(subclass label, row mask fn, point_type style key,
+#: marker)]). Subclasses share one map (markers differ) and one histogram
+#: (colors differ). 3DEP NVA/VVA together per owner figure review 2026-07-15.
+DZ_FAMILIES = {
+    "3dep": ("3DEP CHECKPOINTS", [
+        ("NVA", lambda d: (d["source"] == "3dep") & (d["point_type"] == "NVA"),
+         "NVA", "o"),
+        ("VVA", lambda d: (d["source"] == "3dep") & (d["point_type"] == "VVA"),
+         "VVA", "s"),
+    ]),
+    "gnss": ("GNSS/OPUS", [
+        ("GNSS/OPUS", lambda d: d["source"] == "opus", "gnss", "o"),
+    ]),
+    "ngs_best": ("NGS MONUMENTS (best)", [
+        ("NGS best", None, "monument", "o"),   # mask injected from ngs_best
+    ]),
+}
+
+
+def default_ngs_best(sampled):
+    """Initial empirical 'best NGS' tier (Casa Grande assessment, 2026-07-15):
+    ADJUSTED horizontal AND (published NAD 83(2011) realization OR GPS-grade
+    vertical). Large-AOI dz vs DTM: median -0.05 m, NMAD ~0.12, ~1-3% gross
+    outliers -- near GNSS quality; every looser tier degrades sharply
+    (NAD83(1992) 0.27 NMAD, NAD83(1986) 0.63, SCALED horizontal 0.92/36%
+    gross). Expect iteration -- pass a custom mask/callable to
+    family_dz_figures(ngs_best=...) as the definition evolves.
+    """
+    pos = _raw_field(sampled["raw"], "posSource") == "ADJUSTED"
+    vert = _raw_field(sampled["raw"], "vertSource").isin(
+        ["GPS OBS", "ADJUSTED", "READJUSTED"])
+    f2011 = sampled["ref_frame"].astype("string").str.replace(" ", "") == "NAD83(2011)"
+    return (sampled["source"] == "ngs") & pos & (f2011 | vert)
+
+
+def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"),
+                      hs_tif=None, families=("3dep", "gnss", "ngs_best"),
+                      ngs_best=None, lims=None, dpi=200):
+    """Per-family dz figures: ONE map (all subclasses, distinct markers) +
+    ONE histogram (subclass distributions isolated, med/NMAD/n stats) per
+    (family, product). Replaces the lumped validation figure for the standard
+    bundle (owner figure review, 2026-07-15): 3DEP NVA+VVA share a map/hist,
+    GNSS/OPUS its own, and the 'best' NGS tier its own (definition iterable
+    via ``ngs_best`` -- bool mask, or callable(sampled)->mask; default
+    :func:`default_ngs_best`).
+
+    ``hs_tif``: path or {product: path} product-matched hillshade underlay.
+    ``lims``: {family: (map_clim, hist_lim)} in meters; defaults
+    3dep/gnss (0.25, 0.6), ngs_best (0.25, 1.0). VVA-vs-DSM stays visible
+    (canopy bias is information, not an error) -- stats are per-subclass.
+    """
+    import geopandas as gpd
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    aoi_gdf = gpd.read_file(aoi) if isinstance(aoi, (str, Path)) else aoi
+    if aoi_gdf is not None:
+        aoi_gdf = aoi_gdf.to_crs(sampled.crs)
+    lims = {**{"3dep": (0.25, 0.6), "gnss": (0.25, 0.6), "ngs_best": (0.25, 1.0)},
+            **(lims or {})}
+    out = []
+    for fam in families:
+        title, subclasses = DZ_FAMILIES[fam]
+        if fam == "ngs_best":
+            mask = ngs_best(sampled) if callable(ngs_best) else ngs_best
+            if mask is None:
+                mask = default_ngs_best(sampled)
+            mask = pd.Series(np.asarray(mask, dtype=bool), index=sampled.index)
+            subclasses = [("NGS best", lambda d, m=mask: m, "monument", "o")]
+        map_lim, hist_lim = lims[fam]
+        for prod in products:
+            col = f"dh_{prod}_before"
+            if col not in sampled.columns:
+                logger.warning("family_dz: no column %s, skipping %s/%s",
+                               col, fam, prod)
+                continue
+            fig, (axm, axh) = plt.subplots(
+                1, 2, figsize=(13.5, 6.4), gridspec_kw=dict(width_ratios=[1.15, 1]))
+            hs_prod = hs_tif.get(prod) if isinstance(hs_tif, dict) else hs_tif
+            _relief(axm, None, hs_prod, None, 0.0, None)
+            sc = None
+            txt, n_gap = [], 0
+            for lab, maskfn, style, mk in subclasses:
+                m = maskfn(sampled).to_numpy(dtype=bool)
+                seg = sampled[m]
+                v = seg[col].to_numpy(dtype="float64")
+                fin = np.isfinite(v)
+                n_gap += int((~fin).sum())
+                color = POINT_STYLE[style][1]
+                sc = axm.scatter(seg.geometry.x[fin], seg.geometry.y[fin],
+                                 c=v[fin], cmap="RdBu_r", vmin=-map_lim,
+                                 vmax=map_lim, s=52 if mk == "o" else 46,
+                                 marker=mk, edgecolors=color, linewidths=1.1,
+                                 zorder=6 if mk == "o" else 5, label=lab)
+                if fin.any():
+                    vv = v[fin]
+                    axh.hist(np.clip(vv, -hist_lim, hist_lim), bins=41,
+                             range=(-hist_lim, hist_lim), histtype="stepfilled",
+                             alpha=0.45, color=color, edgecolor=color, label=lab)
+                    txt.append(f"{lab}: med {np.median(vv):+.3f}, "
+                               f"NMAD {_nmad(vv):.3f}, n={len(vv)}")
+            if sc is not None:
+                cb = fig.colorbar(sc, ax=axm, shrink=0.75, pad=0.02, extend="both")
+                cb.set_label(f"dz = {prod} \u2212 control (m)", fontsize=9, color=_INK)
+                cb.ax.tick_params(labelsize=8, colors=_MUT)
+            leg = axm.legend(loc="lower left", fontsize=8.5, framealpha=0.92,
+                             title=None, scatterpoints=1)
+            for h in leg.legend_handles:
+                h.set_facecolor("none")
+            _finish_map(axm, aoi_gdf)
+            gap = f"; {n_gap} unsampled (nodata/gap)" if n_gap else ""
+            fig.suptitle(f"{site_name} {prod} \u2212 control \u2014 {title}{gap}",
+                         fontsize=11.5, color=_INK)
+            axh.axvline(0, color=_INK, lw=0.8)
+            axh.set_xlim(-hist_lim, hist_lim)
+            axh.set_xlabel(f"dz = {prod} \u2212 control (m)", fontsize=9, color=_INK)
+            axh.legend(fontsize=8.5, loc="upper right")
+            axh.text(0.02, 0.98, "\n".join(txt), transform=axh.transAxes,
+                     fontsize=8.5, va="top", color=_INK,
+                     bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.85))
+            axh.tick_params(labelsize=8, colors=_MUT)
+            axh.grid(alpha=0.25, lw=0.5)
+            fp = outdir / f"{site_name}_dz_{fam}_{prod}.png"
+            fig.tight_layout(rect=[0, 0, 1, 0.96])
+            fig.savefig(fp, dpi=dpi)
+            plt.close(fig)
+            out.append(fp)
+            logger.info("wrote %s", fp)
     return out

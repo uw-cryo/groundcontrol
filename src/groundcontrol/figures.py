@@ -36,6 +36,11 @@ POINT_STYLE = {
 }
 #: legend order: the two 3DEP checkpoint classes adjacent, then GNSS, then NGS.
 LEGEND_ORDER = ("NVA", "VVA", "gnss", "monument")
+#: dz map/histogram colormap, CENTRALIZED for easy revert (owner 2026-07-15):
+#: RdYlBu puts RED = negative dz (product below control) — the same
+#: red-means-down convention as the subsidence/rate maps. Revert to the old
+#: look by setting this back to "RdBu_r".
+DZ_CMAP = "RdYlBu"
 _INK, _MUT = "#222222", "#777777"
 _FACETS = ("posSource", "vertSource", "vertOrder")
 
@@ -247,7 +252,7 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         ext = _relief(axes[0], None, hs_prod, None, 0.0, None)
         use = sampled[np.isfinite(sampled[col])]
         sc = axes[0].scatter(use.geometry.x, use.geometry.y, c=use[col],
-                             cmap="RdBu_r", vmin=-point_lim, vmax=point_lim,
+                             cmap=DZ_CMAP, vmin=-point_lim, vmax=point_lim,
                              s=34, edgecolors="#333333", linewidths=0.5, zorder=5)
         cb = fig.colorbar(sc, ax=axes[0], shrink=0.75, pad=0.02, extend="both")
         cb.set_label(f"dz = {prod} − control (m)", fontsize=9, color=_INK)
@@ -298,15 +303,17 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
     return out
 
 
-#: family key -> (title, [(subclass label, row mask fn, point_type style key,
-#: marker)]). Subclasses share one map (markers differ) and one histogram
-#: (colors differ). 3DEP NVA/VVA together per owner figure review 2026-07-15.
+#: family key -> (title, [(subclass label, row mask fn, point_type style key
+#: or hex color, marker[, products])]). Optional 5th element restricts the
+#: subclass to those products: VVA canopy checkpoints validate the DTM only —
+#: an expected DSM bias is not an error, so VVA is EXCLUDED from the DSM
+#: figure (owner 2026-07-15) rather than shown as a huge tail.
 DZ_FAMILIES = {
     "3dep": ("3DEP CHECKPOINTS", [
         ("NVA", lambda d: (d["source"] == "3dep") & (d["point_type"] == "NVA"),
          "NVA", "o"),
         ("VVA", lambda d: (d["source"] == "3dep") & (d["point_type"] == "VVA"),
-         "VVA", "s"),
+         "VVA", "s", ("DTM",)),
     ]),
     "gnss": ("GNSS/OPUS", [
         ("GNSS/OPUS", lambda d: d["source"] == "opus", "gnss", "o"),
@@ -335,18 +342,24 @@ def default_ngs_best(sampled):
 
 def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"),
                       hs_tif=None, families=("3dep", "gnss", "ngs_best"),
-                      ngs_best=None, extra_families=None, lims=None, dpi=200):
+                      ngs_best=None, extra_families=None, lims=None,
+                      overlays=None, dpi=200):
     """Per-family dz figures: one map PER SUBCLASS (co-located NVA/VVA pairs
     overplot on a shared map — owner review 2026-07-15) + ONE combined
-    histogram isolating the subclass distributions with med/NMAD/n stats,
-    per (family, product).
+    histogram with per-subclass med/NMAD/n stats (stats lines are colored per
+    class and double as the legend), per (family, product).
 
-    Families: 3DEP NVA+VVA, GNSS/OPUS, and a 'best' NGS tier (definition
-    iterable via ``ngs_best`` — bool mask or callable(sampled)->mask; default
-    :func:`default_ngs_best`). ``extra_families`` merges site-specific entries
-    over :data:`DZ_FAMILIES`; a subclass style may be a POINT_STYLE key or a
-    hex color. ``hs_tif``: path or {product: path} product-matched hillshade.
+    A subclass with a products restriction (5th tuple element, e.g. VVA ->
+    ``("DTM",)``) is dropped from other products' figures — an EXPECTED bias
+    (canopy vs DSM) is not an error to display. Colors ride on
+    :data:`DZ_CMAP` (centralized; RED = product below control).
+
+    ``extra_families`` merges site-specific entries over
+    :data:`DZ_FAMILIES`; subclass style is a POINT_STYLE key or hex color.
+    ``hs_tif``: path or {product: path} product-matched hillshade.
     ``lims``: {family: (map_clim, hist_lim)} in meters.
+    ``overlays``: GeoDataFrame (any CRS) drawn as dashed outlines on every
+    map — e.g. per-lidar-project footprints so seams are attributable.
     """
     import geopandas as gpd
     import matplotlib
@@ -358,7 +371,9 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
     aoi_gdf = gpd.read_file(aoi) if isinstance(aoi, (str, Path)) else aoi
     if aoi_gdf is not None:
         aoi_gdf = aoi_gdf.to_crs(sampled.crs)
-    lims = {**{"3dep": (0.25, 0.6), "gnss": (0.25, 0.6), "ngs_best": (0.25, 1.0)},
+    if overlays is not None:
+        overlays = overlays.to_crs(sampled.crs)
+    lims = {**{"3dep": (0.10, 0.25), "gnss": (0.25, 0.6), "ngs_best": (0.25, 1.0)},
             **(lims or {})}
     catalog = {**DZ_FAMILIES, **(extra_families or {})}
     out = []
@@ -371,22 +386,30 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
             mask = pd.Series(np.asarray(mask, dtype=bool), index=sampled.index)
             subclasses = [("NGS best", lambda d, m=mask: m, "monument", "o")]
         map_lim, hist_lim = lims.get(fam, (0.25, 0.6))
-        n_sub = len(subclasses)
         for prod in products:
             col = f"dh_{prod}_before"
             if col not in sampled.columns:
                 logger.warning("family_dz: no column %s, skipping %s/%s",
                                col, fam, prod)
                 continue
+            subs = [s for s in subclasses
+                    if len(s) < 5 or s[4] is None or prod in s[4]]
+            if not subs:
+                continue
+            n_sub = len(subs)
             fig, axes = plt.subplots(
                 1, n_sub + 1, figsize=(5.9 * n_sub + 6.2, 6.4),
                 gridspec_kw=dict(width_ratios=[1.1] * n_sub + [1]))
             axh = axes[-1]
             hs_prod = hs_tif.get(prod) if isinstance(hs_tif, dict) else hs_tif
-            sc, txt, n_gap = None, [], 0
-            for axm, (lab, maskfn, style, mk) in zip(axes[:-1], subclasses):
+            sc, stats_lines, n_gap = None, [], 0
+            for axm, sub in zip(axes[:-1], subs):
+                lab, maskfn, style, mk = sub[:4]
                 _relief(axm, None, hs_prod, None, 0.0, None)
-                # nullable dtypes (e.g. string == comparisons) yield NA: NA -> False
+                if overlays is not None:
+                    overlays.boundary.plot(ax=axm, color=_INK, lw=0.9, ls="--",
+                                           alpha=0.55, zorder=4)
+                # nullable dtypes (string == comparisons) yield NA: NA -> False
                 m = pd.Series(maskfn(sampled)).fillna(False).to_numpy(dtype=bool)
                 seg = sampled[m]
                 v = seg[col].to_numpy(dtype="float64")
@@ -394,7 +417,7 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                 n_gap += int((~fin).sum())
                 color = POINT_STYLE[style][1] if style in POINT_STYLE else style
                 sc = axm.scatter(seg.geometry.x[fin], seg.geometry.y[fin],
-                                 c=v[fin], cmap="RdBu_r", vmin=-map_lim,
+                                 c=v[fin], cmap=DZ_CMAP, vmin=-map_lim,
                                  vmax=map_lim, s=52, marker=mk,
                                  edgecolors=color, linewidths=1.1, zorder=5)
                 _finish_map(axm, aoi_gdf)
@@ -404,9 +427,10 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                     vv = v[fin]
                     axh.hist(np.clip(vv, -hist_lim, hist_lim), bins=41,
                              range=(-hist_lim, hist_lim), histtype="stepfilled",
-                             alpha=0.45, color=color, edgecolor=color, label=lab)
-                    txt.append(f"{lab}: med {np.median(vv):+.3f}, "
-                               f"NMAD {_nmad(vv):.3f}, n={len(vv)}")
+                             alpha=0.45, color=color, edgecolor=color)
+                    stats_lines.append(
+                        (f"{lab}: med {np.median(vv):+.3f}, "
+                         f"NMAD {_nmad(vv):.3f}, n={len(vv)}", color))
             if sc is not None:
                 cb = fig.colorbar(sc, ax=list(axes[:-1]), shrink=0.75,
                                   pad=0.015, extend="both")
@@ -417,10 +441,12 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
             axh.set_xlim(-hist_lim, hist_lim)
             axh.set_xlabel(f"dz = {prod} \u2212 control (m)", fontsize=9,
                            color=_INK)
-            axh.legend(fontsize=8.5, loc="upper right")
-            axh.text(0.02, 0.98, "\n".join(txt), transform=axh.transAxes,
-                     fontsize=8.5, va="top", color=_INK,
-                     bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.85))
+            # colored stats lines double as the legend (no overlap issues)
+            for i, (line, color) in enumerate(stats_lines):
+                axh.text(0.02, 0.98 - 0.055 * i, line, transform=axh.transAxes,
+                         fontsize=9, va="top", color=color, fontweight="bold",
+                         bbox=dict(boxstyle="round,pad=0.25", fc="white",
+                                   ec="none", alpha=0.8))
             axh.tick_params(labelsize=8, colors=_MUT)
             axh.grid(alpha=0.25, lw=0.5)
             gap = f"; {n_gap} unsampled (nodata/gap)" if n_gap else ""

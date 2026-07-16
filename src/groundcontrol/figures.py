@@ -41,7 +41,38 @@ LEGEND_ORDER = ("NVA", "VVA", "gnss", "monument")
 #: red-means-down convention as the subsidence/rate maps. Revert to the old
 #: look by setting this back to "RdBu_r".
 DZ_CMAP = "RdYlBu"
+#: standard symmetric color-limit tiers (m); empirical limits snap UP to a
+#: tier so figures stay comparable across sites (owner spec 2026-07-04/16)
+CLIM_TIERS = (0.10, 0.25, 0.50, 1.0, 2.5, 5.0)
 _INK, _MUT = "#222222", "#777777"
+
+
+def snap_clim(values, k=3.0, tiers=CLIM_TIERS):
+    """Empirical symmetric color limit: ``|median| + k*NMAD`` of the finite
+    values, snapped UP to the next standard tier — data-driven (owner
+    2026-07-16: no hardcoded limits) yet comparable across figures. The
+    typical spread renders mid-ramp, never saturated."""
+    v = np.asarray(values, dtype="float64")
+    v = v[np.isfinite(v)]
+    if not v.size:
+        return tiers[0]
+    med = float(np.median(v))
+    nmad = 1.4826 * float(np.median(np.abs(v - med)))
+    need = abs(med) + k * max(nmad, 1e-6)
+    for t in tiers:
+        if need <= t:
+            return t
+    return tiers[-1]
+
+
+def _datum_tag(crs):
+    """Short datum note for height labels, e.g. 'NAD83(2011) ellipsoid'."""
+    import pyproj
+    try:
+        c = pyproj.CRS.from_user_input(crs)
+        return f"{(c.geodetic_crs or c).name} ellipsoid"
+    except Exception:  # pragma: no cover - label fallback only
+        return "ellipsoid"
 _FACETS = ("posSource", "vertSource", "vertOrder")
 
 
@@ -72,13 +103,15 @@ def _relief(ax, dem_tif, hs_tif, cmap, dem_alpha, fig):
         with rasterio.open(dem_tif) as src:
             z = src.read(1, masked=True).filled(np.nan)
             bb = src.bounds
+            dem_crs = src.crs
         ext = [bb.left, bb.right, bb.bottom, bb.top]
         im = ax.imshow(z, cmap=cmap, alpha=dem_alpha, extent=ext,
                        vmin=np.nanpercentile(z, 2),
                        vmax=np.nanpercentile(z, 98), interpolation="antialiased", interpolation_stage="rgba")
         if fig is not None:
             cb = fig.colorbar(im, ax=ax, shrink=0.6, pad=0.02)
-            cb.set_label("Elevation (m, ellipsoid)", fontsize=9, color=_INK)
+            cb.set_label(f"Elevation (m, {_datum_tag(dem_crs)})",
+                         fontsize=9, color=_INK)
             cb.ax.tick_params(labelsize=8, colors=_MUT)
     return ext
 
@@ -373,8 +406,8 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
         aoi_gdf = aoi_gdf.to_crs(sampled.crs)
     if overlays is not None:
         overlays = overlays.to_crs(sampled.crs)
-    lims = {**{"3dep": (0.10, 0.25), "gnss": (0.25, 0.6), "ngs_best": (0.25, 1.0)},
-            **(lims or {})}
+    lims = lims or {}   # {family: (map_lim, hist_lim)} override; else empirical
+    datum = _datum_tag(sampled.crs)
     catalog = {**DZ_FAMILIES, **(extra_families or {})}
     out = []
     for fam in families:
@@ -385,7 +418,6 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                 mask = default_ngs_best(sampled)
             mask = pd.Series(np.asarray(mask, dtype=bool), index=sampled.index)
             subclasses = [("NGS best", lambda d, m=mask: m, "monument", "o")]
-        map_lim, hist_lim = lims.get(fam, (0.25, 0.6))
         for prod in products:
             col = f"dh_{prod}_before"
             if col not in sampled.columns:
@@ -396,6 +428,18 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                     if len(s) < 5 or s[4] is None or prod in s[4]]
             if not subs:
                 continue
+            # empirical, tier-snapped color/hist limits from THIS figure's
+            # own dz values (owner 2026-07-16: no hardcoded limits) — the
+            # typical spread renders mid-ramp, not saturated
+            if fam in lims:
+                map_lim, hist_lim = lims[fam]
+            else:
+                fig_v = np.concatenate([
+                    sampled.loc[pd.Series(s[1](sampled)).fillna(False)
+                                .to_numpy(dtype=bool), col]
+                    .to_numpy(dtype="float64") for s in subs]) if subs else []
+                map_lim = snap_clim(fig_v, k=3.0)
+                hist_lim = max(snap_clim(fig_v, k=6.0), map_lim)
             n_sub = len(subs)
             fig, axes = plt.subplots(
                 1, n_sub + 1, figsize=(5.9 * n_sub + 6.2, 6.4),
@@ -416,10 +460,12 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                 fin = np.isfinite(v)
                 n_gap += int((~fin).sum())
                 color = POINT_STYLE[style][1] if style in POINT_STYLE else style
+                # NEUTRAL point outlines — class colors clash with the dz ramp
+                # (owner 2026-07-16); subclass identity = per-map panel title
                 sc = axm.scatter(seg.geometry.x[fin], seg.geometry.y[fin],
                                  c=v[fin], cmap=DZ_CMAP, vmin=-map_lim,
                                  vmax=map_lim, s=52, marker=mk,
-                                 edgecolors=color, linewidths=1.1, zorder=5)
+                                 edgecolors="#404040", linewidths=0.8, zorder=5)
                 _finish_map(axm, aoi_gdf)
                 axm.set_title(f"{lab} (n={int(fin.sum())})", fontsize=10.5,
                               color=_INK)
@@ -434,8 +480,9 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
             if sc is not None:
                 cb = fig.colorbar(sc, ax=list(axes[:-1]), shrink=0.75,
                                   pad=0.015, extend="both")
-                cb.set_label(f"dz = {prod} \u2212 control (m)", fontsize=9,
-                             color=_INK)
+                cb.set_label(f"dz = {prod} \u2212 control "
+                             f"(m, {datum})\n[\u00b1{map_lim:g} m tier]",
+                             fontsize=9, color=_INK)
                 cb.ax.tick_params(labelsize=8, colors=_MUT)
             axh.axvline(0, color=_INK, lw=0.8)
             axh.set_xlim(-hist_lim, hist_lim)

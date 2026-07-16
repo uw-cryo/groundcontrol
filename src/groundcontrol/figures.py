@@ -188,7 +188,7 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
             fp = outdir / f"{site_name}_midas_velocity_{tag}.png"
             plot_velocity_vectors(
                 st, aoi=aoi_gdf, buffer_km=buffer_km, out_fn=str(fp),
-                color_by_vertical=cbv,
+                color_by_vertical=cbv, hs_tif=hs_tif,
                 title=f"{site_name} — MIDAS ({midas_frame}) "
                       f"{'vertical-colored ' if cbv else ''}velocity field")
             out.append(fp)
@@ -335,19 +335,18 @@ def default_ngs_best(sampled):
 
 def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"),
                       hs_tif=None, families=("3dep", "gnss", "ngs_best"),
-                      ngs_best=None, lims=None, dpi=200):
-    """Per-family dz figures: ONE map (all subclasses, distinct markers) +
-    ONE histogram (subclass distributions isolated, med/NMAD/n stats) per
-    (family, product). Replaces the lumped validation figure for the standard
-    bundle (owner figure review, 2026-07-15): 3DEP NVA+VVA share a map/hist,
-    GNSS/OPUS its own, and the 'best' NGS tier its own (definition iterable
-    via ``ngs_best`` -- bool mask, or callable(sampled)->mask; default
-    :func:`default_ngs_best`).
+                      ngs_best=None, extra_families=None, lims=None, dpi=200):
+    """Per-family dz figures: one map PER SUBCLASS (co-located NVA/VVA pairs
+    overplot on a shared map — owner review 2026-07-15) + ONE combined
+    histogram isolating the subclass distributions with med/NMAD/n stats,
+    per (family, product).
 
-    ``hs_tif``: path or {product: path} product-matched hillshade underlay.
-    ``lims``: {family: (map_clim, hist_lim)} in meters; defaults
-    3dep/gnss (0.25, 0.6), ngs_best (0.25, 1.0). VVA-vs-DSM stays visible
-    (canopy bias is information, not an error) -- stats are per-subclass.
+    Families: 3DEP NVA+VVA, GNSS/OPUS, and a 'best' NGS tier (definition
+    iterable via ``ngs_best`` — bool mask or callable(sampled)->mask; default
+    :func:`default_ngs_best`). ``extra_families`` merges site-specific entries
+    over :data:`DZ_FAMILIES`; a subclass style may be a POINT_STYLE key or a
+    hex color. ``hs_tif``: path or {product: path} product-matched hillshade.
+    ``lims``: {family: (map_clim, hist_lim)} in meters.
     """
     import geopandas as gpd
     import matplotlib
@@ -361,40 +360,46 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
         aoi_gdf = aoi_gdf.to_crs(sampled.crs)
     lims = {**{"3dep": (0.25, 0.6), "gnss": (0.25, 0.6), "ngs_best": (0.25, 1.0)},
             **(lims or {})}
+    catalog = {**DZ_FAMILIES, **(extra_families or {})}
     out = []
     for fam in families:
-        title, subclasses = DZ_FAMILIES[fam]
+        title, subclasses = catalog[fam]
         if fam == "ngs_best":
             mask = ngs_best(sampled) if callable(ngs_best) else ngs_best
             if mask is None:
                 mask = default_ngs_best(sampled)
             mask = pd.Series(np.asarray(mask, dtype=bool), index=sampled.index)
             subclasses = [("NGS best", lambda d, m=mask: m, "monument", "o")]
-        map_lim, hist_lim = lims[fam]
+        map_lim, hist_lim = lims.get(fam, (0.25, 0.6))
+        n_sub = len(subclasses)
         for prod in products:
             col = f"dh_{prod}_before"
             if col not in sampled.columns:
                 logger.warning("family_dz: no column %s, skipping %s/%s",
                                col, fam, prod)
                 continue
-            fig, (axm, axh) = plt.subplots(
-                1, 2, figsize=(13.5, 6.4), gridspec_kw=dict(width_ratios=[1.15, 1]))
+            fig, axes = plt.subplots(
+                1, n_sub + 1, figsize=(5.9 * n_sub + 6.2, 6.4),
+                gridspec_kw=dict(width_ratios=[1.1] * n_sub + [1]))
+            axh = axes[-1]
             hs_prod = hs_tif.get(prod) if isinstance(hs_tif, dict) else hs_tif
-            _relief(axm, None, hs_prod, None, 0.0, None)
-            sc = None
-            txt, n_gap = [], 0
-            for lab, maskfn, style, mk in subclasses:
-                m = maskfn(sampled).to_numpy(dtype=bool)
+            sc, txt, n_gap = None, [], 0
+            for axm, (lab, maskfn, style, mk) in zip(axes[:-1], subclasses):
+                _relief(axm, None, hs_prod, None, 0.0, None)
+                # nullable dtypes (e.g. string == comparisons) yield NA: NA -> False
+                m = pd.Series(maskfn(sampled)).fillna(False).to_numpy(dtype=bool)
                 seg = sampled[m]
                 v = seg[col].to_numpy(dtype="float64")
                 fin = np.isfinite(v)
                 n_gap += int((~fin).sum())
-                color = POINT_STYLE[style][1]
+                color = POINT_STYLE[style][1] if style in POINT_STYLE else style
                 sc = axm.scatter(seg.geometry.x[fin], seg.geometry.y[fin],
                                  c=v[fin], cmap="RdBu_r", vmin=-map_lim,
-                                 vmax=map_lim, s=52 if mk == "o" else 46,
-                                 marker=mk, edgecolors=color, linewidths=1.1,
-                                 zorder=6 if mk == "o" else 5, label=lab)
+                                 vmax=map_lim, s=52, marker=mk,
+                                 edgecolors=color, linewidths=1.1, zorder=5)
+                _finish_map(axm, aoi_gdf)
+                axm.set_title(f"{lab} (n={int(fin.sum())})", fontsize=10.5,
+                              color=_INK)
                 if fin.any():
                     vv = v[fin]
                     axh.hist(np.clip(vv, -hist_lim, hist_lim), bins=41,
@@ -403,29 +408,26 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                     txt.append(f"{lab}: med {np.median(vv):+.3f}, "
                                f"NMAD {_nmad(vv):.3f}, n={len(vv)}")
             if sc is not None:
-                cb = fig.colorbar(sc, ax=axm, shrink=0.75, pad=0.02, extend="both")
-                cb.set_label(f"dz = {prod} \u2212 control (m)", fontsize=9, color=_INK)
+                cb = fig.colorbar(sc, ax=list(axes[:-1]), shrink=0.75,
+                                  pad=0.015, extend="both")
+                cb.set_label(f"dz = {prod} \u2212 control (m)", fontsize=9,
+                             color=_INK)
                 cb.ax.tick_params(labelsize=8, colors=_MUT)
-            leg = axm.legend(loc="lower left", fontsize=8.5, framealpha=0.92,
-                             title=None, scatterpoints=1)
-            for h in leg.legend_handles:
-                h.set_facecolor("none")
-            _finish_map(axm, aoi_gdf)
-            gap = f"; {n_gap} unsampled (nodata/gap)" if n_gap else ""
-            fig.suptitle(f"{site_name} {prod} \u2212 control \u2014 {title}{gap}",
-                         fontsize=11.5, color=_INK)
             axh.axvline(0, color=_INK, lw=0.8)
             axh.set_xlim(-hist_lim, hist_lim)
-            axh.set_xlabel(f"dz = {prod} \u2212 control (m)", fontsize=9, color=_INK)
+            axh.set_xlabel(f"dz = {prod} \u2212 control (m)", fontsize=9,
+                           color=_INK)
             axh.legend(fontsize=8.5, loc="upper right")
             axh.text(0.02, 0.98, "\n".join(txt), transform=axh.transAxes,
                      fontsize=8.5, va="top", color=_INK,
                      bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.85))
             axh.tick_params(labelsize=8, colors=_MUT)
             axh.grid(alpha=0.25, lw=0.5)
+            gap = f"; {n_gap} unsampled (nodata/gap)" if n_gap else ""
+            fig.suptitle(f"{site_name} {prod} \u2212 control \u2014 {title}{gap}",
+                         fontsize=11.5, color=_INK)
             fp = outdir / f"{site_name}_dz_{fam}_{prod}.png"
-            fig.tight_layout(rect=[0, 0, 1, 0.96])
-            fig.savefig(fp, dpi=dpi)
+            fig.savefig(fp, dpi=dpi, bbox_inches="tight")
             plt.close(fig)
             out.append(fp)
             logger.info("wrote %s", fp)

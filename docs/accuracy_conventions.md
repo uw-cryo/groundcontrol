@@ -107,3 +107,30 @@ FGDC-STD-007.1/.2 · NOAA TR NOS NGS 68 (VERTCON 3.0) · NOAA TM NOS NGS 58 / NG
 NGS HARN pages · ASPRS Positional Accuracy Standards Ed.1 (2014) & Ed.2 (2023) ·
 USGS Lidar Base Specification 2022 rev. A + LBS Online · ScienceBase 67075e6bd34e969edc59c3e7
 (FGDC metadata + data dictionary) · live datasheets CZ1515, CZ0993, DU1581.
+
+## Reporting conventions for figures and tables (owner decision, 2026-07-16)
+
+Dual-track reporting on every standard figure and stats table, so both the robust-stats and
+the cal/val communities see the numbers they expect:
+
+1. **Robust pair over ALL finite residuals**: median + NMAD (`accuracy.med_nmad`). Our
+   internal workhorse; unfamiliar to much of the accuracy community, so never alone.
+2. **Parametric set after a 3·NMAD outlier gate** (`accuracy.error_report`): mean error
+   (bias), std (1σ, ddof=1), **RMSE** — the sole accuracy measure of ASPRS Positional
+   Accuracy Standards Edition 2 (2023), which dropped the 95%-confidence multipliers and the
+   VVA 95th-percentile pass/fail and requires the mean error reported separately — plus
+   empirical **LE90/LE95** (|error| percentiles) for NGA-style audiences, and `n_outliers`
+   removed by the gate (ASPRS Ed.2 asks that >3·RMSE checkpoints be investigated, our gate is
+   the robust analogue). Horizontal picks use `accuracy.ce90`.
+3. **Stated 3D transform budget** (`xform_acc_m`, PROJ per-operation accuracy of the applied
+   chain; NaN = unknown, never fake zero) rides along in tables and as a figure footer so
+   observed biases can be partitioned against transformation/datum uncertainty.
+   Chains audited 2026-07: GEOID18 compound→NAD83(2011)3D 0.015 m; NADCON5 HARN→2011 0.15 m
+   (stated; ~0.026 m empirically at Casa Grande); NAD83(1986)→2011 0.2 m; ITRF→NAD83(2011)
+   Helmert "unknown" (defining tie, physical realization ~1–2 cm).
+4. Checkpoint-count context: USGS Lidar Base Specification 2024 Rev. A requires ≥30
+   checkpoints per assessment class (max 120) and QL1 ≤10 cm RMSEz — small-n segments on our
+   figures (n<30) are below the spec's minimum and should be read as indicative.
+
+TODO next round: `epoch_acc_m` from the stage-2 propagate_epoch tiers (MIDAS σ·Δt / field
+quality / PMM bound), kept separate from the fail-loud `epoch_residual_m` (unmodeled motion).

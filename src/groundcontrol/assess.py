@@ -17,7 +17,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from groundcontrol.accuracy import med_nmad
 from groundcontrol.crs import get_transformer
 
 logger = logging.getLogger(__name__)
@@ -139,17 +138,24 @@ def summarize_dz(sampled, products=None, segments=SEGMENTS):
     """Tidy per-product, per-segment stats table for ``dh_<prod>_before``.
 
     ``products`` defaults to every ``dh_*_before`` column present. Returns a
-    DataFrame with one row per (product, segment) plus an ``ALL`` segment:
-    ``n`` (points in segment), ``n_valid`` (finite dh — the honest sampled
-    count; the difference is nodata/outside-extent points such as merge-gap
-    tiles), ``median_m``/``nmad_m`` (robust, via accuracy.med_nmad),
-    ``mean_m``/``std_m``, ``applies`` (False where the segment does not
-    validate that product class, e.g. VVA vs a DSM — rows are still reported
-    as context, never silently dropped).
+    DataFrame with one row per (product, segment) plus an ``ALL`` segment.
+    Dual-track reporting (owner 2026-07-16; ASPRS Ed.2/LBS-2024 vocabulary):
+    robust ``median_m``/``nmad_m`` over all finite residuals, then the
+    parametric set the cal/val community expects AFTER a 3*NMAD outlier gate
+    — ``mean_m`` (bias), ``std_m`` (1-sigma, ddof=1), ``rmse_m``,
+    ``le90_m``/``le95_m`` (empirical |error| percentiles) — plus ``n``,
+    ``n_valid`` (finite dh; the gap-honesty count), ``n_out`` (removed by the
+    gate) and ``xform_acc_m`` (stated transform budget for the chain).
+    ``applies`` is False where the segment does not validate that product
+    class (e.g. VVA vs a DSM) — rows are reported as context, never dropped.
     """
+    from groundcontrol.accuracy import error_report
+
     if products is None:
         products = [c[len("dh_"):-len("_before")] for c in sampled.columns
                     if c.startswith("dh_") and c.endswith("_before")]
+    budget = (float(np.nanmedian(sampled["xform_acc_m"]))
+              if "xform_acc_m" in sampled.columns else float("nan"))
     rows = []
     for prod in products:
         col = f"dh_{prod}_before"
@@ -158,15 +164,14 @@ def summarize_dz(sampled, products=None, segments=SEGMENTS):
         for label, (maskfn, in_dsm, in_dtm) in list(segments.items()) + [
                 ("ALL", (lambda d: pd.Series(True, index=d.index), True, True))]:
             m = maskfn(sampled).to_numpy(dtype=bool)
-            v = v_all[m]
-            fin = v[np.isfinite(v)]
-            med, nmad = med_nmad(fin)
+            r = error_report(v_all[m])
             rows.append({
                 "product": prod, "segment": label,
-                "n": int(m.sum()), "n_valid": int(fin.size),
-                "median_m": med, "nmad_m": nmad,
-                "mean_m": float(np.mean(fin)) if fin.size else float("nan"),
-                "std_m": float(np.std(fin)) if fin.size else float("nan"),
+                "n": int(m.sum()), "n_valid": r["n"], "n_out": r["n_outliers"],
+                "median_m": r["median"], "nmad_m": r["nmad"],
+                "mean_m": r["mean"], "std_m": r["std"], "rmse_m": r["rmse"],
+                "le90_m": r["le90"], "le95_m": r["le95"],
+                "xform_acc_m": budget,
                 "applies": bool(in_dtm if is_dtm else in_dsm),
             })
     return pd.DataFrame(rows)

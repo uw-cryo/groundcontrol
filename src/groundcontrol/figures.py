@@ -474,9 +474,18 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                     axh.hist(np.clip(vv, -hist_lim, hist_lim), bins=41,
                              range=(-hist_lim, hist_lim), histtype="stepfilled",
                              alpha=0.45, color=color, edgecolor=color)
+                    # dual-track stats (owner 2026-07-16): robust pair, then
+                    # the ASPRS-Ed.2 parametric set after a 3*NMAD gate
+                    from .accuracy import error_report
+                    er = error_report(vv)
                     stats_lines.append(
-                        (f"{lab}: med {np.median(vv):+.3f}, "
-                         f"NMAD {_nmad(vv):.3f}, n={len(vv)}", color))
+                        (f"{lab}: med {er['median']:+.3f}, "
+                         f"NMAD {er['nmad']:.3f}, n={er['n']}", color))
+                    stats_lines.append(
+                        (f"  mean {er['mean']:+.3f}, σ {er['std']:.3f}, "
+                         f"RMSE {er['rmse']:.3f}, LE90 {er['le90']:.3f}"
+                         + (f" ({er['n_outliers']} out)" if er["n_outliers"]
+                            else ""), color))
             if sc is not None:
                 cb = fig.colorbar(sc, ax=list(axes[:-1]), shrink=0.75,
                                   pad=0.015, extend="both")
@@ -490,10 +499,18 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                            color=_INK)
             # colored stats lines double as the legend (no overlap issues)
             for i, (line, color) in enumerate(stats_lines):
-                axh.text(0.02, 0.98 - 0.055 * i, line, transform=axh.transAxes,
-                         fontsize=9, va="top", color=color, fontweight="bold",
-                         bbox=dict(boxstyle="round,pad=0.25", fc="white",
+                axh.text(0.02, 0.98 - 0.05 * i, line, transform=axh.transAxes,
+                         fontsize=8.5, va="top", color=color,
+                         fontweight="bold" if not line.startswith("  ") else
+                         "normal",
+                         bbox=dict(boxstyle="round,pad=0.2", fc="white",
                                    ec="none", alpha=0.8))
+            if "xform_acc_m" in sampled.columns:
+                b = np.nanmedian(sampled["xform_acc_m"].to_numpy(dtype="float64"))
+                if np.isfinite(b):
+                    axh.text(0.02, 0.02, f"stated 3D transform budget ±{b:g} m",
+                             transform=axh.transAxes, fontsize=8, color=_MUT,
+                             va="bottom")
             axh.tick_params(labelsize=8, colors=_MUT)
             axh.grid(alpha=0.25, lw=0.5)
             gap = f"; {n_gap} unsampled (nodata/gap)" if n_gap else ""

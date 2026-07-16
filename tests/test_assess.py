@@ -218,3 +218,14 @@ def test_family_dz_figures_smoke(tmp_path):
                            for fam in ("3dep", "gnss", "ngs_best")
                            for prod in ("DSM", "DTM"))
     assert all(p.exists() for p in out)
+
+
+def test_transform_control_xform_acc_column():
+    ctl = _control_6319()
+    out, info = transform_control(ctl, UTM12_3D, source_crs="EPSG:6319",
+                                  aoi_bounds_4326=AOI_AZ)
+    assert "xform_acc_m" in out.columns
+    a = out["xform_acc_m"].iloc[0]
+    # pure-frame promotion: PROJ reports 0 (exact) -> NaN (unknown/exact,
+    # never a fake positive); grid-based chains yield real positive values
+    assert np.isnan(a) or a > 0

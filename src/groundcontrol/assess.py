@@ -69,6 +69,13 @@ def transform_control(control, target_crs, *, target_epoch=2010.0,
         H, np.full(len(control), float(target_epoch)), errcheck=True)
     out = control.copy()
     out["h_ell"] = h_ell
+    # per-point stated accuracy of the APPLIED operation (PROJ metadata, m).
+    # Constant per call today; becomes genuinely per-point once B7 routes
+    # each realization through its own chain. NaN = PROJ reports unknown
+    # (e.g. defining Helmert ties) — never silently zero. This is the
+    # transformation-budget term for partitioning observed dz biases.
+    acc = t.accuracy if (t.accuracy is not None and t.accuracy > 0) else float("nan")
+    out["xform_acc_m"] = np.full(len(out), acc)
     out = out.set_geometry(gpd.points_from_xy(E, N), crs=target_crs)
     dh = h_ell - H
     finite = np.isfinite(dh)

@@ -247,6 +247,15 @@ def _nmad(x):
     return 1.4826 * np.median(np.abs(x - np.median(x))) if len(x) else np.nan
 
 
+def _ngs_gate(v, mult):
+    """NMAD outlier gate for the NGS histogram panel. Skipped when NMAD == 0
+    (>=50% identical, quantized residuals) — a floor would keep only the
+    majority value and annotate fake-perfect stats; mirrors
+    accuracy.error_report."""
+    med0, nm0 = np.median(v), _nmad(v)
+    return v[np.abs(v - med0) < mult * nm0] if nm0 > 0 else v
+
+
 def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"),
                           hs_tif=None, point_lim=0.25, vendor_lim=0.6, wide_lim=4.0,
                           ngs_nmad_gate=3.0, dpi=200):
@@ -309,11 +318,7 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
                 v = use.loc[maskfn(use), col].to_numpy(float)
                 v = v[np.isfinite(v)]
                 if lab == "NGS monument" and len(v):
-                    med0, nm0 = np.median(v), _nmad(v)
-                    if nm0 > 0:  # NMAD=0 (quantized): no gate — mirrors
-                        # accuracy.error_report; a floor would keep only the
-                        # majority value and annotate fake-perfect stats
-                        v = v[np.abs(v - med0) < ngs_nmad_gate * nm0]
+                    v = _ngs_gate(v, ngs_nmad_gate)
                 if not len(v):
                     continue
                 color = POINT_STYLE[style][1]

@@ -427,3 +427,17 @@ def test_zero_row_report_has_unassessable_key():
     g = _gdf().iloc[:0]
     out = propagate_epoch(g, target_epoch=2020.0)
     assert out.attrs["epoch_propagation"]["n_unassessable"] == 0
+
+
+def test_static_frame_noop_plate_model_provenance_stays_noop():
+    """Zero-dt static-frame rows must not RECORD plate-model propagation:
+    provenance claiming ITRF motion inside NAD83(2011) is the exact condition
+    the guard exists to prevent (round-3 pin)."""
+    from groundcontrol.crs import ITRF2020PMM
+    g = _gdf(coord_epoch=2020.0, crs="EPSG:6318")
+    out = propagate_epoch(g, target_epoch=2020.0,
+                          plate_model=ITRF2020PMM("NOAM"))
+    rep = out.attrs["epoch_propagation"]
+    assert rep["models"]["plate"] == 0
+    assert out["transform_id"].iloc[0].endswith("prop:noop")
+    assert out["epoch_residual_m"].iloc[0] == 0.0

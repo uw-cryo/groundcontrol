@@ -379,3 +379,14 @@ def test_expand_attributes_json_nan_becomes_na():
                          crs="EPSG:6318")
     out = expand_attributes(g, fields=("name",))
     assert pd.isna(out["ngs_name"][0]) and out["ngs_name"][1] == "AG 45"
+
+
+def test_figures_ngs_gate_skipped_when_nmad_zero():
+    """The NGS histogram gate mirrors error_report: quantized residuals
+    (NMAD=0) keep everything — including the genuine outlier (round-3 pin)."""
+    from groundcontrol.figures import _ngs_gate
+    v = np.array([0.30] * 8 + [45.0])
+    out = _ngs_gate(v, 3.0)
+    assert len(out) == 9 and 45.0 in out          # no gate at NMAD=0
+    v2 = np.array([0.0, 0.01, -0.01, 0.02, -0.02, 45.0])
+    assert 45.0 not in _ngs_gate(v2, 3.0)          # normal spread still gates

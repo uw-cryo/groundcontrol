@@ -925,6 +925,12 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
     model_label = np.where(has_vel, "per_point", "none").astype(object)
     if plate_model is not None:
         need = ~has_vel
+        if static_frame and not allow_static_frame:
+            # the guard above passed only because no consulted row would move
+            # (zero/NaN Δt) — skip the fill entirely so durable provenance
+            # (transform_id, models counts) never records an ITRF plate model
+            # applied inside a plate-fixed frame; rows stay prop:noop
+            need &= np.isfinite(dt) & (dt != 0.0)
         if need.any():
             pe, pn, pu = plate_model.velocity_enu(lon[need], lat[need], h[need])
             ve[need], vn[need], vu[need] = pe, pn, pu

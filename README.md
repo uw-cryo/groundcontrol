@@ -1,5 +1,7 @@
 # groundcontrol
 
+[![CI](https://github.com/uw-cryo/groundcontrol/actions/workflows/ci.yml/badge.svg)](https://github.com/uw-cryo/groundcontrol/actions/workflows/ci.yml)
+
 Fetch ground control points for an arbitrary AOI and assess DEM accuracy — with rigorous
 3D CRS / datum / epoch handling as the core competency.
 
@@ -7,16 +9,17 @@ Fetch ground control points for an arbitrary AOI and assess DEM accuracy — wit
 > and given a DEM, sample the control, run the accuracy assessment, and produce the
 > analysis + visualization for vertical/horizontal accuracy.
 
+![control map](docs/img/casagrande_large_control_map.png)
+
 ## Status
 
-**Pre-alpha, active development (`0.1.0.dev0`).** The control-point fetch path and the
-core sampling/accuracy/CRS machinery are implemented and covered by **201 passing tests**;
-the user-selectable target-frame landing and the end-to-end `assess` CLI are not wired up
-yet (see [Not yet implemented](#not-yet-implemented)).
-
-> **Repository visibility:** private during initial development and testing within the
-> `uw-cryo` org. Intended to become public once the API stabilizes — please keep it internal
-> for now.
+**v0.1.0 — pre-alpha, quiet release.** The fetch → transform → sample → statistics →
+figures pipeline works end to end (CLI + Python API) and is covered by **261 offline
+tests** run in CI on Python 3.10/3.12, with the geodesy core additionally adversarially
+audited (independent review agents; math cross-checked against external oracles). The API
+may still move between minor versions — pin the tag if you build on it, and expect sharp
+edges to be documented rather than hidden: the library's design principle is **fail-loud**
+(no silent datum guesses, no ballpark transforms, no fabricated epoch motion).
 
 ## What works today
 
@@ -25,70 +28,88 @@ per-source status report:
 
 | Source | Key | Notes |
 |--------|-----|-------|
-| USGS 3DEP checkpoints | `3dep` | GeoParquet with bbox pushdown |
-| NGS Data Explorer (NDE) | `ngs` | monumented control |
+| USGS 3DEP checkpoints | `3dep` | national GeoParquet with bbox pushdown |
+| NGS Data Explorer (NDE) | `ngs` | monumented control, per-realization datum landing |
 | OPUS shared solutions | `opus` | GNSS-derived |
 | Nevada Geodetic Lab GNSS | `ngl` | daily `.tenv3` series, `steps.txt`, MIDAS velocities |
 
 - **One normalized schema** (`schema.py`) — a single canonical control-point GeoDataFrame
-  contract (source/id, height + datum provenance, `ref_frame`, `frame_epoch` / `coord_epoch` /
-  `measurement_epoch`, per-station velocities `vel_e/n/u`, native coordinates for lossless
-  re-targeting, and a `transform_id` join key into the export's provenance record).
-- **CRS / datum / epoch engine** (`crs.py`) — decimal-year helpers; a cached, fail-loud
-  `get_transformer`; `transform_points` (packaged 3D/4D control→DEM-frame transform);
-  `land_horizontal` (per-datum landing of mixed NAD83 realizations); dynamic-frame detection;
-  NGS-datum→EPSG mapping.
-- **Stage-2 epoch propagation** (`propagate_epoch`) — the intra-frame velocity·Δt move PROJ
-  can't do on its own: a velocity ladder of per-point ENU (MIDAS) → plate-motion model
-  (`EulerPoleModel` / `PlateMotionModel` protocol) → no-op, with the un-propagated velocity·Δt
-  bound surfaced. Every displacement is cross-checked against an independent pyproj ENU→ECEF
-  oracle to < 0.1 mm.
-- **Velocity interpolation** (`velocity.py`) — distance-weighted interpolation / fill of MIDAS
-  station velocities onto arbitrary points.
-- **DEM sampling** (`sample.py`) — `sample_raster` with windowed and in-memory paths,
-  bilinear / nearest / radius-neighborhood statistics, and a `diff` mode.
-- **Accuracy** (`accuracy.py`) — robust `med_nmad`, `robust_normalize`, `resid_stats`.
+  contract: source/id, height + datum provenance, `ref_frame`, `frame_epoch` / `coord_epoch` /
+  `measurement_epoch`, per-station velocities, a durable `epoch_residual_m` honesty column,
+  native coordinates for lossless re-targeting, and a `transform_id` provenance join key.
+- **CRS / datum / epoch engine** (`crs.py`) — cached, fail-loud, AOI-aware `get_transformer`;
+  `transform_points` (packaged 3D/4D control→DEM-frame transform); `land_horizontal`
+  (per-datum landing of mixed NAD83 realizations via NADCON5, validated against NGS NCAT
+  to < 1 cm); **stage-2 epoch propagation** (`propagate_epoch`) with a velocity ladder of
+  per-point MIDAS ENU → plate-motion model (bundled **ITRF2020 PMM** poles + PB2002
+  per-point plate assignment) → no-op with the velocity·Δt bound surfaced; static-frame
+  guards so plate motion is never fabricated inside NAD83(2011).
+- **Assessment pipeline** (`assess.py` + `groundcontrol-assess`) — `transform_control`
+  (one direct 3D transform, declared-CRS guard, per-point `xform_acc_m` stated transform
+  budget) → `sample_products` → `summarize_dz` → standard validation figures, with
+  GeoParquet + provenance outputs.
+- **Accuracy** (`accuracy.py`) — dual-track reporting: robust median/NMAD over all finite
+  residuals plus the parametric set the cal/val community expects (mean, σ, RMSE,
+  LE90/LE95, CE90) after an outlier gate, per ASPRS Positional Accuracy Standards Ed. 2 /
+  USGS Lidar Base Specification vocabulary (see `docs/accuracy_conventions.md`).
+- **DEM sampling** (`sample.py`) — windowed and in-memory paths, bilinear / nearest /
+  radius-neighborhood statistics, `diff` mode; mosaic gaps reported, never dropped.
+- **Geodesy utilities** (`geodesy.py`) — programmatic UTM/3D CRS construction,
+  epoch-pinned PROJ pipelines, vertical-transform preflight (missing geoid grids raise,
+  never silently zero).
+- **Figures** (`figures.py`, `plot.py`) — standard per-site control bundle, per-family
+  dz maps + dual-track histograms, MIDAS velocity maps ([gallery](docs/gallery.md)).
 - **I/O + provenance** (`io.py`) — GeoParquet / CSV export with an embedded, replayable
-  transform-provenance sidecar and compound-CRS export; `read_provenance`.
-- **Plotting** (`plot.py`) — control maps, hillshade, RdYlBu residual `dh` maps, MIDAS
-  velocity-vector maps, and scalebar helpers.
-- **CLI** — `groundcontrol-fetch` (AOI → control GeoParquet/CSV + provenance) is functional.
+  transform-provenance sidecar; `read_provenance`.
 
-## Not yet implemented
+## Example
 
-- **User-chosen `--target-crs` / `--target-epoch` landing.** Fetch currently lands on an
-  interim frame — **EPSG:6318 (NAD83(2011)) + NAVD88**; passing a target CRS/epoch raises.
-- **`groundcontrol-assess` CLI** — the end-to-end DEM → fetch → sample → stats → figures
-  wrapper is still a stub.
-- **ICESat-2 as a global dense-control source** — planned (see the sources survey), not built.
-- Assorted documented debts (accuracy semantics `D3`, `height_datum` `D4`, and a `coord_20`
-  CORS end-to-end truth-test fixture).
-
-## Install (development)
-
-```bash
-pip install -e ".[dev]"
-pytest -m "not network"   # offline suite; drop the marker to include network-dependent tests
-ruff check .              # lint (line-length 100)
-```
-
-## Usage
-
-Fetch control for an AOI (bbox or vector file), export GeoParquet + provenance sidecar:
+Fetch control for an AOI, then assess DEM products against it:
 
 ```bash
 # bbox is minx,miny,maxx,maxy in EPSG:4326 (lon/lat); use --aoi=... for negative longitudes
 groundcontrol-fetch --aoi=-115.3,36.0,-114.9,36.3 --sources 3dep,ngs,opus --out control.parquet
+
+groundcontrol-assess --aoi site_aoi.geojson --product DTM=dtm.vrt --product DSM=dsm.vrt \
+    --target-crs dem_frame.wkt --outdir out/ --site-name mysite
 ```
 
 From Python (see [`docs/quickstart.md`](docs/quickstart.md) for the full pattern):
 
 ```python
 from groundcontrol.sources import fetch_control
-from groundcontrol import io, sample, accuracy
+from groundcontrol.assess import assess_products
+from groundcontrol import io
 
-gdf, status = fetch_control("aoi.geojson", sources=("3dep", "ngs", "opus"))
-io.write(gdf, "control.parquet", status=status)
+control, status = fetch_control("aoi.geojson", sources=("3dep", "ngs", "opus"))
+io.write(control, "control.parquet", status=status)
+sampled, stats, artifacts = assess_products(
+    control, {"DTM": "dtm.vrt"}, target_crs=open("dem_frame.wkt").read(),
+    outdir="out", site_name="mysite")
+```
+
+What the standard outputs look like on a real site: **[docs/gallery.md](docs/gallery.md)**.
+
+![3DEP checkpoint dz](docs/img/casagrande_large_dz_3dep_DTM.png)
+
+## Not yet implemented
+
+- **Fetch-side `--target-crs`/`--target-epoch` landing** — fetch lands on
+  EPSG:6318 + NAVD88; target-frame landing happens in the assess step
+  (`transform_control`). Passing a target to `fetch_control` raises.
+- **`user_points` source** — offline CSV/GPKG ingest (vendor checkpoint tables, RTK/PPK
+  field campaigns); designed, not built.
+- **Per-point accumulated transform budgets** — `xform_acc_m` currently covers the assess
+  leg; accumulating the per-realization landing legs is next.
+- **`epoch_acc_m`** — velocity-uncertainty propagation through the stage-2 tiers.
+- **ICESat-2 as a global dense-control source** — planned (see the sources survey).
+
+## Install (development)
+
+```bash
+pip install -e ".[dev]"
+pytest -m "not network"   # offline suite; drop the marker to include live-API tests
+ruff check .              # lint (line-length 100)
 ```
 
 ## Package layout
@@ -96,37 +117,37 @@ io.write(gdf, "control.parquet", status=status)
 ```
 src/groundcontrol/
   schema.py        canonical control-point GeoDataFrame contract
-  crs.py           CRS/datum/epoch transforms, landing, epoch propagation
+  crs.py           CRS/datum/epoch transforms, landing, stage-2 epoch propagation, PMM
+  geodesy.py       CRS construction, epoch-pinned pipelines, vertical preflight
   velocity.py      MIDAS velocity interpolation / fill
+  assess.py        transform -> sample -> stats assessment pipeline
   sample.py        raster sampling (windowed / in-memory / radius)
-  accuracy.py      robust residual statistics
+  accuracy.py      dual-track residual statistics (robust + ASPRS/LBS parametric)
   io.py            GeoParquet/CSV export + transform provenance
-  plot.py          control / residual / velocity figures
-  cli.py           console entry points (groundcontrol-fetch, -assess)
+  figures.py       standard per-site control + validation figure bundles
+  plot.py          map/velocity/hillshade plotting primitives
+  cli.py           console entry points (groundcontrol-fetch, groundcontrol-assess)
   sources/         3dep, ngs/opus, ngl providers + fetch_control dispatcher
+  data/            bundled ITRF2020 PMM poles + PB2002 plate boundaries (ODC-By 1.0)
 ```
 
 ## Documentation
 
-- [`docs/plan.md`](docs/plan.md) — full design and migration plan
+- [`docs/gallery.md`](docs/gallery.md) — standard outputs on a real site
+- [`docs/quickstart.md`](docs/quickstart.md) — consuming groundcontrol from another project
+- [`docs/accuracy_conventions.md`](docs/accuracy_conventions.md) — accuracy semantics and
+  reporting conventions
 - [`docs/crs_implementation.md`](docs/crs_implementation.md) — verified CRS/epoch directives,
   transform-provenance spec, and validation-fixture design
-- [`docs/quickstart.md`](docs/quickstart.md) — consuming groundcontrol from another project
-- [`docs/accuracy_conventions.md`](docs/accuracy_conventions.md) — accuracy semantics (WIP)
+- [`docs/plan.md`](docs/plan.md) — full design and migration plan
 - [`docs/control_sources_survey.md`](docs/control_sources_survey.md) — candidate sources
   beyond the implemented set
 
-## Roadmap / next steps
-
-- **Set up GitHub Actions CI** — run the offline test suite (`pytest -m "not network"`) and
-  `ruff check` on push / PR. To be added in the next phase.
-- Wire user-selectable target CRS/epoch landing through `fetch_control` and the CLI.
-- Implement the `groundcontrol-assess` end-to-end CLI.
-- Add the `coord_20` CORS end-to-end validation fixture.
-
 ## Origin
 
-Core functionality extracted and generalized from prior UW-cryo project code
-(`casagrande` NGS/OPUS fetching + a private DEM-accuracy toolkit), 2026.
+Core functionality extracted and generalized from prior UW-cryo project code, 2026.
 Datum/epoch recipes follow
 [uw-cryo/3D_CRS_Transformation_Resources](https://github.com/uw-cryo/3D_CRS_Transformation_Resources).
+Bundled plate-boundary data: Bird (2003) PB2002 via
+[fraxen/tectonicplates](https://github.com/fraxen/tectonicplates) (ODC-By 1.0); plate poles:
+Altamimi et al. (2023) ITRF2020 PMM.

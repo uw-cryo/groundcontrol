@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 import warnings
 
@@ -236,3 +237,51 @@ def parse_opus(records: list[dict]) -> gpd.GeoDataFrame:
         crs=None,
         index=df.index,
     )
+
+
+def expand_attributes(gdf, fields=None, prefix="ngs_"):
+    """Lift raw datasheet JSON fields into real columns for filtering.
+
+    Every source row keeps its full upstream record in ``raw`` (JSON string);
+    systematic monument selection (e.g. isolating a calibration-range
+    population by ``stamping``, or quality tiers by ``vertSource``) needs
+    those fields as columns. Returns a copy of ``gdf`` with ``<prefix><field>``
+    string columns (pd.NA where the field is absent, the row has no ``raw``,
+    or the JSON does not parse). Numeric coercion is left to the caller —
+    datasheet fields are strings with embedded blanks.
+
+    Parameters
+    ----------
+    gdf : GeoDataFrame with a ``raw`` column (any source; non-JSON rows -> NA).
+    fields : iterable of raw-record keys; default covers the monument
+        identification + quality set used by the standard figures.
+    prefix : column-name prefix guarding against schema collisions.
+    """
+    if fields is None:
+        fields = ("name", "stamping", "monumentType", "setting", "stability",
+                  "condition", "posSource", "posOrder", "vertSource",
+                  "vertOrder", "ellipHeight", "geoidModel")
+    out = gdf.copy()
+
+    def _parse(r):
+        if not isinstance(r, str):
+            return {}
+        try:
+            rec = json.loads(r)
+        except (TypeError, ValueError):
+            return {}
+        return rec if isinstance(rec, dict) else {}
+
+    parsed = out["raw"].apply(_parse) if "raw" in out.columns else pd.Series([{}] * len(out), index=out.index)
+    for f in fields:
+        # object dtype + per-value str(): a numeric field must format the same
+        # ("2", never "2.0") regardless of whether OTHER rows are missing it
+        # (apply's dtype inference floats an int column that contains a None)
+        vals = pd.Series([rec.get(f) for rec in parsed], index=out.index,
+                         dtype=object)
+        # json.loads accepts bare NaN — must become NA, never the string "nan"
+        vals = vals.map(lambda v: (v.strip() if isinstance(v, str) else str(v))
+                        if v is not None and not (isinstance(v, float)
+                                                  and math.isnan(v)) else None)
+        out[prefix + f] = pd.Series(vals, index=out.index, dtype="string").replace("", pd.NA)
+    return out

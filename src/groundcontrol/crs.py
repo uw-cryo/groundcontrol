@@ -297,6 +297,27 @@ def ngs_datum_to_epsg(datum: str) -> str:
     )
 
 
+def _plate_fixed_datum(crs_obj) -> bool:
+    """True when the CRS's datum is plate-fixed (static, non-ITRF-aliased).
+
+    Datum *type* metadata does not encode plate-fixity: ETRS89 is an EPSG
+    datum ensemble whose members are all Eurasia-fixed, while the WGS84
+    ensemble (and WGS84-named single frames from PROJ strings) are
+    ITRF-aliased in practice. Rule: dynamic frames are never plate-fixed;
+    WGS84 by *name* is treated as dynamic-aliased; every other geodetic
+    frame or ensemble (NAD83*, ETRS89, GDA*, ...) is treated as plate-fixed
+    — fail-loud rather than fabricate plate motion.
+    """
+    d = pyproj.CRS(crs_obj).datum
+    tname = ((d.type_name or "") if d is not None else "").lower()
+    if "dynamic" in tname:
+        return False
+    name = ((d.name or "") if d is not None else "").upper()
+    if "WGS" in name or "WORLD GEODETIC" in name:
+        return False
+    return True
+
+
 def is_dynamic_frame(crs_like) -> bool:
     """True when the CRS's datum is a *dynamic* reference frame (ITRF/IGS...).
 
@@ -801,8 +822,10 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
         construction, so moving points there fabricates displacement while
         reporting ``epoch_residual_m=0`` — the guard raises instead. Pass
         True only when the velocities deliberately express intra-frame motion
-        (e.g. local subsidence rates in NAD83(2011)). Datum *ensembles*
-        (WGS84) pass the guard: their realizations are ITRF-aliased.
+        (e.g. local subsidence rates in NAD83(2011)). WGS84-named frames and
+        ensembles pass the guard (ITRF-aliased); plate-fixed ensembles like
+        ETRS89 are guarded. No-op rows (zero Δt, zero velocity, or a plate
+        model that would never be consulted) never trip it.
 
     Returns a copy: propagated geometry/height, advanced ``coord_epoch``,
     ``transform_id`` appended with a ``prop:`` tag, a durable per-row
@@ -830,18 +853,7 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
             f"propagate_epoch expects geographic lon/lat coordinates; got "
             f"{crs_obj.name!r} (projected). Run stage 2 before projecting.")
     a, e2 = _ellipsoid_params(crs_obj)
-    datum_type = (crs_obj.datum.type_name or "") if crs_obj.datum is not None else ""
-    static_frame = ("dynamic" not in datum_type.lower()
-                    and "ensemble" not in datum_type.lower())
-    if static_frame and plate_model is not None and not allow_static_frame:
-        raise ValueError(
-            f"plate_model={getattr(plate_model, 'name', plate_model)!r} with the "
-            f"plate-fixed frame {crs_obj.name!r}: plate motion is ~zero by "
-            "construction in a static frame, so an ITRF plate-motion model here "
-            "fabricates cm/yr displacement while reporting epoch_residual_m=0. "
-            "Run stage 2 in the dynamic frame (before land_horizontal), or pass "
-            "allow_static_frame=True only for a model that deliberately "
-            "expresses intra-frame motion.")
+    static_frame = _plate_fixed_datum(crs_obj)
 
     if qc_frame_epoch:
         check_frame_epoch_reduced(out)
@@ -849,7 +861,7 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
     n = len(out)
     report = {
         "target_epoch": target_epoch, "crs": str(crs_obj.to_authority() or crs_obj.name),
-        "n_total": n, "n_propagated": 0, "n_noop": n,
+        "n_total": n, "n_propagated": 0, "n_noop": n, "n_unassessable": 0,
         "models": {"per_point": 0, "plate": 0, "none": n},
         "plate_model": getattr(plate_model, "name", None),
         "max_applied_displacement_m": 0.0,
@@ -886,7 +898,11 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
     ce = _col(coord_epoch_col)
     dt = target_epoch - ce
     if static_frame and not allow_static_frame:
-        mover = has_vel & np.isfinite(dt) & (dt != 0.0)
+        # mover-aware: rows that would actually be displaced. Zero Δt, zero
+        # velocity, and a plate model that would never be consulted are no-ops
+        # and must not trip the guard.
+        would_move = np.isfinite(dt) & (dt != 0.0)
+        mover = has_vel & ((ve != 0.0) | (vn != 0.0) | (vu != 0.0)) & would_move
         if mover.any():
             raise ValueError(
                 f"{int(mover.sum())} row(s) carry per-point velocities and a "
@@ -895,10 +911,26 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
                 "propagating them here double-counts plate motion. If the "
                 "velocities deliberately express intra-frame motion (e.g. local "
                 "subsidence rates in NAD83(2011)), pass allow_static_frame=True.")
+        if plate_model is not None and (~has_vel & would_move).any():
+            raise ValueError(
+                f"plate_model={getattr(plate_model, 'name', plate_model)!r} would "
+                f"be consulted for {int((~has_vel & would_move).sum())} row(s) in "
+                f"the plate-fixed frame {crs_obj.name!r}: plate motion is ~zero "
+                "by construction in a static frame, so an ITRF plate-motion "
+                "model here fabricates cm/yr displacement while reporting "
+                "epoch_residual_m=0. Run stage 2 in the dynamic frame (before "
+                "land_horizontal), or pass allow_static_frame=True only for a "
+                "model that deliberately expresses intra-frame motion.")
 
     model_label = np.where(has_vel, "per_point", "none").astype(object)
     if plate_model is not None:
         need = ~has_vel
+        if static_frame and not allow_static_frame:
+            # the guard above passed only because no consulted row would move
+            # (zero/NaN Δt) — skip the fill entirely so durable provenance
+            # (transform_id, models counts) never records an ITRF plate model
+            # applied inside a plate-fixed frame; rows stay prop:noop
+            need &= np.isfinite(dt) & (dt != 0.0)
         if need.any():
             pe, pn, pu = plate_model.velocity_enu(lon[need], lat[need], h[need])
             ve[need], vn[need], vu[need] = pe, pn, pu

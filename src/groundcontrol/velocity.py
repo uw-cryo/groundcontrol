@@ -235,7 +235,7 @@ def fill_velocities(gdf, stations: pd.DataFrame, *,
                     quality_col: str | None = None, **kwargs):
     """Populate ``gdf``'s ENU velocity columns from an observed station network.
 
-    The tier-1 entry point the vantor application (or the dispatcher) calls **before**
+    The tier-1 entry point a downstream application (or the dispatcher) calls **before**
     :func:`groundcontrol.crs.propagate_epoch`: it looks up each point's velocity with
     :func:`interpolate_velocity` and writes ``vel_cols``. Rows flagged ``low_density``
     stay NaN, so ``propagate_epoch`` transparently falls to its tier-2 plate model there.

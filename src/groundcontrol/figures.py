@@ -282,7 +282,7 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         fig, axes = plt.subplots(1, 3, figsize=(16.5, 6.2),
                                  gridspec_kw=dict(width_ratios=[1.25, 1, 1]))
         hs_prod = hs_tif.get(prod) if isinstance(hs_tif, dict) else hs_tif
-        ext = _relief(axes[0], None, hs_prod, None, 0.0, None)
+        _relief(axes[0], None, hs_prod, None, 0.0, None)
         use = sampled[np.isfinite(sampled[col])]
         sc = axes[0].scatter(use.geometry.x, use.geometry.y, c=use[col],
                              cmap=DZ_CMAP, vmin=-point_lim, vmax=point_lim,
@@ -295,8 +295,8 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
                           fontsize=11, color=_INK)
 
         for ax, labels, lim in (
-                (axes[1], [l for l, s in seg_defs.items()
-                           if s[2 if prod == "DSM" else 3] and l != "NGS monument"],
+                (axes[1], [lbl for lbl, s in seg_defs.items()
+                           if s[2 if prod == "DSM" else 3] and lbl != "NGS monument"],
                  vendor_lim),
                 (axes[2], ["NGS monument"], wide_lim)):
             txt = []

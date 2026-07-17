@@ -143,7 +143,7 @@ def parse_nde(records: list[dict]) -> gpd.GeoDataFrame:
     from groundcontrol.crs import ngs_datum_to_epsg
 
     lat, lon = _num(df, "lat"), _num(df, "lon")
-    ortho, ellip = _num(df, "orthoHt"), _num(df, "ellipHeight")
+    ortho = _num(df, "orthoHt")
     ref_frame, frame_epoch = _frame_fields(df.get("posDatum", pd.Series(index=df.index)))
     # B7: per-row native realization CRS (fail-loud on unrecognized strings)
     h_crs = ref_frame.map(ngs_datum_to_epsg).astype("string")

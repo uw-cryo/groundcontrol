@@ -160,7 +160,6 @@ def test_transform_points_infers_compound_from_vertical_crs(monkeypatch):
 
 def test_transform_points_refuses_ambiguous_vertical():
     from groundcontrol.crs import transform_points
-    import pandas as pd
     import pytest as _pt
     g = _pts_gdf("EPSG:6318", vertical="EPSG:5703")
     g.loc[g.index[1], "vertical_crs"] = "EPSG:7968"  # mixed

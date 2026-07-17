@@ -50,17 +50,38 @@ def transform_control(control, target_crs, *, target_epoch=2010.0,
     target like NAD83(2011) the value is inert).
 
     Returns ``(gdf, info)``: a copy of ``control`` re-geometried in
-    ``target_crs`` with a new ``h_ell`` column (target-frame ellipsoidal
-    height) — the orthometric ``height`` column rides along unchanged — and a
-    dict recording the operation (``description``, ``accuracy_m``,
-    ``pipeline``, ``dh_stats``) for reports/provenance.
+    ``target_crs`` with a new ``h_ell`` column holding the target-frame
+    height — ellipsoidal for a 3D target; orthometric when ``target_crs`` is
+    compound (column name kept stable for the pipeline) — the source
+    ``height`` column rides along unchanged — and a dict recording the
+    operation (``description``, ``accuracy_m``, ``pipeline``, ``dh_stats``)
+    for reports/provenance.
     """
     import geopandas as gpd
+    import pyproj
 
+    src = source_crs or CONTROL_LANDING_CRS
+    if control.crs is not None:
+        assumed = pyproj.CRS(src)
+        declared = control.crs
+        # a 2D geometry tag says nothing about heights (schema: heights live
+        # in the `height` column) -> match the horizontal member; a 3D or
+        # compound tag carries height semantics and must match exactly — an
+        # EPSG:6319 (ellipsoidal-height) frame run under the default NAVD88
+        # landing would get the geoid undulation applied to already-
+        # ellipsoidal heights, and the dh_stats tripwire would then read like
+        # a plausible geoid signal instead of an error.
+        horiz = assumed.sub_crs_list[0] if assumed.is_compound else assumed
+        if not (declared.equals(assumed)
+                or (len(declared.axis_info) == 2 and declared.equals(horiz))):
+            raise ValueError(
+                f"control frame declares CRS {declared.name!r} but the "
+                f"transform source is {src!r} ({assumed.name}); refusing to "
+                "reinterpret coordinates — pass source_crs= matching the data "
+                "(or retag the frame). The vertical datum is never guessed.")
     if aoi_bounds_4326 is None:
         aoi_bounds_4326 = tuple(control.to_crs("EPSG:6318").total_bounds)
-    t = get_transformer(source_crs or CONTROL_LANDING_CRS, target_crs,
-                        aoi_bounds_4326=aoi_bounds_4326)
+    t = get_transformer(src, target_crs, aoi_bounds_4326=aoi_bounds_4326)
     H = control["height"].to_numpy(dtype="float64")
     E, N, h_ell, _ = t.transform(
         control.geometry.x.to_numpy(dtype="float64"),
@@ -114,12 +135,26 @@ def sample_products(gdf, products, *, method="linear", radius=None, block=4096,
 
     out = gdf
     for name, r in products.items():
+        clash = [c for c in (f"h_{name}", f"dh_{name}_before") if c in out.columns]
+        if clash:
+            raise ValueError(
+                f"columns {clash} already present — product {name!r} appears to "
+                "have been sampled into this frame already; re-sampling would "
+                "create duplicate labels and silently mixed statistics. Drop "
+                "those columns or use a different product name.")
         before = set(out.columns)
         out = sample_raster(out, r, col="h_ell", method=method, diff=True,
                             block=block, check_crs=check_crs, radius=radius)
         new = [c for c in out.columns if c not in before]
-        raster_col = next(c for c in new if not c.endswith(("_nmad", "_n"))
-                          and " minus " not in c)
+        try:
+            raster_col = next(c for c in new if not c.endswith(("_nmad", "_n"))
+                              and " minus " not in c)
+        except StopIteration:
+            raise ValueError(
+                f"could not identify the sampled column for product {name!r} "
+                f"(new columns: {sorted(new)}); a raster stem that collides "
+                "with an existing column (e.g. 'h_ell') or ends in _n/_nmad "
+                "breaks the rename — rename the raster file") from None
         rename = {raster_col: f"h_{name}"}
         for c in new:
             if c.endswith("_nmad"):
@@ -163,7 +198,9 @@ def summarize_dz(sampled, products=None, segments=SEGMENTS):
         is_dtm = "DTM" in prod.upper()
         for label, (maskfn, in_dsm, in_dtm) in list(segments.items()) + [
                 ("ALL", (lambda d: pd.Series(True, index=d.index), True, True))]:
-            m = maskfn(sampled).to_numpy(dtype=bool)
+            # fillna(False): source columns are pandas nullable strings — one
+            # NA point_type upstream must exclude the row, not crash the table
+            m = pd.Series(maskfn(sampled)).fillna(False).to_numpy(dtype=bool)
             r = error_report(v_all[m])
             rows.append({
                 "product": prod, "segment": label,

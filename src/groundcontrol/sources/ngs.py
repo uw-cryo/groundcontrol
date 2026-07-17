@@ -273,7 +273,12 @@ def expand_attributes(gdf, fields=None, prefix="ngs_"):
 
     parsed = out["raw"].apply(_parse) if "raw" in out.columns else pd.Series([{}] * len(out), index=out.index)
     for f in fields:
-        vals = parsed.apply(lambda rec, f=f: rec.get(f))
-        vals = vals.apply(lambda v: v.strip() if isinstance(v, str) else v)
+        # object dtype + per-value str(): a numeric field must format the same
+        # ("2", never "2.0") regardless of whether OTHER rows are missing it
+        # (apply's dtype inference floats an int column that contains a None)
+        vals = pd.Series([rec.get(f) for rec in parsed], index=out.index,
+                         dtype=object)
+        vals = vals.map(lambda v: (v.strip() if isinstance(v, str) else str(v))
+                        if v is not None else None)
         out[prefix + f] = pd.Series(vals, index=out.index, dtype="string").replace("", pd.NA)
     return out

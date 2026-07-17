@@ -70,6 +70,8 @@ def _datum_tag(crs):
     import pyproj
     try:
         c = pyproj.CRS.from_user_input(crs)
+        if c.is_compound:  # orthometric target: name the vertical member,
+            return c.sub_crs_list[1].name  # e.g. "NAVD88 height" — not "ellipsoid"
         return f"{(c.geodetic_crs or c).name} ellipsoid"
     except Exception:  # pragma: no cover - label fallback only
         return "ellipsoid"
@@ -416,7 +418,11 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
             mask = ngs_best(sampled) if callable(ngs_best) else ngs_best
             if mask is None:
                 mask = default_ngs_best(sampled)
-            mask = pd.Series(np.asarray(mask, dtype=bool), index=sampled.index)
+            # fillna BEFORE the bool cast: default_ngs_best yields Kleene-NA
+            # for rows with missing raw/ref_frame fields — exclude, don't crash
+            mask = pd.Series(
+                pd.Series(mask, index=sampled.index).fillna(False)
+                .to_numpy(dtype=bool), index=sampled.index)
             subclasses = [("NGS best", lambda d, m=mask: m, "monument", "o")]
         for prod in products:
             col = f"dh_{prod}_before"

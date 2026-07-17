@@ -229,3 +229,88 @@ def test_transform_control_xform_acc_column():
     # pure-frame promotion: PROJ reports 0 (exact) -> NaN (unknown/exact,
     # never a fake positive); grid-based chains yield real positive values
     assert np.isnan(a) or a > 0
+
+
+# ---------------------------------------------------------------------------
+# adversarial-audit fixes (2026-07-16)
+# ---------------------------------------------------------------------------
+
+def test_transform_control_rejects_mismatched_declared_crs():
+    """A 3D-tagged (ellipsoidal-height) frame under the default NAVD88 landing
+    would get the geoid undulation applied to already-ellipsoidal heights —
+    and the dh_stats tripwire would read like a plausible geoid signal."""
+    ctl = _control_6319()  # declares EPSG:6319
+    with pytest.raises(ValueError, match="refusing to reinterpret"):
+        transform_control(ctl, UTM12_3D, aoi_bounds_4326=AOI_AZ)
+
+
+def test_sample_products_rejects_already_sampled(tmp_path):
+    dsm = _plane_tif(tmp_path, "a-DSM_mos.tif")
+    pts = _landed([0.10, -0.20, 0.30, 0.40])
+    once = sample_products(pts, {"DSM": dsm})
+    with pytest.raises(ValueError, match="already present"):
+        sample_products(once, {"DSM": dsm})  # duplicate labels -> mixed stats
+
+
+def test_summarize_dz_tolerates_na_point_type():
+    df = gpd.GeoDataFrame(
+        {"source": pd.array(["3dep", "3dep", None], dtype="string"),
+         "point_type": pd.array(["NVA", None, "VVA"], dtype="string"),
+         "dh_DSM_before": [0.1, 0.2, 0.3]},
+        geometry=gpd.points_from_xy([0, 1, 2], [0, 0, 0]), crs=CRS)
+    stats = summarize_dz(df)  # NA rows are excluded, never a bool-cast crash
+    nva = stats[(stats["product"] == "DSM") & (stats.segment == "3DEP NVA")].iloc[0]
+    assert nva["n"] == 1
+
+
+def test_error_report_zero_nmad_skips_gate():
+    """Quantized residuals (>=50% identical) collapse NMAD to 0; the gate must
+    then keep everything, never report fake-perfect stats."""
+    from groundcontrol.accuracy import error_report
+    r = error_report([0.0] * 10 + [0.01] * 5)
+    assert r["n_outliers"] == 0 and r["n_used"] == 15
+    assert r["rmse"] > 0
+    r2 = error_report([0.05] * 8 + [0.06] * 4 + [0.30])
+    assert r2["n_outliers"] == 0 and r2["mean"] > 0.05
+
+
+def test_datum_tag_compound_names_vertical_datum():
+    from groundcontrol.figures import _datum_tag
+    assert _datum_tag("EPSG:6318+5703") == "NAVD88 height"
+    assert "ellipsoid" in _datum_tag("EPSG:6319")
+
+
+def test_parse_kv_duplicate_name_raises():
+    from groundcontrol.cli import _parse_kv
+    with pytest.raises(SystemExit, match="twice"):
+        _parse_kv(["DSM=a.tif", "DSM=b.tif"], "--product")
+
+
+def test_expand_attributes_numeric_format_stable():
+    """'vertOrder: 2' must expand to "2" regardless of whether OTHER rows are
+    missing the field (apply's inference floated int columns with a None)."""
+    from groundcontrol.sources.ngs import expand_attributes
+    for raws in ([json.dumps({"vertOrder": 2}), json.dumps({})],
+                 [json.dumps({"vertOrder": 2}), json.dumps({"vertOrder": 1})]):
+        g = gpd.GeoDataFrame({"raw": raws},
+                             geometry=gpd.points_from_xy([0, 1], [0, 0]),
+                             crs="EPSG:6318")
+        out = expand_attributes(g, fields=("vertOrder",))
+        assert out["ngs_vertOrder"][0] == "2"
+
+
+def test_family_dz_ngs_best_na_mask(tmp_path):
+    """default_ngs_best yields Kleene-NA for an ADJUSTED mark with missing
+    ref_frame and non-GPS vertical — exclude the row, don't crash the figure."""
+    from groundcontrol.figures import default_ngs_best, family_dz_figures
+    g = gpd.GeoDataFrame(
+        {"source": ["ngs", "ngs"], "point_type": ["monument"] * 2,
+         "raw": [json.dumps({"posSource": "ADJUSTED", "vertSource": "RESET"}),
+                 json.dumps({"posSource": "ADJUSTED", "vertSource": "GPS OBS"})],
+         "ref_frame": pd.array([None, "NAD 83(2011)"], dtype="string"),
+         "dh_DSM_before": [0.05, -0.02]},
+        geometry=gpd.points_from_xy([0, 50], [0, 40]), crs=CRS)
+    assert default_ngs_best(g).isna().any()  # the trap this test pins
+    out = family_dz_figures(g, None, tmp_path, "na",
+                            products=("DSM",), families=("ngs_best",))
+    assert len(out) == 1 and out[0].exists()

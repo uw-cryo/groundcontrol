@@ -93,7 +93,13 @@ def error_report(series, nmad_mult: float = 3.0) -> dict:
                     mean=np.nan, std=np.nan, rmse=np.nan, le90=np.nan,
                     le95=np.nan)
     med, nmad = med_nmad(a)
-    keep = np.abs(a - med) <= nmad_mult * max(nmad, 1e-9)
+    if nmad > 0:
+        keep = np.abs(a - med) <= nmad_mult * nmad
+    else:
+        # >=50% of residuals identical (quantized heights are routine): NMAD
+        # collapses to 0 and any gate floor would discard the genuine spread
+        # as "outliers" and report fake-perfect stats — skip the gate instead
+        keep = np.ones(a.size, dtype=bool)
     f = a[keep]
     return dict(
         n=int(a.size), median=med, nmad=nmad,
@@ -118,6 +124,7 @@ def ce90(dx, dy, nmad_mult: float = 3.0) -> float:
     keep = np.ones(dx.size, dtype=bool)
     for v in (dx, dy):
         med, nmad = med_nmad(v)
-        keep &= np.abs(v - med) <= nmad_mult * max(nmad, 1e-9)
+        if nmad > 0:  # NMAD=0 (quantized axis): no gate — see error_report
+            keep &= np.abs(v - med) <= nmad_mult * nmad
     r = np.hypot(dx[keep], dy[keep])
     return float(np.percentile(r, 90)) if r.size else float("nan")

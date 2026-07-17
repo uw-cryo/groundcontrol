@@ -62,6 +62,10 @@ def _parse_kv(pairs, flag):
         name, sep, path = item.partition("=")
         if not sep or not name or not path:
             raise SystemExit(f"{flag} expects NAME=PATH, got {item!r}")
+        if name in out:
+            raise SystemExit(
+                f"{flag} got NAME {name!r} twice ({out[name]!r} and {path!r}); "
+                "a repeat would silently drop the first")
         out[name] = path
     return out
 
@@ -131,6 +135,13 @@ def assess_dem_main(argv=None) -> int:
         import geopandas as gpd
         control = gpd.read_parquet(cache)
         print(f"control cache: {cache} ({len(control)} points)", file=sys.stderr)
+        req = {s.strip() for s in args.sources.split(",") if s.strip()}
+        have = (set(control["source"].dropna().unique())
+                if "source" in control.columns else set())
+        if req - have:
+            print(f"warning: control cache lacks requested source(s) "
+                  f"{sorted(req - have)} (cache has {sorted(have)}); "
+                  f"delete {cache} to re-fetch", file=sys.stderr)
     else:
         from groundcontrol.sources import fetch_control
         sources = tuple(s.strip() for s in args.sources.split(",") if s.strip())
@@ -163,7 +174,10 @@ def assess_dem_main(argv=None) -> int:
         command="groundcontrol-assess " + " ".join(argv or sys.argv[1:]))
 
     t = artifacts["transform"]
-    print(f"transform: {t['description']} (accuracy {t['accuracy_m']} m)", file=sys.stderr)
+    a = t["accuracy_m"]
+    # PROJ reports 0/-1 for defining ties — print "unknown", never a fake-exact
+    acc_note = f"{a} m" if (a is not None and a > 0) else "unknown"
+    print(f"transform: {t['description']} (stated accuracy {acc_note})", file=sys.stderr)
     with_stats = stats[stats.segment != "ALL"] if len(stats) else stats
     print(with_stats.to_string(index=False), file=sys.stderr)
     for k, v in artifacts.items():

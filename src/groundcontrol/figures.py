@@ -85,7 +85,9 @@ def _raw_field(series, key):
                 r = json.loads(r)
             except Exception:
                 return None
-        v = (r or {}).get(key)
+        if not isinstance(r, dict):
+            return None  # missing raw arrives as None OR float NaN (pandas>=3)
+        v = r.get(key)
         v = (v or "").strip() if isinstance(v, str) else v
         return v if v else None
     return series.apply(get)

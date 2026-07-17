@@ -180,3 +180,24 @@ def test_library_versions_gdal_free():
     v = library_versions()
     assert {"proj", "pyproj", "proj_data_dir"} <= set(v)
     # gdal key is optional — only when the env happens to have the bindings
+
+
+def test_navd88_offset_fail_loud_without_grid(monkeypatch):
+    """A missing geoid grid must raise, never return N = 0 (audit, MEDIUM)."""
+    import pyproj.exceptions
+    from groundcontrol import geodesy as _g
+
+    captured = {}
+
+    class _FakeT:
+        def transform(self, *a, **k):
+            raise pyproj.exceptions.ProjError("no geoid grid")
+
+    def fake_from_crs(*a, **k):
+        captured.update(k)
+        return _FakeT()
+
+    monkeypatch.setattr(_g.Transformer, "from_crs", staticmethod(fake_from_crs))
+    with pytest.raises((RuntimeError, pyproj.exceptions.ProjError)):
+        _g.navd88_offset(-115.1, 36.1)
+    assert captured.get("allow_ballpark") is False

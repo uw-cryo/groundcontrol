@@ -17,6 +17,7 @@ provenance-returning superset of ``crs.get_transformer`` (grid download,
 from __future__ import annotations
 
 import logging
+import math
 import re
 import shutil
 import subprocess
@@ -339,8 +340,17 @@ def navd88_offset(lon: float, lat: float) -> float:
     the expected signature of an already-ellipsoidal source in a vertical
     datum check. Requires the geoid grid (verify with the preflight first).
     """
-    t = Transformer.from_crs("EPSG:6318+5703", "EPSG:6319", always_xy=True)
-    return float(t.transform(lon, lat, 0.0)[2])
+    t = Transformer.from_crs("EPSG:6318+5703", "EPSG:6319", always_xy=True,
+                             allow_ballpark=False)
+    h = float(t.transform(lon, lat, 0.0, errcheck=True)[2])
+    if not math.isfinite(h):
+        # belt over errcheck: a missing geoid grid must never read as N = 0
+        # (that asserts geoid == ellipsoid — the exact silent fallback the
+        # preflight exists to prevent)
+        raise RuntimeError(
+            "navd88_offset: geoid grid unavailable (install proj-data or set "
+            "PROJ_NETWORK=ON); refusing to return a fake 0.0 offset")
+    return h
 
 
 def write_crs_file(crs: CRS, outfn: str | Path) -> str:

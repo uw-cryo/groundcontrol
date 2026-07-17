@@ -349,3 +349,42 @@ def test_schema_normalize_carries_epoch_residual_column():
     assert "epoch_residual_m" in schema.COLUMNS
     gdf = schema.empty()
     assert "epoch_residual_m" in gdf.columns and gdf["epoch_residual_m"].dtype == "float64"
+
+
+def test_nan_coord_epoch_skip_report_matches_column():
+    """attrs report must mirror the durable column: NaN bound, counted."""
+    g = _gdf(ve=0.01, vn=0.0, vu=0.0, coord_epoch=np.nan)
+    with pytest.warns(UserWarning, match="unassessable"):
+        out = propagate_epoch(g, target_epoch=2025.0, on_nan_epoch="skip")
+    rep = out.attrs["epoch_propagation"]
+    assert np.isnan(rep["residual_bound_m"][0])
+    assert rep["n_unassessable"] == 1
+    assert np.isnan(rep["max_residual_bound_m"])
+
+
+def test_static_frame_plate_model_raises():
+    """Stage 2 is intra-DYNAMIC-frame; an ITRF PMM inside plate-fixed
+    NAD83(2011) fabricates ~cm/yr displacement (adversarial audit, HIGH)."""
+    model = EulerPoleModel(pole_lat_deg=90.0, pole_lon_deg=0.0,
+                           rate_deg_per_myr=0.2, name="northpole")
+    g = _gdf(coord_epoch=2010.0, crs="EPSG:6318")
+    with pytest.raises(ValueError, match="plate-fixed"):
+        propagate_epoch(g, target_epoch=2020.0, plate_model=model)
+
+
+def test_static_frame_per_point_velocity_raises_unless_allowed():
+    g = _gdf(ve=0.0, vn=0.0, vu=-0.03, coord_epoch=2010.0, crs="EPSG:6318")
+    with pytest.raises(ValueError, match="allow_static_frame"):
+        propagate_epoch(g, target_epoch=2020.0)
+    # explicit escape: intra-frame (e.g. subsidence) velocities are legitimate
+    out = propagate_epoch(g, target_epoch=2020.0, allow_static_frame=True)
+    assert out.attrs["epoch_propagation"]["n_propagated"] == 1
+    assert out["height"].iloc[0] == pytest.approx(700.0 - 0.3, abs=1e-6)
+
+
+def test_static_frame_noop_rows_fine_without_flag():
+    """No velocities -> nothing moves -> the static-frame guard stays quiet."""
+    g = _gdf(coord_epoch=2010.0, crs="EPSG:6318")
+    with pytest.warns(UserWarning):
+        out = propagate_epoch(g, target_epoch=2020.0)
+    assert out.attrs["epoch_propagation"]["n_propagated"] == 0

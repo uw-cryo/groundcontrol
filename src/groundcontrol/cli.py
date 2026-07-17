@@ -117,6 +117,9 @@ def assess_dem_main(argv=None) -> int:
                         "product-matched; single unnamed path also accepted)")
     p.add_argument("--no-figures", action="store_true", help="skip figure output")
     args = p.parse_args(argv)
+    if args.radius is not None and args.method != p.get_default("method"):
+        p.error("--radius and --method are mutually exclusive (radius mode "
+                "computes a neighborhood median)")
 
     from pathlib import Path
 

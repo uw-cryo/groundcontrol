@@ -80,7 +80,7 @@ def transform_control(control, target_crs, *, target_epoch=2010.0,
                 "reinterpret coordinates — pass source_crs= matching the data "
                 "(or retag the frame). The vertical datum is never guessed.")
     if aoi_bounds_4326 is None:
-        aoi_bounds_4326 = tuple(control.to_crs("EPSG:6318").total_bounds)
+        aoi_bounds_4326 = tuple(control.to_crs("EPSG:4326").total_bounds)
     t = get_transformer(src, target_crs, aoi_bounds_4326=aoi_bounds_4326)
     H = control["height"].to_numpy(dtype="float64")
     E, N, h_ell, _ = t.transform(

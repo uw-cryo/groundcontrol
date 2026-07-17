@@ -150,7 +150,10 @@ def test_assess_products_end_to_end_writes_artifacts(tmp_path):
         outdir=tmp_path / "out", site_name="synthsite", figures=False)
     assert (tmp_path / "out" / "synthsite_assessed.parquet").exists()
     assert (tmp_path / "out" / "synthsite_dz_stats.csv").exists()
-    assert artifacts["transform"]["accuracy_m"] is not None or True
+    # pure-frame op: PROJ reports 0/None ("exact"), a grid chain reports >0 —
+    # either way the info block must carry the key and never a negative
+    acc = artifacts["transform"]["accuracy_m"]
+    assert acc is None or acc >= 0
     rt = gpd.read_parquet(tmp_path / "out" / "synthsite_assessed.parquet")
     np.testing.assert_allclose(rt["dh_DSM_before"], [0.10, -0.20, 0.30, 0.40],
                                atol=1e-9)

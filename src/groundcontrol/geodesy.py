@@ -304,7 +304,13 @@ def epoch_pinned_pipeline(src_crs, dst_crs, coord_epoch: float,
     if aoi_bounds is not None:
         w, s, e, n = aoi_bounds
         cmd += ["--bbox", f"{w},{s},{e},{n}"]
-    out = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(
+            f"projinfo did not finish within 60 s for {src_crs!r} -> "
+            f"{dst_crs!r}; check the CRS inputs and the PROJ installation"
+        ) from e
     if out.returncode != 0:
         raise RuntimeError(f"projinfo failed: {out.stderr[-500:]}")
     pipelines = [ln.strip() for ln in out.stdout.splitlines()
@@ -458,12 +464,16 @@ def preflight_vertical_transform(
         aoi_note = (
             f" within the AOI {aoi_bounds} (no non-ballpark operation covers "
             "its area of use)" if aoi_bounds is not None else "")
+        grid_note = (
+            f": missing datum-shift grids {missing}. Install them (e.g. "
+            "'pyproj sync --file <grid>' or the conda-forge proj-data "
+            "package) or set PROJ_NETWORK=ON to allow on-demand grid "
+            "download" if missing else
+            " (no candidate operation at all — check that the source and "
+            "target CRS are correct and share a documented datum tie)")
         raise RuntimeError(
             f"PROJ cannot rigorously transform '{src_crs.name}' -> "
-            f"'{dst_crs.name}'{aoi_note}: missing datum-shift grids {missing}. "
-            "If grids are the problem, install them (e.g. 'pyproj sync --file "
-            "<grid>' or the conda-forge proj-data package) or set "
-            "PROJ_NETWORK=ON to allow on-demand grid download. Refusing to "
+            f"'{dst_crs.name}'{aoi_note}{grid_note}. Refusing to "
             "continue: a silent fallback would leave output heights wrong by "
             "the geoid undulation (~31 m in CONUS).")
     best = group.transformers[0]

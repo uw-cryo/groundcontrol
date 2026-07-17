@@ -841,7 +841,10 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
 
     def _col(name):
         if name in out.columns:
-            return pd.to_numeric(out[name], errors="coerce").to_numpy(dtype="float64")
+            # copy=True: pandas>=3 CoW returns read-only zero-copy views and
+            # ve/vn/vu are filled in place at the plate-model step below
+            return pd.to_numeric(out[name], errors="coerce").to_numpy(
+                dtype="float64", copy=True)
         return np.full(n, np.nan)
 
     lon = out.geometry.x.to_numpy(dtype="float64")

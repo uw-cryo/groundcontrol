@@ -166,3 +166,11 @@ def test_propagate_epoch_composes_and_midas_wins():
     assert 0.05 < moved < 0.5
     # both rows fully propagated -> zero residual bound
     assert (out["epoch_residual_m"] == 0.0).all()
+
+
+def test_assign_plate_exact_antimeridian_not_orphaned():
+    """lon = ±180 lies exactly on the seam edge of the antimeridian-split
+    polygons; 'within' orphaned every such point (adversarial audit)."""
+    for lon in (180.0, -180.0):
+        codes = assign_plate([lon, lon], [-30.0, 60.0])
+        assert codes[0] is not None and codes[1] is not None

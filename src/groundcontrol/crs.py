@@ -644,11 +644,14 @@ def assign_plate(lon, lat):
     plates = _pb2002_plates()
     pts = gpd.GeoDataFrame(
         geometry=gpd.points_from_xy(lon_w.ravel(), lat.ravel()), crs=plates.crs)
-    joined = gpd.sjoin(pts, plates, how="left", predicate="within")
+    # "intersects", not "within": lon = ±180 wraps exactly onto the seam edge
+    # of the antimeridian-split polygons and "within" excludes boundaries —
+    # every such point would silently get no plate.
+    joined = gpd.sjoin(pts, plates, how="left", predicate="intersects")
     # The decimated polygons overlap slightly along boundaries (64 pairs,
-    # worst ~1 deg²), so a point can hit two plates. Keep a deterministic
-    # (alphabetical-code) choice — arbitrary either way inside the ~0.05°
-    # boundary blur, but stable across runs and geopandas versions.
+    # worst ~1 deg²), and boundary points intersect both neighbors. Keep a
+    # deterministic (alphabetical-code) choice — arbitrary either way inside
+    # the ~0.05° boundary blur, but stable across runs and geopandas versions.
     joined = joined.sort_values("Code", kind="stable")
     joined = joined[~joined.index.duplicated(keep="first")].sort_index()
     mapped = joined["Code"].map(_PB2002_TO_ITRF)  # unmapped/no-hit -> NaN
@@ -757,7 +760,8 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
                     vel_cols=("vel_e", "vel_n", "vel_u"), plate_model=None,
                     on_nan_epoch: str = "raise",
                     residual_rate_m_per_yr: float = PLATE_MOTION_RATE_BOUND,
-                    qc_frame_epoch: bool = True):
+                    qc_frame_epoch: bool = True,
+                    allow_static_frame: bool = False):
     """Stage 2: propagate each point from its ``coord_epoch`` to ``target_epoch``.
 
     ``x += vel_enu · (target_epoch − coord_epoch)`` (crs_implementation.md §1).
@@ -792,6 +796,13 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
     residual_rate_m_per_yr : reporting-only rate for the un-propagated
         ``velocity·Δt`` bound (see :data:`PLATE_MOTION_RATE_BOUND`).
     qc_frame_epoch : run :func:`check_frame_epoch_reduced` (warn) first.
+    allow_static_frame : stage 2 is intra-DYNAMIC-frame motion; in a
+        plate-fixed frame (NAD83(2011), ...) plate motion is ~zero by
+        construction, so moving points there fabricates displacement while
+        reporting ``epoch_residual_m=0`` — the guard raises instead. Pass
+        True only when the velocities deliberately express intra-frame motion
+        (e.g. local subsidence rates in NAD83(2011)). Datum *ensembles*
+        (WGS84) pass the guard: their realizations are ITRF-aliased.
 
     Returns a copy: propagated geometry/height, advanced ``coord_epoch``,
     ``transform_id`` appended with a ``prop:`` tag, a durable per-row
@@ -819,6 +830,18 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
             f"propagate_epoch expects geographic lon/lat coordinates; got "
             f"{crs_obj.name!r} (projected). Run stage 2 before projecting.")
     a, e2 = _ellipsoid_params(crs_obj)
+    datum_type = (crs_obj.datum.type_name or "") if crs_obj.datum is not None else ""
+    static_frame = ("dynamic" not in datum_type.lower()
+                    and "ensemble" not in datum_type.lower())
+    if static_frame and plate_model is not None and not allow_static_frame:
+        raise ValueError(
+            f"plate_model={getattr(plate_model, 'name', plate_model)!r} with the "
+            f"plate-fixed frame {crs_obj.name!r}: plate motion is ~zero by "
+            "construction in a static frame, so an ITRF plate-motion model here "
+            "fabricates cm/yr displacement while reporting epoch_residual_m=0. "
+            "Run stage 2 in the dynamic frame (before land_horizontal), or pass "
+            "allow_static_frame=True only for a model that deliberately "
+            "expresses intra-frame motion.")
 
     if qc_frame_epoch:
         check_frame_epoch_reduced(out)
@@ -860,6 +883,19 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
             "all of vel_e/n/u finite); treating them as having no per-point velocity",
             stacklevel=2)
 
+    ce = _col(coord_epoch_col)
+    dt = target_epoch - ce
+    if static_frame and not allow_static_frame:
+        mover = has_vel & np.isfinite(dt) & (dt != 0.0)
+        if mover.any():
+            raise ValueError(
+                f"{int(mover.sum())} row(s) carry per-point velocities and a "
+                f"nonzero Δt in the plate-fixed frame {crs_obj.name!r}. "
+                "MIDAS/ITRF velocities are expressed in a dynamic frame — "
+                "propagating them here double-counts plate motion. If the "
+                "velocities deliberately express intra-frame motion (e.g. local "
+                "subsidence rates in NAD83(2011)), pass allow_static_frame=True.")
+
     model_label = np.where(has_vel, "per_point", "none").astype(object)
     if plate_model is not None:
         need = ~has_vel
@@ -870,8 +906,6 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
             filled[need] = np.isfinite(pe) & np.isfinite(pn) & np.isfinite(pu)
             model_label[filled] = "plate"
 
-    ce = _col(coord_epoch_col)
-    dt = target_epoch - ce
     movable = np.isfinite(ve) & np.isfinite(vn) & np.isfinite(vu)
 
     nan_epoch = movable & ~np.isfinite(ce)
@@ -946,8 +980,12 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
             "none": int((model_label == "none").sum()),
         },
         max_applied_displacement_m=float(disp.max()),
-        max_residual_bound_m=float(bound.max()),
-        residual_bound_m=[float(b) for b in bound],
+        # report mirrors the durable column exactly: NaN = unassessable Δt
+        # (on_nan_epoch='skip'), never a claimed-zero bound for unknown Δt
+        max_residual_bound_m=(float(np.nanmax(col_bound))
+                              if np.isfinite(col_bound).any() else float("nan")),
+        residual_bound_m=[float(b) for b in col_bound],
+        n_unassessable=int(np.isnan(col_bound).sum()),
     )
     out.attrs["epoch_propagation"] = report
 
@@ -957,10 +995,11 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
         target_epoch, report["n_propagated"], n, report["models"]["per_point"],
         report["models"]["plate"], report["n_noop"],
         report["max_applied_displacement_m"], report["max_residual_bound_m"])
-    if report["max_residual_bound_m"] > 1e-4:
+    if report["max_residual_bound_m"] > 1e-4 or report["n_unassessable"]:
         warnings.warn(
             f"{report['n_noop']} row(s) left at their own epoch (no usable velocity); "
             f"un-propagated velocity·Δt bound up to {report['max_residual_bound_m']:.3f} m "
-            f"(at rate {residual_rate_m_per_yr} m/yr) — see attrs['epoch_propagation']",
+            f"(at rate {residual_rate_m_per_yr} m/yr), {report['n_unassessable']} row(s) "
+            "unassessable (NaN Δt) — see attrs['epoch_propagation']",
             stacklevel=2)
     return out

@@ -28,6 +28,7 @@ dependencies = [
     "shapely>=2.0",
     "rasterio",
     "rioxarray",
+    "scipy",           # xarray .interp(method="linear") — sample.py's default method
     "requests",
     "matplotlib",
     "pyarrow>=14",
@@ -46,6 +47,9 @@ groundcontrol-assess = "groundcontrol.cli:assess_dem_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+groundcontrol = ["data/*.geojson", "data/*.dat", "data/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

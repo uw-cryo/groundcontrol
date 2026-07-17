@@ -7,7 +7,6 @@ Entry points live inside the package (a console script cannot live outside
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 
 

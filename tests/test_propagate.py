@@ -96,6 +96,7 @@ def test_known_velocity_exact_displacement_matches_ecef_oracle():
     assert rep["max_applied_displacement_m"] == pytest.approx(
         np.sqrt((ve * dt) ** 2 + (vn * dt) ** 2 + (vu * dt) ** 2), abs=1e-9)
     assert rep["n_propagated"] == 1 and rep["models"]["per_point"] == 1
+    assert out["epoch_residual_m"].iloc[0] == 0.0  # propagated -> zero residual
 
 
 @pytest.mark.parametrize("axis,ve,vn,vu", [
@@ -163,6 +164,8 @@ def test_no_velocity_no_model_is_noop_and_surfaces_bound():
     # velocity·Δt bound = |Δt| * PLATE_MOTION_RATE_BOUND (reporting-only)
     assert rep["max_residual_bound_m"] == pytest.approx(10.0 * PLATE_MOTION_RATE_BOUND)
     assert rep["residual_bound_m"][0] == pytest.approx(1.6)
+    # durable per-row column mirrors the attrs bound (Phase B)
+    assert out["epoch_residual_m"].iloc[0] == pytest.approx(1.6)
     assert out["transform_id"].iloc[0] == "prop:noop"
 
 
@@ -220,6 +223,14 @@ def test_nan_coord_epoch_with_velocity_raises():
     g = _gdf(ve=0.02, vn=0.0, vu=0.0, coord_epoch=np.nan)
     with pytest.raises(ValueError, match="NaN"):
         propagate_epoch(g, target_epoch=2025.0)
+
+
+def test_nan_coord_epoch_skip_residual_is_nan_not_zero():
+    """Unknowable Δt must never be reported as a 0.0 residual (review fix)."""
+    g = _gdf(ve=0.01, vn=0.0, vu=0.0, coord_epoch=np.nan)
+    with pytest.warns(UserWarning, match="left un-propagated"):
+        out = propagate_epoch(g, target_epoch=2025.0, on_nan_epoch="skip")
+    assert np.isnan(out["epoch_residual_m"].iloc[0])
 
 
 def test_nan_coord_epoch_skip_policy_leaves_unpropagated():
@@ -312,3 +323,68 @@ def test_composes_with_land_horizontal_offline():
     assert landed.crs.to_epsg() == 6318
     assert np.isfinite(landed.geometry.x.iloc[0]) and np.isfinite(landed.geometry.y.iloc[0])
     assert landed["transform_id"].iloc[0].endswith("tt=coord_epoch")
+
+
+# ---------------------------------------------------------------------------
+# Phase B: epoch_residual_m is a durable schema column (attrs evaporate on
+# export/concat; the column must survive an io parquet round-trip)
+# ---------------------------------------------------------------------------
+
+def test_epoch_residual_column_survives_parquet_roundtrip(tmp_path):
+    from groundcontrol import io
+
+    g = _gdf(coord_epoch=2015.0)  # no velocity -> no-op with a 1.6 m bound
+    with pytest.warns(UserWarning, match="velocity"):
+        out = propagate_epoch(g, target_epoch=2025.0)
+    assert out["epoch_residual_m"].iloc[0] == pytest.approx(1.6)
+    path = io.write(out, tmp_path / "pts.parquet")
+    back = gpd.read_parquet(path)
+    assert "epoch_residual_m" in back.columns
+    assert back["epoch_residual_m"].iloc[0] == pytest.approx(1.6)
+
+
+def test_schema_normalize_carries_epoch_residual_column():
+    from groundcontrol import schema
+
+    assert "epoch_residual_m" in schema.COLUMNS
+    gdf = schema.empty()
+    assert "epoch_residual_m" in gdf.columns and gdf["epoch_residual_m"].dtype == "float64"
+
+
+def test_nan_coord_epoch_skip_report_matches_column():
+    """attrs report must mirror the durable column: NaN bound, counted."""
+    g = _gdf(ve=0.01, vn=0.0, vu=0.0, coord_epoch=np.nan)
+    with pytest.warns(UserWarning, match="unassessable"):
+        out = propagate_epoch(g, target_epoch=2025.0, on_nan_epoch="skip")
+    rep = out.attrs["epoch_propagation"]
+    assert np.isnan(rep["residual_bound_m"][0])
+    assert rep["n_unassessable"] == 1
+    assert np.isnan(rep["max_residual_bound_m"])
+
+
+def test_static_frame_plate_model_raises():
+    """Stage 2 is intra-DYNAMIC-frame; an ITRF PMM inside plate-fixed
+    NAD83(2011) fabricates ~cm/yr displacement (adversarial audit, HIGH)."""
+    model = EulerPoleModel(pole_lat_deg=90.0, pole_lon_deg=0.0,
+                           rate_deg_per_myr=0.2, name="northpole")
+    g = _gdf(coord_epoch=2010.0, crs="EPSG:6318")
+    with pytest.raises(ValueError, match="plate-fixed"):
+        propagate_epoch(g, target_epoch=2020.0, plate_model=model)
+
+
+def test_static_frame_per_point_velocity_raises_unless_allowed():
+    g = _gdf(ve=0.0, vn=0.0, vu=-0.03, coord_epoch=2010.0, crs="EPSG:6318")
+    with pytest.raises(ValueError, match="allow_static_frame"):
+        propagate_epoch(g, target_epoch=2020.0)
+    # explicit escape: intra-frame (e.g. subsidence) velocities are legitimate
+    out = propagate_epoch(g, target_epoch=2020.0, allow_static_frame=True)
+    assert out.attrs["epoch_propagation"]["n_propagated"] == 1
+    assert out["height"].iloc[0] == pytest.approx(700.0 - 0.3, abs=1e-6)
+
+
+def test_static_frame_noop_rows_fine_without_flag():
+    """No velocities -> nothing moves -> the static-frame guard stays quiet."""
+    g = _gdf(coord_epoch=2010.0, crs="EPSG:6318")
+    with pytest.warns(UserWarning):
+        out = propagate_epoch(g, target_epoch=2020.0)
+    assert out.attrs["epoch_propagation"]["n_propagated"] == 0

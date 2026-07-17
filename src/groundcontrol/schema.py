@@ -65,6 +65,8 @@ COLUMNS: dict[str, str] = {
     "vel_e": _F64,              # nullable velocities (m/yr; MIDAS for GNSS)
     "vel_n": _F64,
     "vel_u": _F64,
+    "epoch_residual_m": _F64,   # NaN = not assessed; 0.0 = epoch-reconciled; >0 = bound (m)
+
     "native_x": _F64,           # original coordinates — lossless re-targeting
     "native_y": _F64,
     "native_h": _F64,

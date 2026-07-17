@@ -1,12 +1,12 @@
 # Quickstart — using groundcontrol from another project
 
-Status: pre-release (`increment-1` branch). The schema is **not frozen** (open decisions
+Status: pre-release (`main` branch). The schema is **not frozen** (open decisions
 D1–D6 in `plan.md`) — pin a commit and expect column renames until v0.1.
 
 ## Install (into an existing env that already has geopandas>=1.0 / pyproj>=3.5)
 
 ```bash
-pip install --no-deps -e ~/src/groundcontrol     # or: pip install git+https://github.com/uw-cryo/groundcontrol.git@increment-1
+pip install --no-deps -e ~/src/groundcontrol     # or: pip install git+https://github.com/uw-cryo/groundcontrol.git@main
 ```
 
 ## 1. Fetch control points for an AOI
@@ -42,6 +42,32 @@ pts = transform_points(gdf, dem_crs_3d, tt=dem_epoch)   # tt per the (provisiona
 # source vertical datum is inferred from the uniform vertical_crs column, or pass
 # source_crs="EPSG:6318+5703" explicitly; anything ambiguous raises (never guessed).
 # Returns a copy: geometry in the DEM frame, `height` transformed (HAE), fail-loud.
+```
+
+## 2b. Epoch propagation (stage 2) — move points to the DEM's epoch
+
+Stage 1 above changes *frame*; it does not move a point from its `coord_epoch` to
+another epoch within a dynamic frame. That intra-frame move (`x += vel·Δt`, see
+`docs/crs_implementation.md` §1) is stage 2:
+
+```python
+from groundcontrol.crs import propagate_epoch, ITRF2020PMM
+
+# velocity ladder: per-point MIDAS (vel_e/n/u) -> plate model -> no-op + bound
+prop = propagate_epoch(gdf, target_epoch=2020.0,
+                       plate_model=ITRF2020PMM("NOAM"))   # single-plate AOI
+# AOI straddles a plate boundary (San Andreas)? ITRF2020PMM(None) assigns each
+# point via the bundled PB2002 boundaries. Rows without any usable velocity stay
+# put; their velocity·Δt bound lands in the durable `epoch_residual_m` column
+# (feeds the accuracy budget) plus the attrs['epoch_propagation'] report.
+```
+
+Composition order with stage 1 (the two orders commute to mm): run stage 2 in the
+(geographic) dynamic source frame first, then land:
+
+```python
+prop = propagate_epoch(gdf, target_epoch=2020.0, plate_model=ITRF2020PMM("NOAM"))
+landed = land_horizontal(prop, target="EPSG:6318")   # tt = coord_epoch = 2020.0
 ```
 
 ## 3. Sample the DEM + accuracy stats

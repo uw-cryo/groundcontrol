@@ -71,9 +71,17 @@ def transform_control(control, target_crs, *, target_epoch=2010.0,
         # landing would get the geoid undulation applied to already-
         # ellipsoidal heights, and the dh_stats tripwire would then read like
         # a plausible geoid signal instead of an error.
-        horiz = assumed.sub_crs_list[0] if assumed.is_compound else assumed
-        if not (declared.equals(assumed)
-                or (len(declared.axis_info) == 2 and declared.equals(horiz))):
+        horiz = (assumed.sub_crs_list[0] if assumed.is_compound
+                 else assumed.to_2d())
+
+        def _match(x, y):
+            # equals() misses equivalent re-encodings (ESRI WKT1 from a .prj);
+            # a resolved matching EPSG code is the same CRS
+            return x.equals(y) or (x.to_epsg() is not None
+                                   and x.to_epsg() == y.to_epsg())
+
+        if not (_match(declared, assumed)
+                or (len(declared.axis_info) == 2 and _match(declared, horiz))):
             raise ValueError(
                 f"control frame declares CRS {declared.name!r} but the "
                 f"transform source is {src!r} ({assumed.name}); refusing to "
@@ -135,7 +143,8 @@ def sample_products(gdf, products, *, method="linear", radius=None, block=4096,
 
     out = gdf
     for name, r in products.items():
-        clash = [c for c in (f"h_{name}", f"dh_{name}_before") if c in out.columns]
+        clash = [c for c in (f"h_{name}", f"dh_{name}_before",
+                             f"h_{name}_nmad", f"h_{name}_n") if c in out.columns]
         if clash:
             raise ValueError(
                 f"columns {clash} already present — product {name!r} appears to "

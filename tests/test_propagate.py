@@ -388,3 +388,42 @@ def test_static_frame_noop_rows_fine_without_flag():
     with pytest.warns(UserWarning):
         out = propagate_epoch(g, target_epoch=2020.0)
     assert out.attrs["epoch_propagation"]["n_propagated"] == 0
+
+
+def test_static_frame_guard_catches_etrs89_ensemble():
+    """ETRS89 is an EPSG datum ENSEMBLE whose members are all Eurasia-fixed —
+    the ensemble bypass must not readmit the fabricated-motion defect."""
+    from groundcontrol.crs import ITRF2020PMM
+    g = _gdf(lon=13.4, lat=52.5, coord_epoch=2010.0, crs="EPSG:4258")
+    with pytest.raises(ValueError, match="plate-fixed"):
+        propagate_epoch(g, target_epoch=2020.0, plate_model=ITRF2020PMM("EURA"))
+    g2 = _gdf(lon=13.4, lat=52.5, ve=0.018, vn=0.012, vu=0.0, coord_epoch=2010.0,
+              crs="EPSG:4258")
+    with pytest.raises(ValueError, match="allow_static_frame"):
+        propagate_epoch(g2, target_epoch=2020.0)
+
+
+def test_static_frame_guard_passes_proj4_wgs84():
+    """A PROJ-string WGS84 frame has datum type 'Geodetic Reference Frame' —
+    plate-fixity comes from the NAME (ITRF-aliased), not the type."""
+    g = _gdf(ve=0.018, vn=-0.006, vu=0.002, coord_epoch=2015.0,
+             crs="+proj=longlat +datum=WGS84 +no_defs")
+    out = propagate_epoch(g, target_epoch=2025.0)
+    assert out.attrs["epoch_propagation"]["n_propagated"] == 1
+
+
+def test_static_frame_guard_ignores_noop_plate_model():
+    """A plate model that would never displace anything (zero dt) must not
+    trip the guard (mover-aware, round-2 audit)."""
+    from groundcontrol.crs import ITRF2020PMM
+    g = _gdf(coord_epoch=2020.0, crs="EPSG:6318")
+    out = propagate_epoch(g, target_epoch=2020.0,
+                          plate_model=ITRF2020PMM("NOAM"))
+    assert out.geometry.x.iloc[0] == g.geometry.x.iloc[0]
+    assert out.attrs["epoch_propagation"]["max_applied_displacement_m"] == 0.0
+
+
+def test_zero_row_report_has_unassessable_key():
+    g = _gdf().iloc[:0]
+    out = propagate_epoch(g, target_epoch=2020.0)
+    assert out.attrs["epoch_propagation"]["n_unassessable"] == 0

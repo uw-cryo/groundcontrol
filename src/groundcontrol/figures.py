@@ -310,7 +310,10 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
                 v = v[np.isfinite(v)]
                 if lab == "NGS monument" and len(v):
                     med0, nm0 = np.median(v), _nmad(v)
-                    v = v[np.abs(v - med0) < ngs_nmad_gate * max(nm0, 1e-6)]
+                    if nm0 > 0:  # NMAD=0 (quantized): no gate — mirrors
+                        # accuracy.error_report; a floor would keep only the
+                        # majority value and annotate fake-perfect stats
+                        v = v[np.abs(v - med0) < ngs_nmad_gate * nm0]
                 if not len(v):
                     continue
                 color = POINT_STYLE[style][1]
@@ -421,10 +424,20 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
             if mask is None:
                 mask = default_ngs_best(sampled)
             # fillna BEFORE the bool cast: default_ngs_best yields Kleene-NA
-            # for rows with missing raw/ref_frame fields — exclude, don't crash
-            mask = pd.Series(
-                pd.Series(mask, index=sampled.index).fillna(False)
-                .to_numpy(dtype=bool), index=sampled.index)
+            # for rows with missing raw/ref_frame fields — exclude, don't
+            # crash. A user Series must share the frame's index: constructing
+            # with index= would label-ALIGN it (a positional mask built on a
+            # RangeIndex against a .loc-filtered frame silently empties).
+            if isinstance(mask, pd.Series):
+                if not mask.index.equals(sampled.index):
+                    raise ValueError(
+                        "ngs_best mask index does not match the sampled frame "
+                        "— align it (or pass a plain boolean array)")
+                m = mask
+            else:
+                m = pd.Series(np.asarray(mask), index=sampled.index)
+            mask = pd.Series(m.astype("boolean").fillna(False)
+                             .to_numpy(dtype=bool), index=sampled.index)
             subclasses = [("NGS best", lambda d, m=mask: m, "monument", "o")]
         for prod in products:
             col = f"dh_{prod}_before"

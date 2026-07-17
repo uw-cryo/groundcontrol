@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 import warnings
 
@@ -278,7 +279,9 @@ def expand_attributes(gdf, fields=None, prefix="ngs_"):
         # (apply's dtype inference floats an int column that contains a None)
         vals = pd.Series([rec.get(f) for rec in parsed], index=out.index,
                          dtype=object)
+        # json.loads accepts bare NaN — must become NA, never the string "nan"
         vals = vals.map(lambda v: (v.strip() if isinstance(v, str) else str(v))
-                        if v is not None else None)
+                        if v is not None and not (isinstance(v, float)
+                                                  and math.isnan(v)) else None)
         out[prefix + f] = pd.Series(vals, index=out.index, dtype="string").replace("", pd.NA)
     return out

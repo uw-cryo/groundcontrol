@@ -24,7 +24,7 @@ dependencies = [
     "numpy",
     "pandas",
     "geopandas>=1.0",  # read_parquet bbox pushdown
-    "pyproj>=3.5",     # only_best= (wheels bundle PROJ >= 9.2)
+    "pyproj>=3.6",     # only_best=, CRS.to_2d (wheels bundle PROJ >= 9.2)
     "shapely>=2.0",
     "rasterio",
     "rioxarray",

@@ -150,10 +150,12 @@ def test_assess_products_end_to_end_writes_artifacts(tmp_path):
         outdir=tmp_path / "out", site_name="synthsite", figures=False)
     assert (tmp_path / "out" / "synthsite_assessed.parquet").exists()
     assert (tmp_path / "out" / "synthsite_dz_stats.csv").exists()
-    # pure-frame op: PROJ reports 0/None ("exact"), a grid chain reports >0 —
-    # either way the info block must carry the key and never a negative
+    # info carries PROJ's RAW accuracy (None/0/-1 sentinels allowed); the
+    # honest per-point mapping (sentinels -> NaN) is what xform_acc_m asserts
     acc = artifacts["transform"]["accuracy_m"]
-    assert acc is None or acc >= 0
+    assert acc is None or isinstance(acc, float)
+    xa = sampled["xform_acc_m"].iloc[0]
+    assert np.isnan(xa) or xa > 0
     rt = gpd.read_parquet(tmp_path / "out" / "synthsite_assessed.parquet")
     np.testing.assert_allclose(rt["dh_DSM_before"], [0.10, -0.20, 0.30, 0.40],
                                atol=1e-9)
@@ -317,3 +319,63 @@ def test_family_dz_ngs_best_na_mask(tmp_path):
     out = family_dz_figures(g, None, tmp_path, "na",
                             products=("DSM",), families=("ngs_best",))
     assert len(out) == 1 and out[0].exists()
+
+
+def test_transform_control_2d_tag_under_3d_source_passes():
+    """The universal 2D EPSG:6318 cache tag must not be rejected under an
+    explicit 3D geographic source (round-2 audit: to_2d demotion)."""
+    ctl = _control_6319().set_crs("EPSG:6318", allow_override=True)
+    out, info = transform_control(ctl, UTM12_3D, source_crs="EPSG:6319",
+                                  aoi_bounds_4326=AOI_AZ)
+    np.testing.assert_allclose(out["h_ell"], ctl["height"], atol=1e-9)
+
+
+def test_transform_control_accepts_esri_wkt_tag():
+    """An ESRI-WKT1 (.prj-derived) NAD83(2011) tag is the same CRS —
+    matched via resolved EPSG code, not string equality."""
+    esri = pyproj.CRS("EPSG:6318").to_wkt(version="WKT1_ESRI")
+    ctl = _control_6319().set_crs(esri, allow_override=True)
+    out, _ = transform_control(ctl, UTM12_3D, source_crs="EPSG:6319",
+                               aoi_bounds_4326=AOI_AZ)
+    assert len(out) == len(ctl)
+
+
+def test_sample_products_radius_resample_also_guarded(tmp_path):
+    """Dropping only h_/dh_ then re-sampling in radius mode must still raise
+    (h_*_nmad/h_*_n would otherwise duplicate silently)."""
+    dsm = _plane_tif(tmp_path, "a-DSM_mos.tif")
+    pts = _landed([0.10, -0.20, 0.30, 0.40])
+    once = sample_products(pts, {"DSM": dsm}, radius=1.5)
+    stripped = once.drop(columns=["h_DSM", "dh_DSM_before"])
+    with pytest.raises(ValueError, match="already present"):
+        sample_products(stripped, {"DSM": dsm}, radius=1.5)
+
+
+def test_family_dz_misaligned_mask_series_raises(tmp_path):
+    """A positional mask built on a RangeIndex against a .loc-filtered frame
+    would label-align to all-False — raise instead of an empty figure."""
+    from groundcontrol.figures import family_dz_figures
+    g = gpd.GeoDataFrame(
+        {"source": ["ngs"] * 4, "point_type": ["monument"] * 4,
+         "raw": [None] * 4, "ref_frame": ["NAD 83(2011)"] * 4,
+         "dh_DSM_before": [0.1, 0.2, 0.3, 0.4]},
+        geometry=gpd.points_from_xy(range(4), range(4)), crs=CRS,
+        index=[2, 5, 7, 9])
+    bad = pd.Series([True, True, False, False])  # RangeIndex
+    with pytest.raises(ValueError, match="mask index"):
+        family_dz_figures(g, None, tmp_path, "mis", products=("DSM",),
+                          families=("ngs_best",), ngs_best=bad)
+    ok = family_dz_figures(g, None, tmp_path, "ok", products=("DSM",),
+                           families=("ngs_best",),
+                           ngs_best=bad.to_numpy())  # positional array: fine
+    assert len(ok) == 1
+
+
+def test_expand_attributes_json_nan_becomes_na():
+    """json.loads accepts bare NaN — it must expand to NA, never "nan"."""
+    from groundcontrol.sources.ngs import expand_attributes
+    g = gpd.GeoDataFrame({"raw": ['{"name": NaN}', '{"name": "AG 45"}']},
+                         geometry=gpd.points_from_xy([0, 1], [0, 0]),
+                         crs="EPSG:6318")
+    out = expand_attributes(g, fields=("name",))
+    assert pd.isna(out["ngs_name"][0]) and out["ngs_name"][1] == "AG 45"

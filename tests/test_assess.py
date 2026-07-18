@@ -225,6 +225,32 @@ def test_family_dz_figures_smoke(tmp_path):
     assert all(p.exists() for p in out)
 
 
+def test_validation_dz_figures_accepts_path_aoi(tmp_path):
+    # validation_dz_figures must accept a path aoi in any CRS (read + reproject),
+    # like its sibling figure functions — not only a pre-reprojected GeoDataFrame
+    from shapely.geometry import box
+
+    from groundcontrol.figures import validation_dz_figures
+    n = 10
+    g = gpd.GeoDataFrame(
+        {"source": ["3dep"] * 4 + ["opus"] * 2 + ["ngs"] * 4,
+         "point_type": ["NVA", "NVA", "VVA", "VVA"] + ["gnss"] * 2
+                       + ["monument"] * 4,
+         "dh_DSM_before": np.linspace(-0.1, 0.1, n),
+         "dh_DTM_before": np.linspace(-0.1, 0.1, n)},
+        geometry=gpd.points_from_xy(np.linspace(0, 100, n),
+                                    np.linspace(0, 80, n)),
+        crs="EPSG:32611")
+    aoi = tmp_path / "aoi.geojson"  # supplied as a path in a DIFFERENT CRS
+    gpd.GeoDataFrame(geometry=[box(*g.total_bounds)], crs=g.crs) \
+        .to_crs("EPSG:4326").to_file(aoi, driver="GeoJSON")
+    out = validation_dz_figures(g, aoi, tmp_path, "syn",
+                                products=("DSM", "DTM"))
+    assert sorted(p.name for p in out) == ["syn_validation_dz_DSM.png",
+                                           "syn_validation_dz_DTM.png"]
+    assert all(p.exists() for p in out)
+
+
 def test_transform_control_xform_acc_column():
     ctl = _control_6319()
     out, info = transform_control(ctl, UTM12_3D, source_crs="EPSG:6319",

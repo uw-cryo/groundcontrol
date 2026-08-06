@@ -95,7 +95,10 @@ def parse(raw: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
                 dtype="string", index=raw.index,
             ),
         },
-        geometry=force_2d(raw.geometry) if n else raw.geometry,
+        # force_2d also strips the compound EPSG:6349 CRS the raw parquet
+        # carries; passing raw.geometry directly (empty AOI) conflicts with
+        # crs= below and raises in geopandas >= 1.0.
+        geometry=force_2d(raw.geometry),
         crs="EPSG:6318",  # 2D horizontal component of EPSG:6349
         index=raw.index,
     )

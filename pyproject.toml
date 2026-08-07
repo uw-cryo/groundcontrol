@@ -36,7 +36,7 @@ dependencies = [
 
 [project.optional-dependencies]
 kml = ["fiona"]        # KML export (simplekml fallback documented in plan)
-dev = ["pytest", "ruff>=0.16"]  # floor keeps local ruff in step with CI's unpinned install
+dev = ["pytest", "ruff>=0.16"]
 
 [project.urls]
 Repository = "https://github.com/uw-cryo/groundcontrol"

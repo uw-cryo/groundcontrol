@@ -41,7 +41,7 @@ def test_parse_3dep_empty_aoi():
 
     Regression: the empty branch passed ``raw.geometry`` still carrying the
     parquet's compound EPSG:6349, conflicting with ``crs="EPSG:6318"``
-    (geopandas >= 1.0 raises). Seen live on an Atlanta DEM-footprint AOI.
+    (geopandas >= 1.0 raises).
     """
     raw = gpd.read_parquet(DATA / "checkpoints_3dep_sample.parquet").iloc[0:0]
     out = schema.normalize(checkpoints_3dep.parse(raw), source="3dep")

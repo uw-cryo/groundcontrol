@@ -77,14 +77,17 @@ groundcontrol-assess --aoi site_aoi.geojson --product DTM=dtm.vrt --product DSM=
 From Python (see [`docs/quickstart.md`](docs/quickstart.md) for the full pattern):
 
 ```python
+from pathlib import Path
+
 from groundcontrol.sources import fetch_control
 from groundcontrol.assess import assess_products
 from groundcontrol import io
 
 control, status = fetch_control("aoi.geojson", sources=("3dep", "ngs", "opus"))
 io.write(control, "control.parquet", status=status)
+target_crs = Path("dem_frame.wkt").read_text()
 sampled, stats, artifacts = assess_products(
-    control, {"DTM": "dtm.vrt"}, target_crs=open("dem_frame.wkt").read(),
+    control, {"DTM": "dtm.vrt"}, target_crs=target_crs,
     outdir="out", site_name="mysite")
 ```
 

@@ -441,3 +441,31 @@ def test_static_frame_noop_plate_model_provenance_stays_noop():
     assert rep["models"]["plate"] == 0
     assert out["transform_id"].iloc[0].endswith("prop:noop")
     assert out["epoch_residual_m"].iloc[0] == 0.0
+
+
+def test_per_row_report_capped_but_column_complete(monkeypatch):
+    """attrs must not carry a per-row payload at scale — pandas `__finalize__` deep-copies
+    attrs on every operation, so a multi-million-element list there turns each later CSV
+    write / plot into billions of deepcopy calls (measured 2026-08-08). The durable per-row
+    column carries the same numbers, uncapped."""
+    import geopandas as gpd
+    from shapely.geometry import Point
+    from groundcontrol import crs as C
+
+    n = 50
+    g = gpd.GeoDataFrame(
+        {"height": [0.0] * n, "coord_epoch": [2015.0] * n,
+         "vel_e": [np.nan] * n, "vel_n": [np.nan] * n, "vel_u": [np.nan] * n},
+        geometry=[Point(-115.1 + 0.001 * i, 36.1) for i in range(n)], crs="EPSG:7912")
+
+    with pytest.warns(UserWarning, match="velocity"):
+        big = propagate_epoch(g, target_epoch=2025.0)          # under the cap: list present
+    assert len(big.attrs["epoch_propagation"]["residual_bound_m"]) == n
+
+    monkeypatch.setattr(C, "PER_ROW_PROVENANCE_MAX", 10)
+    with pytest.warns(UserWarning, match="velocity"):
+        out = propagate_epoch(g, target_epoch=2025.0)
+    rep = out.attrs["epoch_propagation"]
+    assert rep["residual_bound_m"] is None                      # dropped from attrs...
+    assert len(out["epoch_residual_m"]) == n                    # ...but complete as a column
+    assert rep["max_residual_bound_m"] == pytest.approx(out["epoch_residual_m"].max())

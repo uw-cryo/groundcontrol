@@ -1,6 +1,7 @@
 # groundcontrol
 
 [![CI](https://github.com/uw-cryo/groundcontrol/actions/workflows/ci.yml/badge.svg)](https://github.com/uw-cryo/groundcontrol/actions/workflows/ci.yml)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21846300.svg)](https://doi.org/10.5281/zenodo.21846300)
 
 Fetch ground control points for an arbitrary AOI and assess DEM accuracy — with rigorous
 3D CRS / datum / epoch handling as the core competency.

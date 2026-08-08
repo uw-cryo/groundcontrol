@@ -13,8 +13,8 @@ Fetch ground control points for an arbitrary AOI and assess DEM accuracy — wit
 
 ## Status
 
-**v0.1.0 — pre-alpha, quiet release.** The fetch → transform → sample → statistics →
-figures pipeline works end to end (CLI + Python API) and is covered by **261 offline
+**v0.1.1 — pre-alpha, quiet release.** The fetch → transform → sample → statistics →
+figures pipeline works end to end (CLI + Python API) and is covered by **264 offline
 tests** run in CI on Python 3.10/3.12, with the geodesy core additionally adversarially
 audited (independent review agents; math cross-checked against external oracles). The API
 may still move between minor versions — pin the tag if you build on it, and expect sharp

@@ -568,7 +568,9 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                 if np.isfinite(b):
                     axh.text(0.02, 0.02, f"stated 3D transform budget ±{b:g} m",
                              transform=axh.transAxes, fontsize=8, color=_MUT,
-                             va="bottom")
+                             va="bottom",
+                             bbox=dict(boxstyle="round,pad=0.2", fc="white",
+                                       ec="none", alpha=0.8))
             axh.tick_params(labelsize=8, colors=_MUT)
             axh.grid(alpha=0.25, lw=0.5)
             gap = f"; {n_gap} unsampled (nodata/gap)" if n_gap else ""

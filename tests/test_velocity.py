@@ -328,3 +328,11 @@ def test_station_prefilter_keeps_nan_targets_and_far_points_exact():
     lat = np.concatenate([36.10 + rng.uniform(-0.5, 0.5, 200), [36.1, 50.0, np.nan]])
     pd.testing.assert_frame_equal(V.interpolate_velocity(lon, lat, st),
                                   _reference_interpolate(lon, lat, st))
+
+
+@pytest.mark.parametrize("bad", ["false", "always", 1, 0, None])
+def test_per_row_rejects_unsupported_values(bad):
+    """A stray truthy value must not silently re-enable the per-row payload (PR #15 review)."""
+    st = _uniform(-115.15, 36.10, [-0.1, 0.0, 0.1], 0.02, -0.01, 0.0)
+    with pytest.raises(ValueError, match="per_row must be"):
+        V.fill_velocities(_gdf([(-115.15, 36.10)]), st, per_row=bad)

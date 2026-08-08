@@ -393,6 +393,10 @@ def fill_velocities(gdf, stations: pd.DataFrame, *,
     million-point altimetry lookup from spending more memory on unread provenance than on
     the data; ``quality_col`` gives the per-point flag at full scale for free.
     """
+    # Validate rather than fall back on truthiness: a stray value ('false', 'always', 1)
+    # would silently re-enable the very payload the cap exists to prevent.
+    if per_row != "auto" and not isinstance(per_row, bool):
+        raise ValueError(f"per_row must be 'auto', True or False; got {per_row!r}")
     out = gdf.copy()
     if len(out) == 0:
         out.attrs["velocity_fill"] = {"n_total": 0, "quality_counts": {}}
@@ -405,7 +409,7 @@ def fill_velocities(gdf, stations: pd.DataFrame, *,
     if quality_col is not None:
         out[quality_col] = res["quality"].to_numpy()
     counts = res["quality"].value_counts().to_dict()
-    keep_rows = len(res) <= PER_ROW_PROVENANCE_MAX if per_row == "auto" else bool(per_row)
+    keep_rows = len(res) <= PER_ROW_PROVENANCE_MAX if per_row == "auto" else per_row
     out.attrs["velocity_fill"] = {
         "n_total": int(len(res)),
         "n_filled": int(res["vel_e"].notna().sum()),

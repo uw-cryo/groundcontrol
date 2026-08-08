@@ -16,6 +16,11 @@ requirement until then.
 pip install git+https://github.com/uw-cryo/groundcontrol.git@v0.1.1
 ```
 
+> ⚠️ **Do not run `pip install groundcontrol`.** An unrelated package of that name
+> (satellite orbit propagation, last released 2022) occupies it on PyPI, and installing it
+> would shadow nothing useful while silently not being this library. Always install from
+> the git tag above.
+
 Into an existing env that already satisfies the heavy geo stack (geopandas>=1.0,
 pyproj>=3.6, rasterio, rioxarray), add `--no-deps` so pip leaves the solved env alone:
 

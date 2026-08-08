@@ -110,8 +110,8 @@ What the standard outputs look like on a real site: **[docs/gallery.md](docs/gal
 
 ## Install
 
-Not on PyPI yet — install from a tag, and **pin it**: the schema is not frozen, so column
-names may still change between minor versions.
+Install from a git tag, and **pin it**: the schema is not frozen, so column names may still
+change between minor versions. A PyPI release is planned once the API stabilizes.
 
 ```bash
 pip install git+https://github.com/uw-cryo/groundcontrol.git@v0.1.1

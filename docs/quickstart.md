@@ -3,7 +3,12 @@
 Status: **v0.1.1**, public and citable
 ([10.5281/zenodo.21846300](https://doi.org/10.5281/zenodo.21846300)). Pre-alpha: the
 schema is **not frozen** (open decisions D1–D6 in `plan.md`), so **pin the tag** and
-expect column renames before v1. Not on PyPI yet — install from the tag.
+expect column renames before v1.
+
+Install from a git tag for now; **a PyPI release is planned once the API stabilizes**, and
+that is what downstream packages should ultimately depend on — PyPI rejects direct-URL
+(`git+https://…`) dependencies, so a published package cannot declare this one as a
+requirement until then.
 
 ## Install
 

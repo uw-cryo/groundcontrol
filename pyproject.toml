@@ -36,7 +36,7 @@ dependencies = [
 
 [project.optional-dependencies]
 kml = ["fiona"]        # KML export (simplekml fallback documented in plan)
-dev = ["pytest", "ruff"]
+dev = ["pytest", "ruff>=0.16"]
 
 [project.urls]
 Repository = "https://github.com/uw-cryo/groundcontrol"
@@ -60,3 +60,11 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
+# Explicitly pin the rule set the codebase was written against (ruff's
+# historical default). ruff 0.16.0 broadened the default selection and CI
+# installs unpinned ruff, so without this pin ~54 pre-existing violations
+# (I001, C408, RUF059, ...) fail lint on every branch.
+# Followup: broaden the selection and re-lint the codebase — see issue #9.
+select = ["E4", "E7", "E9", "F"]

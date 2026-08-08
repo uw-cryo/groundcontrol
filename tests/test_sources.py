@@ -36,6 +36,19 @@ def test_parse_3dep_sample():
     assert "source_geoid" in json.loads(out["raw"].iloc[0])
 
 
+def test_parse_3dep_empty_aoi():
+    """AOI with no checkpoints: parse must not crash on the raw compound CRS.
+
+    Regression: the empty branch passed ``raw.geometry`` still carrying the
+    parquet's compound EPSG:6349, conflicting with ``crs="EPSG:6318"``
+    (geopandas >= 1.0 raises).
+    """
+    raw = gpd.read_parquet(DATA / "checkpoints_3dep_sample.parquet").iloc[0:0]
+    out = schema.normalize(checkpoints_3dep.parse(raw), source="3dep")
+    assert len(out) == 0
+    assert out.crs is not None and out.crs.to_epsg() == 6318
+
+
 def test_parse_nde_sample():
     records = json.loads((DATA / "ngs_nde_sample.json").read_text())
     out = schema.normalize(ngs.parse_nde(records), source="ngs")

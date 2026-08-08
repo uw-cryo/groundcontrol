@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "groundcontrol"
-version = "0.1.0.dev0"
+version = "0.1.1"
 description = "Fetch ground control points for any AOI and assess DEM accuracy, with rigorous 3D CRS/datum/epoch handling"
 readme = "README.md"
 license = { text = "MIT" }

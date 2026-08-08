@@ -1,0 +1,101 @@
+# Build and publish distributions to (Test)PyPI using Trusted Publishing (OIDC) —
+# no API tokens are stored in this repository.
+#
+# One-time setup, per index, before this can publish:
+#   1. https://pypi.org/manage/account/publishing/ (or test.pypi.org) -> add a
+#      pending publisher: owner uw-cryo, repo groundcontrol, workflow release.yml,
+#      environment pypi (or testpypi).
+#   2. Create the matching GitHub environment (Settings -> Environments).
+#   3. For the real index only: set repository variable PYPI_ENABLED=true
+#      (Settings -> Secrets and variables -> Actions -> Variables). Until then,
+#      publishing a GitHub Release archives to Zenodo but does not touch PyPI —
+#      which is what we want while the `groundcontrol` name on PyPI is unresolved.
+#
+# Rehearse anytime with: Actions -> Release -> Run workflow -> target=testpypi.
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Index to publish to
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
+
+jobs:
+  build:
+    name: build sdist + wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+      - name: Validate metadata
+        run: twine check --strict dist/*
+      - name: Verify bundled data files are present
+        # the ITRF2020 PMM poles and PB2002 boundaries are package_data; if they
+        # ever drop out of the wheel, propagate_epoch breaks only for installed
+        # users (never in-repo), so fail the release here instead
+        run: |
+          python - <<'PY'
+          import glob, sys, zipfile
+          whl = glob.glob("dist/*.whl")[0]
+          need = {"groundcontrol/data/ITRF2020-PMM.dat",
+                  "groundcontrol/data/pb2002_plates_decimated.geojson"}
+          have = set(zipfile.ZipFile(whl).namelist())
+          missing = need - have
+          if missing:
+              sys.exit(f"wheel is missing package data: {sorted(missing)}")
+          print(f"{whl}: bundled data present")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  testpypi:
+    name: publish to TestPyPI
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  pypi:
+    name: publish to PyPI
+    needs: build
+    # gated on PYPI_ENABLED so a Release cannot fail the run while the PyPI name
+    # is still unresolved; flip the variable to true once it is ours
+    if: >-
+      vars.PYPI_ENABLED == 'true' &&
+      (github.event_name == 'release' ||
+       (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi'))
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

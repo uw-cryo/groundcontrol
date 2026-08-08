@@ -141,12 +141,13 @@ def _aspect_panel_w(aoi_gdf, map_h, lo=0.5, hi=1.5):
     """Width (inches) for an equal-aspect map of ``aoi_gdf`` drawn ``map_h``
     inches tall, so the map fills its axes instead of letterboxing (the source
     of the tall-narrow-AOI whitespace). Clamped to ``[lo, hi]``*``map_h`` so
-    extreme aspect ratios stay sane; ``None`` aoi -> square panel."""
+    extreme aspect ratios stay sane; ``None`` or degenerate (zero-width or
+    zero-height bounds) aoi -> square panel."""
     if aoi_gdf is None:
         return map_h
     b = aoi_gdf.total_bounds
     dx, dy = float(b[2] - b[0]), float(b[3] - b[1])
-    asp = dy / dx if dx > 0 else 1.0
+    asp = dy / dx if (dx > 0 and dy > 0) else 1.0
     return float(np.clip(map_h / asp, lo * map_h, hi * map_h))
 
 
@@ -494,13 +495,15 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                 hist_lim = max(snap_clim(fig_v, k=6.0), map_lim)
             n_sub = len(subs)
             # aspect-aware map columns (fill the axes; kill the map->colorbar
-            # gap on tall-narrow AOIs) + a shared colorbar allowance
+            # gap on tall-narrow AOIs); the shared-colorbar allowance rides on
+            # the map columns in BOTH figsize and width_ratios so the inch
+            # widths stay literal
             map_h = 6.4
-            mcol = _aspect_panel_w(aoi_gdf, map_h - 0.7)
+            mcol = _aspect_panel_w(aoi_gdf, map_h - 0.7) + 0.9 / n_sub
             hist_w = 5.0
             fig, axes = plt.subplots(
                 1, n_sub + 1,
-                figsize=(mcol * n_sub + 0.9 + hist_w, map_h),
+                figsize=(mcol * n_sub + hist_w, map_h),
                 gridspec_kw=dict(width_ratios=[mcol] * n_sub + [hist_w]))
             axh = axes[-1]
             hs_prod = hs_tif.get(prod) if isinstance(hs_tif, dict) else hs_tif

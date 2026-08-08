@@ -251,6 +251,21 @@ def test_validation_dz_figures_accepts_path_aoi(tmp_path):
     assert all(p.exists() for p in out)
 
 
+def test_aspect_panel_w_degenerate_aoi():
+    # zero-height (or zero-width) AOI bounds must fall back to a square
+    # panel, not divide by zero (Python float -> ZeroDivisionError)
+    from groundcontrol.figures import _aspect_panel_w
+    flat = gpd.GeoDataFrame(
+        geometry=gpd.points_from_xy([0.0, 100.0], [50.0, 50.0]),
+        crs="EPSG:32611")  # dy == 0
+    assert _aspect_panel_w(flat, 5.7) == 5.7
+    tall = gpd.GeoDataFrame(
+        geometry=gpd.points_from_xy([50.0, 50.0], [0.0, 100.0]),
+        crs="EPSG:32611")  # dx == 0
+    assert _aspect_panel_w(tall, 5.7) == 5.7
+    assert _aspect_panel_w(None, 5.7) == 5.7
+
+
 def test_transform_control_xform_acc_column():
     ctl = _control_6319()
     out, info = transform_control(ctl, UTM12_3D, source_crs="EPSG:6319",

@@ -1,13 +1,25 @@
 # Quickstart — using groundcontrol from another project
 
-Status: pre-release (`main` branch). The schema is **not frozen** (open decisions
-D1–D6 in `plan.md`) — pin a commit and expect column renames until v0.1.
+Status: **v0.1.1**, public and citable
+([10.5281/zenodo.21846300](https://doi.org/10.5281/zenodo.21846300)). Pre-alpha: the
+schema is **not frozen** (open decisions D1–D6 in `plan.md`), so **pin the tag** and
+expect column renames before v1. Not on PyPI yet — install from the tag.
 
-## Install (into an existing env that already has geopandas>=1.0 / pyproj>=3.5)
+## Install
 
 ```bash
-pip install --no-deps -e ~/src/groundcontrol     # or: pip install git+https://github.com/uw-cryo/groundcontrol.git@main
+pip install git+https://github.com/uw-cryo/groundcontrol.git@v0.1.1
 ```
+
+Into an existing env that already satisfies the heavy geo stack (geopandas>=1.0,
+pyproj>=3.6, rasterio, rioxarray), add `--no-deps` so pip leaves the solved env alone:
+
+```bash
+pip install --no-deps git+https://github.com/uw-cryo/groundcontrol.git@v0.1.1
+```
+
+For co-development against a local checkout, `pip install --no-deps -e /path/to/groundcontrol`
+still works — but pin the tag in anything reproducible.
 
 ## 1. Fetch control points for an AOI
 

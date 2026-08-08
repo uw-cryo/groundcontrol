@@ -108,7 +108,20 @@ What the standard outputs look like on a real site: **[docs/gallery.md](docs/gal
 - **`epoch_acc_m`** — velocity-uncertainty propagation through the stage-2 tiers.
 - **ICESat-2 as a global dense-control source** — planned (see the sources survey).
 
-## Install (development)
+## Install
+
+Not on PyPI yet — install from a tag, and **pin it**: the schema is not frozen, so column
+names may still change between minor versions.
+
+```bash
+pip install git+https://github.com/uw-cryo/groundcontrol.git@v0.1.1
+```
+
+Into an env that already satisfies the geo stack (geopandas>=1.0, pyproj>=3.6, rasterio,
+rioxarray), add `--no-deps` so pip leaves the solved environment alone. See
+[`docs/quickstart.md`](docs/quickstart.md) for the downstream-consumer recipe.
+
+For development:
 
 ```bash
 pip install -e ".[dev]"
@@ -146,6 +159,14 @@ src/groundcontrol/
 - [`docs/plan.md`](docs/plan.md) — full design and migration plan
 - [`docs/control_sources_survey.md`](docs/control_sources_survey.md) — candidate sources
   beyond the implemented set
+
+## Citation
+
+Archived on Zenodo — the concept DOI below always resolves to the latest release, and each
+release also gets its own version DOI. Machine-readable metadata lives in
+[`CITATION.cff`](CITATION.cff) (GitHub's *Cite this repository* button reads it).
+
+> Shean, D. (2026). *groundcontrol* (v0.1.1). Zenodo. https://doi.org/10.5281/zenodo.21846300
 
 ## Origin
 

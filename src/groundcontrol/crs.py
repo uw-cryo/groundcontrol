@@ -24,6 +24,24 @@ from pyproj.transformer import TransformerGroup
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
+#: Row count above which a report stops carrying its PER-ROW array (the aggregate fields and
+#: the durable per-row COLUMN still cover it). Mirrors ``velocity.PER_ROW_PROVENANCE_MAX``.
+#:
+#: Not a memory nicety — a correctness-adjacent performance trap. pandas ``__finalize__``
+#: runs ``deepcopy(other.attrs)`` on essentially every DataFrame operation, so a per-row list
+#: parked in ``attrs`` is deep-copied, element by element, for the rest of the frame's life.
+#: Measured 2026-08-08 on a 13.3 M-point ICESat-2 set: **1.98 billion** ``deepcopy`` calls
+#: (~2,270 s) across one preprocessing run — writing a CSV took 129 s instead of 3 s, and one
+#: diagnostic PNG took 241 s instead of 16 s. Per-row provenance belongs in a column
+#: (``epoch_residual_m``), never in ``attrs``.
+PER_ROW_PROVENANCE_MAX = 100_000
+
+
+def _per_row(values):
+    """Per-row report payload: a plain list up to :data:`PER_ROW_PROVENANCE_MAX`, else None."""
+    return [float(v) for v in values] if len(values) <= PER_ROW_PROVENANCE_MAX else None
+
+
 #: Public API (Phase D). Consumers keep the submodule-qualified convention
 #: (``from groundcontrol.crs import propagate_epoch``); nothing is re-exported
 #: from the package ``__init__``.
@@ -867,7 +885,7 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
         "max_applied_displacement_m": 0.0,
         "residual_rate_m_per_yr": float(residual_rate_m_per_yr),
         "max_residual_bound_m": 0.0,
-        "residual_bound_m": [0.0] * n,
+        "residual_bound_m": [0.0] * n if n <= PER_ROW_PROVENANCE_MAX else None,
     }
     if n == 0:
         out["epoch_residual_m"] = np.zeros(0)
@@ -1016,7 +1034,7 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
         # (on_nan_epoch='skip'), never a claimed-zero bound for unknown Δt
         max_residual_bound_m=(float(np.nanmax(col_bound))
                               if np.isfinite(col_bound).any() else float("nan")),
-        residual_bound_m=[float(b) for b in col_bound],
+        residual_bound_m=_per_row(col_bound),
         n_unassessable=int(np.isnan(col_bound).sum()),
     )
     out.attrs["epoch_propagation"] = report

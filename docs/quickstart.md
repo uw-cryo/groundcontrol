@@ -1,31 +1,40 @@
 # Quickstart — using groundcontrol from another project
 
-Status: **v0.1.1**, public and citable
+Status: **v0.1.2**, public and citable
 ([10.5281/zenodo.21846300](https://doi.org/10.5281/zenodo.21846300)). Pre-alpha: the
 schema is **not frozen** (open decisions D1–D6 in `plan.md`), so **pin the tag** and
 expect column renames before v1.
 
-Install from a git tag for now; **a PyPI release is planned once the API stabilizes**, and
-that is what downstream packages should ultimately depend on — PyPI rejects direct-URL
-(`git+https://…`) dependencies, so a published package cannot declare this one as a
-requirement until then.
+Install from a git tag for now. A **conda-forge package (`groundcontrol`) is the planned
+distribution channel**, and that is what downstream conda-forge packages should depend
+on once it lands. PyPI is blocked for the moment: an unrelated, abandoned package holds
+the `groundcontrol` name there (reclamation in progress), and PyPI also rejects
+near-identical names like `ground-control` as too similar — and since PyPI rejects
+direct-URL (`git+https://…`) dependencies, a package published on PyPI cannot declare
+this one as a requirement until the name resolves.
 
 ## Install
 
 ```bash
-pip install git+https://github.com/uw-cryo/groundcontrol.git@v0.1.1
+pip install git+https://github.com/uw-cryo/groundcontrol.git@v0.1.2
 ```
 
 > ⚠️ **Do not run `pip install groundcontrol`.** An unrelated package of that name
-> (satellite orbit propagation, last released 2022) occupies it on PyPI, and installing it
-> would shadow nothing useful while silently not being this library. Always install from
-> the git tag above.
+> (satellite orbit propagation, last released 2022) occupies it on PyPI, and it installs
+> without error while silently not being this library. Use the git tag above.
 
 Into an existing env that already satisfies the heavy geo stack (geopandas>=1.0,
 pyproj>=3.6, rasterio, rioxarray), add `--no-deps` so pip leaves the solved env alone:
 
 ```bash
-pip install --no-deps git+https://github.com/uw-cryo/groundcontrol.git@v0.1.1
+pip install --no-deps git+https://github.com/uw-cryo/groundcontrol.git@v0.1.2
+```
+
+For a **pixi** project, a git dependency is first-class — no index required:
+
+```toml
+[pypi-dependencies]
+groundcontrol = { git = "https://github.com/uw-cryo/groundcontrol.git", tag = "v0.1.2" }
 ```
 
 For co-development against a local checkout, `pip install --no-deps -e /path/to/groundcontrol`

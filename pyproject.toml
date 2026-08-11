@@ -3,8 +3,11 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
+# NOTE: this name is held on PyPI by an unrelated abandoned package, and PyPI's
+# similar-name check blocks every separator variant (ground-control, ...) while
+# it stands. Do not attempt a PyPI upload; see the Install section of README.md.
 name = "groundcontrol"
-version = "0.1.1"
+version = "0.1.2"
 description = "Fetch ground control points for any AOI and assess DEM accuracy, with rigorous 3D CRS/datum/epoch handling"
 readme = "README.md"
 license = { text = "MIT" }

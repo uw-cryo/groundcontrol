@@ -14,8 +14,8 @@ Fetch ground control points for an arbitrary AOI and assess DEM accuracy — wit
 
 ## Status
 
-**v0.1.1 — pre-alpha, quiet release.** The fetch → transform → sample → statistics →
-figures pipeline works end to end (CLI + Python API) and is covered by **264 offline
+**v0.1.2 — pre-alpha, quiet release.** The fetch → transform → sample → statistics →
+figures pipeline works end to end (CLI + Python API) and is covered by **282 offline
 tests** run in CI on Python 3.10/3.12, with the geodesy core additionally adversarially
 audited (independent review agents; math cross-checked against external oracles). The API
 may still move between minor versions — pin the tag if you build on it, and expect sharp
@@ -111,13 +111,16 @@ What the standard outputs look like on a real site: **[docs/gallery.md](docs/gal
 ## Install
 
 Install from a git tag, and **pin it**: the schema is not frozen, so column names may still
-change between minor versions. A PyPI release is planned once the API stabilizes.
+change between minor versions. A **conda-forge package is the planned distribution
+channel**; PyPI is blocked while an unrelated, abandoned package holds the
+`groundcontrol` name (reclamation in progress — PyPI also rejects near-identical names
+like `ground-control` as too similar).
 
-> ⚠️ `pip install groundcontrol` installs an **unrelated** package of the same name that
-> already exists on PyPI. Use the git URL below.
+> ⚠️ `pip install groundcontrol` silently installs that **unrelated** PyPI package, not
+> this library. Use the git URL below.
 
 ```bash
-pip install git+https://github.com/uw-cryo/groundcontrol.git@v0.1.1
+pip install git+https://github.com/uw-cryo/groundcontrol.git@v0.1.2
 ```
 
 Into an env that already satisfies the geo stack (geopandas>=1.0, pyproj>=3.6, rasterio,
@@ -169,7 +172,7 @@ Archived on Zenodo — the concept DOI below always resolves to the latest relea
 release also gets its own version DOI. Machine-readable metadata lives in
 [`CITATION.cff`](CITATION.cff) (GitHub's *Cite this repository* button reads it).
 
-> Shean, D. (2026). *groundcontrol* (v0.1.1). Zenodo. https://doi.org/10.5281/zenodo.21846300
+> Shean, D. (2026). *groundcontrol* (v0.1.2). Zenodo. https://doi.org/10.5281/zenodo.21846300
 
 ## Origin
 

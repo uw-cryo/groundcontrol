@@ -75,9 +75,10 @@ class TestAddScalebar:
         fig.canvas.draw()  # smoke: renders without error
         plt.close(fig)
 
-    def test_auto_length(self):
+    def test_auto_length_promotes_km(self):
         fig, ax = plt.subplots()
         ax.set_xlim(0, 12000)
         bar = add_scalebar(ax)
-        assert bar.fixed_value in (1000, 2000, 2500, 5000)
+        assert bar.fixed_units == "km"  # never "2000.0 m"
+        assert bar.fixed_value in (1, 2, 2.5, 5)
         plt.close(fig)

@@ -399,11 +399,13 @@ def add_scalebar(ax, length: float | None = None, label: str | None = None,
     if length is None:
         x0, x1 = ax.get_xlim()
         length = nice_scale_length(abs(x1 - x0))
+    # promote to km above 1000 m (ScaleBar renders fixed_units literally)
+    value, unit = (length / 1000.0, "km") if length >= 1000 else (length, "m")
     kwargs = {}
     if label is not None:
-        kwargs["scale_formatter"] = lambda value, unit: label
+        kwargs["scale_formatter"] = lambda v, u: label
     bar = ScaleBar(1.0, units="m", location=loc,
-                   fixed_value=length, fixed_units="m",
+                   fixed_value=value, fixed_units=unit,
                    color=color, box_alpha=0.7, frameon=True, **kwargs)
     ax.add_artist(bar)
     return bar

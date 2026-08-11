@@ -34,6 +34,7 @@ dependencies = [
     "scipy",           # xarray .interp(method="linear") — sample.py's default method
     "requests",
     "matplotlib",
+    "matplotlib-scalebar",  # house scalebar standard (env figures.md 2026-08-11)
     "pyarrow>=14",
 ]
 
@@ -52,7 +53,7 @@ groundcontrol-assess = "groundcontrol.cli:assess_dem_main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-groundcontrol = ["data/*.geojson", "data/*.dat", "data/*.md"]
+groundcontrol = ["data/*.geojson", "data/*.dat", "data/*.md", "data/*.cpt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

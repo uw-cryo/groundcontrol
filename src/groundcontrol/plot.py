@@ -42,15 +42,28 @@ def plot_control(gdf, title=None, out_fn=None):
     return fig
 
 
+#: default azimuths for multidirectional shading (gdaldem -multidirectional's
+#: four-lamp set, Mark 1992/USGS)
+MULTIDIR_AZIMUTHS = (225.0, 270.0, 315.0, 360.0)
+
+
 def hillshade(z, dx: float = 1.0, dy: float = 1.0,
-              azdeg: float = 315.0, altdeg: float = 45.0) -> np.ndarray:
+              azdeg: float = 315.0, altdeg: float = 45.0,
+              multidirectional: bool = False) -> np.ndarray:
     """Gradient hillshade of a north-up elevation array, in [0, 1].
 
     Plain numpy (Horn/ESRI formulation) — no extra dependencies. Assumes the
     standard raster orientation (row 0 = north edge); ``dx``/``dy`` are pixel
     sizes in the elevation units. NaNs propagate (transparent under most
     colormaps), so mask nodata before calling.
+
+    ``multidirectional=True`` (house style for color shaded relief, env
+    figures.md) averages :data:`MULTIDIR_AZIMUTHS` — the unweighted mean of
+    gdaldem -multidirectional's four lamps; ``azdeg`` is then ignored.
     """
+    if multidirectional:
+        return np.nanmean([hillshade(z, dx, dy, azdeg=a, altdeg=altdeg)
+                           for a in MULTIDIR_AZIMUTHS], axis=0)
     z = np.asarray(z, dtype="float64")
     g_south, g_east = np.gradient(z, dy, dx)  # d z / d row (southward), d z / d col
     slope = np.arctan(np.hypot(g_east, g_south))
@@ -372,24 +385,25 @@ def nice_scale_length(span: float) -> float:
 
 def add_scalebar(ax, length: float | None = None, label: str | None = None,
                  loc: str = "lower right", color: str = "k"):
-    """Add an anchored scalebar in data units (meters for projected CRSs).
+    """Add a scalebar in data units (meters for projected CRSs).
 
     Intended companion to :func:`plot_dh_map` when axis tick labels are
-    dropped for map-style panels. ``length=None`` picks a round 1/2/5x10^k
-    value spanning ~1/5 of the current x-range; the default label renders
-    km above 1000 m. Returns the added artist.
+    dropped for map-style panels. Uses ``matplotlib-scalebar`` (house rule,
+    env figures.md 2026-08-11; replaces the earlier hand-anchored
+    ``AnchoredSizeBar``). ``length=None`` picks a round 1/2/5x10^k value
+    spanning ~1/5 of the current x-range; the auto label renders km above
+    1000 m; pass ``label`` to force exact text. Returns the added artist.
     """
-    from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
+    from matplotlib_scalebar.scalebar import ScaleBar
 
-    x0, x1 = ax.get_xlim()
-    span = abs(x1 - x0)
     if length is None:
-        length = nice_scale_length(span)
-    if label is None:
-        label = f"{length / 1000.0:g} km" if length >= 1000 else f"{length:g} m"
-    bar = AnchoredSizeBar(ax.transData, length, label, loc,
-                          pad=0.4, sep=4, borderpad=0.6, frameon=True,
-                          size_vertical=span / 300.0, color=color)
-    bar.patch.set_alpha(0.7)
+        x0, x1 = ax.get_xlim()
+        length = nice_scale_length(abs(x1 - x0))
+    kwargs = {}
+    if label is not None:
+        kwargs["scale_formatter"] = lambda value, unit: label
+    bar = ScaleBar(1.0, units="m", location=loc,
+                   fixed_value=length, fixed_units="m",
+                   color=color, box_alpha=0.7, frameon=True, **kwargs)
     ax.add_artist(bar)
     return bar

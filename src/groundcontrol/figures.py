@@ -46,6 +46,45 @@ DZ_CMAP = "RdYlBu"
 CLIM_TIERS = (0.10, 0.25, 0.50, 1.0, 2.5, 5.0)
 _INK, _MUT = "#222222", "#777777"
 
+_CPT_RAINBOW_CACHE = {}
+
+
+def cpt_rainbow(reverse: bool = False):
+    """The group's standard elevation ramp for color shaded relief.
+
+    Canonical vendored copy of the GMT/cpt-city ``rainbow`` palette
+    (``data/rainbow.cpt``, the same file imview bundles) so no repo needs an
+    ``imview`` import — this helper replaces the duplicated
+    try-imview/turbo fallbacks in downstream figure code. Render at ~0.4
+    alpha over a multidirectional gray hillshade
+    (:func:`groundcontrol.plot.hillshade`); house rule in env figures.md.
+    """
+    if reverse not in _CPT_RAINBOW_CACHE:
+        from matplotlib.colors import LinearSegmentedColormap
+
+        if reverse:  # exact mirror of the forward LUT
+            _CPT_RAINBOW_CACHE[True] = cpt_rainbow(False).reversed()
+            return _CPT_RAINBOW_CACHE[True]
+        fn = Path(__file__).parent / "data" / "rainbow.cpt"
+        z, rgb = [], []
+        for line in fn.read_text().splitlines():
+            p = line.split()
+            if not p or p[0].startswith("#") or p[0] in ("B", "F", "N"):
+                continue
+            # each line: z1 r g b z2 r g b — keep the leading edge, plus the
+            # trailing edge of the final segment
+            z.append(float(p[0]))
+            rgb.append((int(p[1]) / 255, int(p[2]) / 255, int(p[3]) / 255))
+            last = (float(p[4]), (int(p[5]) / 255, int(p[6]) / 255,
+                                  int(p[7]) / 255))
+        z.append(last[0])
+        rgb.append(last[1])
+        z0, z1 = z[0], z[-1]
+        pos = [(v - z0) / (z1 - z0) for v in z]
+        _CPT_RAINBOW_CACHE[False] = LinearSegmentedColormap.from_list(
+            "cpt_rainbow", list(zip(pos, rgb)))
+    return _CPT_RAINBOW_CACHE[reverse]
+
 
 def snap_clim(values, k=3.0, tiers=CLIM_TIERS):
     """Empirical symmetric color limit: ``|median| + k*NMAD`` of the finite

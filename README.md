@@ -111,13 +111,16 @@ What the standard outputs look like on a real site: **[docs/gallery.md](docs/gal
 ## Install
 
 Install from a git tag, and **pin it**: the schema is not frozen, so column names may still
-change between minor versions. A PyPI release is planned once the API stabilizes.
+change between minor versions. A **conda-forge package is the planned distribution
+channel**; PyPI is blocked while an unrelated, abandoned package holds the
+`groundcontrol` name (reclamation in progress — PyPI also rejects near-identical names
+like `ground-control` as too similar).
 
-> ⚠️ `pip install groundcontrol` installs an **unrelated** package of the same name that
-> already exists on PyPI. Use the git URL below.
+> ⚠️ `pip install groundcontrol` silently installs that **unrelated** PyPI package, not
+> this library. Use the git URL below.
 
 ```bash
-pip install git+https://github.com/uw-cryo/groundcontrol.git@v0.1.1
+pip install git+https://github.com/uw-cryo/groundcontrol.git@v0.1.2
 ```
 
 Into an env that already satisfies the geo stack (geopandas>=1.0, pyproj>=3.6, rasterio,

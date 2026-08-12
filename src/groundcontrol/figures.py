@@ -134,24 +134,28 @@ def point_context_gallery(points, layers, outdir, site_name, *,
     from .plot import add_scalebar, hillshade
 
     def _window(src, x, y):
+        # per-axis pixel sizes: transform.a (x) and .e (y) differ on
+        # non-square-pixel rasters (Copilot review, PR #17)
         px = abs(src.transform.a)
-        half = max(4, int(round(half_m / px)))
+        py = abs(src.transform.e)
+        halfx = max(4, int(round(half_m / px)))
+        halfy = max(4, int(round(half_m / py)))
         row, col = src.index(x, y)
-        arr = src.read(window=Window(col - half, row - half, 2 * half,
-                                     2 * half), boundless=True,
+        arr = src.read(window=Window(col - halfx, row - halfy, 2 * halfx,
+                                     2 * halfy), boundless=True,
                        fill_value=src.nodata if src.nodata is not None else 0
                        ).astype("float64")
         if src.nodata is not None:
             arr[arr == src.nodata] = np.nan
-        return arr, [x - half * px, x + half * px,
-                     y - half * px, y + half * px], px
+        return arr, [x - halfx * px, x + halfx * px,
+                     y - halfy * py, y + halfy * py], (px, py)
 
     def _panel(ax, src, kind, x, y):
         if src.crs is not None and points.crs is not None \
                 and src.crs.to_wkt() != points.crs.to_wkt():
             xs, ys = _rio_transform(points.crs, src.crs, [x], [y])
             x, y = xs[0], ys[0]
-        arr, ext, px = _window(src, x, y)
+        arr, ext, (px, py) = _window(src, x, y)
         if kind == "rgb":
             img = arr[:3]
             lo = np.nanpercentile(img, 0.5, axis=(1, 2))[:, None, None]
@@ -169,7 +173,7 @@ def point_context_gallery(points, layers, outdir, site_name, *,
             if hi - lo < 2:  # flat water/lake ice: don't tint pure noise
                 mid = 0.5 * (hi + lo)
                 lo, hi = mid - 1, mid + 1
-            ax.imshow(hillshade(b, dx=px, dy=px, multidirectional=True),
+            ax.imshow(hillshade(b, dx=px, dy=py, multidirectional=True),
                       cmap="gray", vmin=0, vmax=1, extent=ext, zorder=0,
                       interpolation=interp)
             ax.imshow(b, cmap=cpt_rainbow(), vmin=lo, vmax=hi, alpha=0.4,

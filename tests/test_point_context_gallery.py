@@ -13,15 +13,15 @@ CRS_A = "EPSG:32610"  # WGS84 UTM 10N
 CRS_B = "EPSG:6339"   # NAD83(2011) UTM 10N (reprojection path)
 
 
-def _write(tmp, name, bands, crs=CRS_A, res=1.0, size=200, nodata=-9999.0,
-           dtype="float32"):
+def _write(tmp, name, bands, crs=CRS_A, res=1.0, res_y=None, size=200,
+           nodata=-9999.0, dtype="float32"):
     fn = tmp / name
     rng = np.random.default_rng(42)
     data = rng.uniform(10, 20, (bands, size, size)).astype(dtype)
     with rasterio.open(
             fn, "w", driver="GTiff", width=size, height=size, count=bands,
             dtype=dtype, crs=crs, nodata=nodata,
-            transform=from_origin(500000, 4000000, res, res)) as dst:
+            transform=from_origin(500000, 4000000, res, res_y or res)) as dst:
         dst.write(data)
     return fn
 
@@ -74,6 +74,16 @@ class TestPointContextGallery:
             class_col="cls", class_colors={"mast": "#111111",
                                            "building": "#8B4E00"})
         assert fp.name == "TEST_opus_gallery_30m.png"
+
+    def test_non_square_pixels(self, points, tmp_path):
+        # Copilot PR #17: transform.a used for both axes distorted windows
+        # on non-square-pixel rasters; per-axis sizes must hold half_m in
+        # meters on BOTH axes (relief also exercises hillshade dy)
+        lyr = [("aniso", _write(tmp_path, "ns.tif", 1, res=1.0, res_y=2.0),
+                "relief")]
+        fp = point_context_gallery(points.iloc[:1], lyr, tmp_path, "TEST",
+                                   half_m=20)
+        assert fp.exists()
 
     def test_unknown_kind_is_loud(self, points, tmp_path):
         lyr = [("bad", _write(tmp_path, "x.tif", 1), "slope")]

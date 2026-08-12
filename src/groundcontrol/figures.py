@@ -46,6 +46,203 @@ DZ_CMAP = "RdYlBu"
 CLIM_TIERS = (0.10, 0.25, 0.50, 1.0, 2.5, 5.0)
 _INK, _MUT = "#222222", "#777777"
 
+_CPT_RAINBOW_CACHE = {}
+
+
+def cpt_rainbow(reverse: bool = False):
+    """The group's standard elevation ramp for color shaded relief.
+
+    Canonical vendored copy of the GMT/cpt-city ``rainbow`` palette
+    (``data/rainbow.cpt``, the same file imview bundles) so no repo needs an
+    ``imview`` import — this helper replaces the duplicated
+    try-imview/turbo fallbacks in downstream figure code. Render at ~0.4
+    alpha over a multidirectional gray hillshade
+    (:func:`groundcontrol.plot.hillshade`); house rule in env figures.md.
+    """
+    if reverse not in _CPT_RAINBOW_CACHE:
+        from matplotlib.colors import LinearSegmentedColormap
+
+        if reverse:  # exact mirror of the forward LUT
+            _CPT_RAINBOW_CACHE[True] = cpt_rainbow(False).reversed()
+            return _CPT_RAINBOW_CACHE[True]
+        fn = Path(__file__).parent / "data" / "rainbow.cpt"
+        z, rgb = [], []
+        for line in fn.read_text().splitlines():
+            p = line.split()
+            if not p or p[0].startswith("#") or p[0] in ("B", "F", "N"):
+                continue
+            # each line: z1 r g b z2 r g b — keep the leading edge, plus the
+            # trailing edge of the final segment
+            z.append(float(p[0]))
+            rgb.append((int(p[1]) / 255, int(p[2]) / 255, int(p[3]) / 255))
+            last = (float(p[4]), (int(p[5]) / 255, int(p[6]) / 255,
+                                  int(p[7]) / 255))
+        z.append(last[0])
+        rgb.append(last[1])
+        z0, z1 = z[0], z[-1]
+        pos = [(v - z0) / (z1 - z0) for v in z]
+        _CPT_RAINBOW_CACHE[False] = LinearSegmentedColormap.from_list(
+            "cpt_rainbow", list(zip(pos, rgb)))
+    return _CPT_RAINBOW_CACHE[reverse]
+
+
+def point_context_gallery(points, layers, outdir, site_name, *,
+                          half_m=60.0, tier_tag=None, interp="antialiased",
+                          scale_len=25, id_col="id", class_col=None,
+                          class_colors=None, subset_tag="station",
+                          ncell=None, dpi=200):
+    """Per-point context contact sheet: one row-cell of image panels per point.
+
+    OPT-IN QA/QC figure (not part of the default reels): for each point, a
+    horizontal strip of windows from ``layers`` — e.g. TrueOrtho RGB | lidar
+    intensity | DSM color shaded relief — so the physical setting of every
+    control point (roof mount, mast, pier, bare ground) is reviewable at a
+    glance. Grew out of the MDV monument work and the Casa Grande cal-range
+    contact sheets (sandbox drivers, 2026-07/08).
+
+    Parameters
+    ----------
+    points : GeoDataFrame with point geometry, an ``id_col`` column, and a
+        CRS. Coordinates are reprojected per layer when a raster's CRS
+        differs.
+    layers : sequence of ``(tag, path, kind)``; ``kind`` one of ``"rgb"``
+        (bands 1-3, per-band 0.5-99.5% stretch), ``"gray"`` (band 1,
+        0.5-99.5% stretch), ``"relief"`` (band 1 as :func:`cpt_rainbow` at
+        0.4 alpha over a multidirectional hillshade — env figures.md house
+        style). Panels render left-to-right in list order.
+    half_m : half-window in meters (60 -> 120 m context; ~15 with
+        ``interp="nearest"`` for a native-pixel tier).
+    tier_tag : filename tag; defaults to ``f"{2*half_m:g}m"``.
+    class_col / class_colors : optional point-class column + {class: color}
+        for the marker circles (default single crimson).
+    ncell : point-cells per row (default 2 for 3+ layers else 3).
+
+    Returns the written path
+    (``<outdir>/<site>_<subset_tag>_gallery_<tier>.png``).
+
+    A layer that cannot be read at a point renders an "unavailable" panel
+    rather than failing the sheet (points outside one product's footprint
+    are expected at multi-product sites).
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import rasterio
+    from rasterio.warp import transform as _rio_transform
+    from rasterio.windows import Window
+
+    from .plot import add_scalebar, hillshade
+
+    def _window(src, x, y):
+        # per-axis pixel sizes: transform.a (x) and .e (y) differ on
+        # non-square-pixel rasters (Copilot review, PR #17)
+        px = abs(src.transform.a)
+        py = abs(src.transform.e)
+        halfx = max(4, int(round(half_m / px)))
+        halfy = max(4, int(round(half_m / py)))
+        row, col = src.index(x, y)
+        arr = src.read(window=Window(col - halfx, row - halfy, 2 * halfx,
+                                     2 * halfy), boundless=True,
+                       fill_value=src.nodata if src.nodata is not None else 0
+                       ).astype("float64")
+        if src.nodata is not None:
+            arr[arr == src.nodata] = np.nan
+        return arr, [x - halfx * px, x + halfx * px,
+                     y - halfy * py, y + halfy * py], (px, py)
+
+    def _panel(ax, src, kind, x, y):
+        if src.crs is not None and points.crs is not None \
+                and src.crs.to_wkt() != points.crs.to_wkt():
+            xs, ys = _rio_transform(points.crs, src.crs, [x], [y])
+            x, y = xs[0], ys[0]
+        arr, ext, (px, py) = _window(src, x, y)
+        if kind == "rgb":
+            img = arr[:3]
+            lo = np.nanpercentile(img, 0.5, axis=(1, 2))[:, None, None]
+            hi = np.nanpercentile(img, 99.5, axis=(1, 2))[:, None, None]
+            img = np.clip((img - lo) / np.where(hi > lo, hi - lo, 1), 0, 1)
+            ax.imshow(np.moveaxis(np.nan_to_num(img), 0, -1), extent=ext,
+                      zorder=0, interpolation=interp)
+        elif kind == "gray":
+            lo, hi = np.nanpercentile(arr[0], (0.5, 99.5))
+            ax.imshow(arr[0], cmap="gray", vmin=lo, vmax=hi, extent=ext,
+                      zorder=0, interpolation=interp)
+        elif kind == "relief":
+            b = arr[0]
+            lo, hi = np.nanpercentile(b, (1, 99))
+            if hi - lo < 2:  # flat water/lake ice: don't tint pure noise
+                mid = 0.5 * (hi + lo)
+                lo, hi = mid - 1, mid + 1
+            ax.imshow(hillshade(b, dx=px, dy=py, multidirectional=True),
+                      cmap="gray", vmin=0, vmax=1, extent=ext, zorder=0,
+                      interpolation=interp)
+            ax.imshow(b, cmap=cpt_rainbow(), vmin=lo, vmax=hi, alpha=0.4,
+                      extent=ext, zorder=1, interpolation=interp)
+            ax.text(0.03, 0.03, f"z {lo:.0f}..{hi:.0f} m",
+                    transform=ax.transAxes, fontsize=6.5, color="white",
+                    bbox=dict(fc="black", alpha=0.45, pad=1.5))
+        else:
+            raise ValueError(f"unknown layer kind {kind!r}")
+        return x, y, ext
+
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    tier = tier_tag or f"{2 * half_m:g}m"
+    srcs = []  # built inside the try: a failed open must not leak the others
+    try:
+        for tag, p, kind in layers:
+            srcs.append((tag, rasterio.open(p), kind))
+        n = len(points)
+        npanel = len(srcs)
+        if ncell is None:
+            ncell = 2 if npanel >= 3 else 3
+        nrow = int(np.ceil(n / ncell))
+        pw = 2.7
+        fig = plt.figure(
+            figsize=(pw * npanel * ncell + 0.5, (pw + 0.42) * nrow + 0.5))
+        wr = ([1] * npanel + [0.12]) * (ncell - 1) + [1] * npanel
+        gs = fig.add_gridspec(nrow, (npanel + 1) * ncell - 1,
+                              width_ratios=wr, hspace=0.16, wspace=0.04)
+        for i, (_, r) in enumerate(points.iterrows()):
+            row_i, cell = divmod(i, ncell)
+            cls = r[class_col] if class_col else None
+            color = (class_colors or {}).get(cls, "#C00000")
+            for j, (tag, src, kind) in enumerate(srcs):
+                ax = fig.add_subplot(gs[row_i, cell * (npanel + 1) + j])
+                try:
+                    x, y, ext = _panel(ax, src, kind,
+                                       r.geometry.x, r.geometry.y)
+                    ax.scatter([x], [y], s=170, facecolors="none",
+                               edgecolors=color, linewidths=2.0, zorder=5)
+                    ax.set_xlim(ext[0], ext[1]), ax.set_ylim(ext[2], ext[3])
+                except Exception as e:
+                    ax.text(0.5, 0.5, f"{tag}\nunavailable", ha="center",
+                            va="center", transform=ax.transAxes, fontsize=8)
+                    logger.warning("%s %s panel failed: %s",
+                                   r[id_col], tag, e)
+                ax.set_aspect("equal")
+                ax.set_xticks([]), ax.set_yticks([])
+                if j == 0:
+                    label = f"{r[id_col]}" + (f" · {cls}" if cls else "")
+                    ax.set_title(label, fontsize=8.5, loc="left")
+                if j == npanel - 1:
+                    add_scalebar(ax, length=scale_len,
+                                 label=f"{scale_len} m")
+        tags = " | ".join(t for t, _, _ in srcs)
+        fig.suptitle(
+            f"{site_name} {subset_tag} points — {tags} ({2*half_m:.0f} m "
+            f"windows{', native pixels' if interp == 'nearest' else ''})",
+            fontsize=12, y=0.99)
+        fig.subplots_adjust(left=0.01, right=0.995, top=0.93, bottom=0.02)
+        fp = outdir / f"{site_name}_{subset_tag}_gallery_{tier}.png"
+        fig.savefig(fp, dpi=dpi)
+        plt.close(fig)
+    finally:
+        for _, src, _ in srcs:
+            src.close()
+    logger.info("wrote %s (%d points)", fp, n)
+    return fp
+
 
 def snap_clim(values, k=3.0, tiers=CLIM_TIERS):
     """Empirical symmetric color limit: ``|median| + k*NMAD`` of the finite

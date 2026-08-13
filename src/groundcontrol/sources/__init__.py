@@ -25,7 +25,7 @@ import geopandas as gpd
 import pandas as pd
 
 from groundcontrol import crs, schema
-from groundcontrol.sources import checkpoints_3dep, ngl, ngs
+from groundcontrol.sources import checkpoints_3dep, faa, ngl, ngs
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -36,6 +36,7 @@ PROVIDERS = {
     "ngs": (ngs.fetch_nde, ngs.parse_nde),
     "opus": (ngs.fetch_opus, ngs.parse_opus),
     "ngl": (ngl.fetch, ngl.parse),
+    "faa": (faa.fetch, faa.parse),
 }
 
 #: Interim MVP landing frame (see module docstring).

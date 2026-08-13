@@ -66,9 +66,32 @@ line-length = 100
 target-version = "py310"
 
 [tool.ruff.lint]
-# Explicitly pin the rule set the codebase was written against (ruff's
-# historical default). ruff 0.16.0 broadened the default selection and CI
-# installs unpinned ruff, so without this pin ~54 pre-existing violations
-# (I001, C408, RUF059, ...) fail lint on every branch.
-# Followup: broaden the selection and re-lint the codebase — see issue #9.
-select = ["E4", "E7", "E9", "F"]
+# Selection is explicit and stays explicit (issue #9): inheriting whatever the
+# installed ruff calls "default" is what broke lint on every branch when 0.16.0
+# widened it. Adding a rule set here is a deliberate act with a re-lint attached.
+select = [
+    "E4", "E7", "E9", "E501",  # pycodestyle subset + the declared line-length
+    "F",                       # pyflakes
+    "I",                       # import sorting
+    "UP",                      # pyupgrade (floor is py310)
+    "B",                       # bugbear — incl. B905 zip(strict=)
+    "BLE",                     # blind except; waived per-site where deliberate
+    "SIM",                     # simplifications
+    "RUF",                     # ruff-native
+    "C4",                      # comprehension/collection literals
+    "PIE", "ISC", "FURB", "DTZ",
+    "PLW", "PLR0402",          # pylint: warnings only, plus the import alias rule
+]
+ignore = [
+    # Prose in docstrings/comments is full of en dashes, ×, σ, ±. Ambiguity
+    # warnings here are noise, not a latent homoglyph bug.
+    "RUF001", "RUF002", "RUF003",
+    # __all__ lists in crs.py/geodesy.py are grouped by API stage with section
+    # comments; alphabetizing them would destroy that structure.
+    "RUF022",
+]
+
+[tool.ruff.lint.isort]
+# keep `from x import A, b as c` on one line instead of splitting the aliased
+# member into its own import
+combine-as-imports = true

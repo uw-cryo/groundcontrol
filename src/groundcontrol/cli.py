@@ -102,7 +102,8 @@ def assess_dem_main(argv=None) -> int:
                         "already in another frame")
     p.add_argument("--control", default=None,
                    help="control GeoParquet cache: reused when present, else fetched "
-                        "from --sources and written here (default: <outdir>/<site-name>_control.parquet)")
+                        "from --sources and written here "
+                        "(default: <outdir>/<site-name>_control.parquet)")
     p.add_argument("--sources", default="3dep,ngs,opus",
                    help="comma-separated fetch sources (default: 3dep,ngs,opus)")
     p.add_argument("--outdir", required=True, help="output directory")
@@ -169,7 +170,7 @@ def assess_dem_main(argv=None) -> int:
         else:
             hs = _parse_kv(args.hs, "--hs")
 
-    sampled, stats, artifacts = assess_products(
+    _sampled, stats, artifacts = assess_products(
         control, products, _resolve_crs(args.target_crs),
         outdir=outdir, site_name=args.site_name, aoi=aoi if not isinstance(aoi, tuple) else None,
         hs=hs, target_epoch=args.target_epoch, method=args.method,

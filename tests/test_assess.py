@@ -16,8 +16,13 @@ import pytest
 import rasterio
 from rasterio.transform import Affine
 
-from groundcontrol.assess import (SEGMENTS, assess_products, sample_products,
-                                  summarize_dz, transform_control)
+from groundcontrol.assess import (
+    SEGMENTS,
+    assess_products,
+    sample_products,
+    summarize_dz,
+    transform_control,
+)
 from groundcontrol.crs import NoTransformPathError, get_transformer
 
 UTM12_3D = pyproj.CRS("EPSG:6341").to_3d()  # NAD83(2011) / UTM 12N, ellipsoidal h
@@ -57,7 +62,7 @@ def test_transform_control_pure_frame_heights_pass_through():
 def test_transform_control_navd88_chain_if_available():
     ctl = _control_6319().set_crs("EPSG:6318", allow_override=True)
     try:
-        out, info = transform_control(ctl, UTM12_3D, aoi_bounds_4326=AOI_AZ)
+        _out, info = transform_control(ctl, UTM12_3D, aoi_bounds_4326=AOI_AZ)
     except NoTransformPathError:
         pytest.skip("GEOID18 grid unavailable in this PROJ install")
     # Sonoran Desert geoid undulation: h_ell = H + N with N ~ -30 m
@@ -145,7 +150,7 @@ def test_assess_products_end_to_end_writes_artifacts(tmp_path):
     dsm = _plane_tif(tmp_path, "a-DSM_mos.tif")
     pts = _landed([0.10, -0.20, 0.30, 0.40]).rename(columns={"h_ell": "height"})
     # height column is ellipsoidal already; source == target -> pure identity
-    sampled, stats, artifacts = assess_products(
+    sampled, _stats, artifacts = assess_products(
         pts, {"DSM": dsm}, CRS, source_crs=CRS,
         outdir=tmp_path / "out", site_name="synthsite", figures=False)
     assert (tmp_path / "out" / "synthsite_assessed.parquet").exists()
@@ -268,8 +273,8 @@ def test_aspect_panel_w_degenerate_aoi():
 
 def test_transform_control_xform_acc_column():
     ctl = _control_6319()
-    out, info = transform_control(ctl, UTM12_3D, source_crs="EPSG:6319",
-                                  aoi_bounds_4326=AOI_AZ)
+    out, _info = transform_control(ctl, UTM12_3D, source_crs="EPSG:6319",
+                                   aoi_bounds_4326=AOI_AZ)
     assert "xform_acc_m" in out.columns
     a = out["xform_acc_m"].iloc[0]
     # pure-frame promotion: PROJ reports 0 (exact) -> NaN (unknown/exact,
@@ -366,8 +371,8 @@ def test_transform_control_2d_tag_under_3d_source_passes():
     """The universal 2D EPSG:6318 cache tag must not be rejected under an
     explicit 3D geographic source (round-2 audit: to_2d demotion)."""
     ctl = _control_6319().set_crs("EPSG:6318", allow_override=True)
-    out, info = transform_control(ctl, UTM12_3D, source_crs="EPSG:6319",
-                                  aoi_bounds_4326=AOI_AZ)
+    out, _info = transform_control(ctl, UTM12_3D, source_crs="EPSG:6319",
+                                   aoi_bounds_4326=AOI_AZ)
     np.testing.assert_allclose(out["h_ell"], ctl["height"], atol=1e-9)
 
 

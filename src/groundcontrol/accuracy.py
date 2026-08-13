@@ -60,16 +60,17 @@ def resid_stats(series) -> dict:
     a = np.asarray(series, dtype="float64")
     a = a[np.isfinite(a)]
     if a.size == 0:
-        return dict(n=0, median=np.nan, mean=np.nan, nmad=np.nan, std=np.nan, rmse=np.nan)
+        return {"n": 0, "median": np.nan, "mean": np.nan, "nmad": np.nan,
+                "std": np.nan, "rmse": np.nan}
     med, nmad = med_nmad(a)  # single source of truth for the NMAD constant (B8)
-    return dict(
-        n=int(a.size),
-        median=med,
-        mean=float(a.mean()),
-        nmad=nmad,
-        std=float(a.std()),
-        rmse=float(np.sqrt((a**2).mean())),
-    )
+    return {
+        "n": int(a.size),
+        "median": med,
+        "mean": float(a.mean()),
+        "nmad": nmad,
+        "std": float(a.std()),
+        "rmse": float(np.sqrt((a**2).mean())),
+    }
 
 
 def error_report(series, nmad_mult: float = 3.0) -> dict:
@@ -89,11 +90,11 @@ def error_report(series, nmad_mult: float = 3.0) -> dict:
     a = np.asarray(series, dtype="float64")
     a = a[np.isfinite(a)]
     if a.size == 0:
-        return dict(n=0, median=np.nan, nmad=np.nan, n_used=0, n_outliers=0,
-                    mean=np.nan, std=np.nan, rmse=np.nan, le90=np.nan,
-                    le95=np.nan)
+        return {"n": 0, "median": np.nan, "nmad": np.nan, "n_used": 0, "n_outliers": 0,
+                "mean": np.nan, "std": np.nan, "rmse": np.nan, "le90": np.nan,
+                "le95": np.nan}
     med, nmad = med_nmad(a)
-    if nmad > 0:
+    if nmad > 0:  # noqa: SIM108 - the else branch's reasoning needs the block
         keep = np.abs(a - med) <= nmad_mult * nmad
     else:
         # >=50% of residuals identical (quantized heights are routine): NMAD
@@ -101,15 +102,15 @@ def error_report(series, nmad_mult: float = 3.0) -> dict:
         # as "outliers" and report fake-perfect stats — skip the gate instead
         keep = np.ones(a.size, dtype=bool)
     f = a[keep]
-    return dict(
-        n=int(a.size), median=med, nmad=nmad,
-        n_used=int(f.size), n_outliers=int(a.size - f.size),
-        mean=float(f.mean()),
-        std=float(f.std(ddof=1)) if f.size > 1 else float("nan"),
-        rmse=float(np.sqrt((f ** 2).mean())),
-        le90=float(np.percentile(np.abs(f), 90)),
-        le95=float(np.percentile(np.abs(f), 95)),
-    )
+    return {
+        "n": int(a.size), "median": med, "nmad": nmad,
+        "n_used": int(f.size), "n_outliers": int(a.size - f.size),
+        "mean": float(f.mean()),
+        "std": float(f.std(ddof=1)) if f.size > 1 else float("nan"),
+        "rmse": float(np.sqrt((f ** 2).mean())),
+        "le90": float(np.percentile(np.abs(f), 90)),
+        "le95": float(np.percentile(np.abs(f), 95)),
+    }
 
 
 def ce90(dx, dy, nmad_mult: float = 3.0) -> float:

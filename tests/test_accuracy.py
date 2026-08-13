@@ -5,9 +5,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import groundcontrol.accuracy as accuracy
+from groundcontrol import accuracy
 from groundcontrol.accuracy import med_nmad, resid_stats, robust_normalize
-
 
 # ---------------------------------------------------------------------------
 # med_nmad — pinned contract: 1-D Series/array in, (float, float) out (B8)

@@ -2,6 +2,7 @@
 hillshade, matplotlib-scalebar add_scalebar (env figures.md house rules)."""
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np

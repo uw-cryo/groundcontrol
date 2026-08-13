@@ -271,9 +271,9 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
             ax=ax, color="0.25", lw=1.4, zorder=1)
 
     scale = ref_mm_yr / ref_frac  # scale_units='width': ref arrow = ref_frac of width
-    qkw = dict(angles="uv", scale_units="width", scale=scale, width=0.0038,
-               headwidth=3.4, headlength=4.2, headaxislength=3.6, minshaft=1.4,
-               pivot="tail", zorder=3)
+    qkw = {"angles": "uv", "scale_units": "width", "scale": scale, "width": 0.0038,
+           "headwidth": 3.4, "headlength": 4.2, "headaxislength": 3.6, "minshaft": 1.4,
+           "pivot": "tail", "zorder": 3}
     halo = [pe.withStroke(linewidth=2.0, foreground="white")]
 
     q_ref = None

@@ -63,7 +63,8 @@ def parse(raw: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """Map the checkpoint columns into the schema shape (native frame)."""
     n = len(raw)
     extras = [c for c in raw.columns if c not in _CONSUMED]
-    mdt = pd.to_datetime(raw["datetime"], utc=True, errors="coerce") if n else pd.Series([], dtype="datetime64[ns, UTC]")
+    mdt = (pd.to_datetime(raw["datetime"], utc=True, errors="coerce") if n
+           else pd.Series([], dtype="datetime64[ns, UTC]"))
     out = gpd.GeoDataFrame(
         {
             "id": raw["id"].astype("string"),

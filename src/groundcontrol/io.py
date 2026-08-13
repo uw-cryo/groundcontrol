@@ -54,7 +54,7 @@ def build_provenance(gdf, status: dict | None = None, command: str | None = None
             "crs_authority": gdf.crs.to_string() if gdf.crs else None,
             "crs_wkt2": gdf.crs.to_wkt(version="WKT2_2019") if gdf.crs else None,
         },
-        "n_points": int(len(gdf)),
+        "n_points": len(gdf),
         "transforms": {str(k): int(v) for k, v in transforms.items()},
         "dispatcher_status": status or {},
     }

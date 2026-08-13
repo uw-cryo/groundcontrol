@@ -123,7 +123,7 @@ def test_temporal_overlap_filter():
 def test_parse_tenv3_columns_and_values():
     ts = ngl.parse_tenv3(_tenv3_text())
     assert len(ts) == 60
-    assert ngl._TENV3_REQUIRED <= set(ts.columns)
+    assert set(ts.columns) >= ngl._TENV3_REQUIRED
     assert (ts["site"] == "CLV1").all()
     assert ts["date"].is_monotonic_increasing
     # B1 wrap applied to the tenv3 longitude column too
@@ -144,7 +144,7 @@ def test_read_tenv3_offline_from_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(ngl.requests, "get", _boom)
     ts = ngl.read_tenv3("clv1")  # station ID normalized to upper case
     assert len(ts) == 60
-    assert ngl._TENV3_REQUIRED <= set(ts.columns)
+    assert set(ts.columns) >= ngl._TENV3_REQUIRED
     assert ts["date"].is_monotonic_increasing
     # full up = integer reference + fractional part must equal the height column
     up_full = ts["u0"].to_numpy() + ts["up"].to_numpy()

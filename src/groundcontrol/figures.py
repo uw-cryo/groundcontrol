@@ -82,7 +82,7 @@ def cpt_rainbow(reverse: bool = False):
         z0, z1 = z[0], z[-1]
         pos = [(v - z0) / (z1 - z0) for v in z]
         _CPT_RAINBOW_CACHE[False] = LinearSegmentedColormap.from_list(
-            "cpt_rainbow", list(zip(pos, rgb)))
+            "cpt_rainbow", list(zip(pos, rgb, strict=True)))
     return _CPT_RAINBOW_CACHE[reverse]
 
 
@@ -138,8 +138,8 @@ def point_context_gallery(points, layers, outdir, site_name, *,
         # non-square-pixel rasters (Copilot review, PR #17)
         px = abs(src.transform.a)
         py = abs(src.transform.e)
-        halfx = max(4, int(round(half_m / px)))
-        halfy = max(4, int(round(half_m / py)))
+        halfx = max(4, round(half_m / px))
+        halfy = max(4, round(half_m / py))
         row, col = src.index(x, y)
         arr = src.read(window=Window(col - halfx, row - halfy, 2 * halfx,
                                      2 * halfy), boundless=True,
@@ -180,7 +180,7 @@ def point_context_gallery(points, layers, outdir, site_name, *,
                       extent=ext, zorder=1, interpolation=interp)
             ax.text(0.03, 0.03, f"z {lo:.0f}..{hi:.0f} m",
                     transform=ax.transAxes, fontsize=6.5, color="white",
-                    bbox=dict(fc="black", alpha=0.45, pad=1.5))
+                    bbox={"fc": "black", "alpha": 0.45, "pad": 1.5})
         else:
             raise ValueError(f"unknown layer kind {kind!r}")
         return x, y, ext
@@ -215,7 +215,9 @@ def point_context_gallery(points, layers, outdir, site_name, *,
                     ax.scatter([x], [y], s=170, facecolors="none",
                                edgecolors=color, linewidths=2.0, zorder=5)
                     ax.set_xlim(ext[0], ext[1]), ax.set_ylim(ext[2], ext[3])
-                except Exception as e:
+                # one bad layer must not take down the sheet (PR #17 review):
+                # report it in-panel and keep going
+                except Exception as e:  # noqa: BLE001
                     ax.text(0.5, 0.5, f"{tag}\nunavailable", ha="center",
                             va="center", transform=ax.transAxes, fontsize=8)
                     logger.warning("%s %s panel failed: %s",
@@ -270,7 +272,7 @@ def _datum_tag(crs):
         if c.is_compound:  # orthometric target: name the vertical member,
             return c.sub_crs_list[1].name  # e.g. "NAVD88 height" — not "ellipsoid"
         return f"{(c.geodetic_crs or c).name} ellipsoid"
-    except Exception:  # pragma: no cover - label fallback only
+    except Exception:  # noqa: BLE001  # pragma: no cover - label fallback only
         return "ellipsoid"
 _FACETS = ("posSource", "vertSource", "vertOrder")
 
@@ -280,13 +282,14 @@ def _raw_field(series, key):
         if isinstance(r, str):
             try:
                 r = json.loads(r)
-            except Exception:
+            # a malformed raw payload is a missing facet, not a figure failure
+            except Exception:  # noqa: BLE001
                 return None
         if not isinstance(r, dict):
             return None  # missing raw arrives as None OR float NaN (pandas>=3)
         v = r.get(key)
         v = (v or "").strip() if isinstance(v, str) else v
-        return v if v else None
+        return v or None
     return series.apply(get)
 
 
@@ -308,7 +311,8 @@ def _relief(ax, dem_tif, hs_tif, cmap, dem_alpha, fig):
         ext = [bb.left, bb.right, bb.bottom, bb.top]
         im = ax.imshow(z, cmap=cmap, alpha=dem_alpha, extent=ext,
                        vmin=np.nanpercentile(z, 2),
-                       vmax=np.nanpercentile(z, 98), interpolation="antialiased", interpolation_stage="rgba")
+                       vmax=np.nanpercentile(z, 98), interpolation="antialiased",
+                       interpolation_stage="rgba")
         if fig is not None:
             cb = fig.colorbar(im, ax=ax, shrink=0.6, pad=0.02)
             cb.set_label(f"Elevation (m, {_datum_tag(dem_crs)})",
@@ -408,7 +412,7 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
                                  sharex=True, sharey=True)
         cyc = ["#0033A0", "#C00000", "#005F20", "#8B008B", "#8B4E00",
                "#111111"]
-        for ax, key in zip(np.atleast_1d(axes), _FACETS):
+        for ax, key in zip(np.atleast_1d(axes), _FACETS, strict=True):
             _relief(ax, dem_tif, hs_tif, None, dem_alpha, None)
             vals = _raw_field(mon["raw"], key).fillna("(none)")
             top = vals.value_counts().index.tolist()[:5]
@@ -445,7 +449,7 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
                 title=f"{site_name} — MIDAS ({midas_frame}) "
                       f"{'vertical-colored ' if cbv else ''}velocity field")
             out.append(fp)
-    except Exception as exc:  # network etc. — the map figures still ship
+    except Exception as exc:  # noqa: BLE001 - network etc.; the map figures still ship
         logger.warning("MIDAS velocity figures skipped: %s", exc)
 
     logger.info("standard control figures: %s", [p.name for p in out])
@@ -517,7 +521,7 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         hist_w = 4.6
         fig, axes = plt.subplots(
             1, 3, figsize=(mcol + 2 * hist_w, map_h),
-            gridspec_kw=dict(width_ratios=[mcol, hist_w, hist_w]))
+            gridspec_kw={"width_ratios": [mcol, hist_w, hist_w]})
         hs_prod = hs_tif.get(prod) if isinstance(hs_tif, dict) else hs_tif
         _relief(axes[0], None, hs_prod, None, 0.0, None)
         use = sampled[np.isfinite(sampled[col])]
@@ -557,7 +561,7 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
             ax.legend(fontsize=8, loc="upper right")
             ax.text(0.02, 0.98, "\n".join(txt), transform=ax.transAxes,
                     fontsize=8, va="top", color=_INK,
-                    bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.85))
+                    bbox={"boxstyle": "round,pad=0.3", "fc": "white", "alpha": 0.85})
             ax.tick_params(labelsize=8, colors=_MUT)
             ax.grid(alpha=0.25, lw=0.5)
         axes[1].set_title("survey-grade segments", fontsize=10, color=_INK)
@@ -701,11 +705,11 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
             fig, axes = plt.subplots(
                 1, n_sub + 1,
                 figsize=(mcol * n_sub + hist_w, map_h),
-                gridspec_kw=dict(width_ratios=[mcol] * n_sub + [hist_w]))
+                gridspec_kw={"width_ratios": [mcol] * n_sub + [hist_w]})
             axh = axes[-1]
             hs_prod = hs_tif.get(prod) if isinstance(hs_tif, dict) else hs_tif
             sc, stats_lines, n_gap = None, [], 0
-            for axm, sub in zip(axes[:-1], subs):
+            for axm, sub in zip(axes[:-1], subs, strict=True):
                 lab, maskfn, style, mk = sub[:4]
                 _relief(axm, None, hs_prod, None, 0.0, None)
                 if overlays is not None:
@@ -736,14 +740,13 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                     # the ASPRS-Ed.2 parametric set after a 3*NMAD gate
                     from .accuracy import error_report
                     er = error_report(vv)
-                    stats_lines.append(
-                        (f"{lab}: med {er['median']:+.3f}, "
-                         f"NMAD {er['nmad']:.3f}, n={er['n']}", color))
-                    stats_lines.append(
-                        (f"  mean {er['mean']:+.3f}, σ {er['std']:.3f}, "
-                         f"RMSE {er['rmse']:.3f}, LE90 {er['le90']:.3f}"
-                         + (f" ({er['n_outliers']} out)" if er["n_outliers"]
-                            else ""), color))
+                    out_note = f" ({er['n_outliers']} out)" if er["n_outliers"] else ""
+                    robust = (f"{lab}: med {er['median']:+.3f}, "
+                              f"NMAD {er['nmad']:.3f}, n={er['n']}")
+                    parametric = (f"  mean {er['mean']:+.3f}, σ {er['std']:.3f}, "
+                                  f"RMSE {er['rmse']:.3f}, LE90 {er['le90']:.3f}{out_note}")
+                    stats_lines.append((robust, color))
+                    stats_lines.append((parametric, color))
             if sc is not None:
                 cb = fig.colorbar(sc, ax=list(axes[:-1]), shrink=0.75,
                                   pad=0.015, extend="both")
@@ -761,16 +764,16 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                          fontsize=8.5, va="top", color=color,
                          fontweight="bold" if not line.startswith("  ") else
                          "normal",
-                         bbox=dict(boxstyle="round,pad=0.2", fc="white",
-                                   ec="none", alpha=0.8))
+                         bbox={"boxstyle": "round,pad=0.2", "fc": "white",
+                               "ec": "none", "alpha": 0.8})
             if "xform_acc_m" in sampled.columns:
                 b = np.nanmedian(sampled["xform_acc_m"].to_numpy(dtype="float64"))
                 if np.isfinite(b):
                     axh.text(0.02, 0.02, f"stated 3D transform budget ±{b:g} m",
                              transform=axh.transAxes, fontsize=8, color=_MUT,
                              va="bottom",
-                             bbox=dict(boxstyle="round,pad=0.2", fc="white",
-                                       ec="none", alpha=0.8))
+                             bbox={"boxstyle": "round,pad=0.2", "fc": "white",
+                                   "ec": "none", "alpha": 0.8})
             axh.tick_params(labelsize=8, colors=_MUT)
             axh.grid(alpha=0.25, lw=0.5)
             gap = f"; {n_gap} unsampled (nodata/gap)" if n_gap else ""

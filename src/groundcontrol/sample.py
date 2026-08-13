@@ -34,7 +34,7 @@ from pathlib import Path
 import numpy as np
 import pyproj
 import rasterio
-import rioxarray  # noqa: F401  (registers the .rio accessor on xarray objects)
+import rioxarray  # also registers the .rio accessor used below
 import xarray as xr
 from rasterio.windows import Window
 

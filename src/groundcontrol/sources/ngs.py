@@ -272,7 +272,8 @@ def expand_attributes(gdf, fields=None, prefix="ngs_"):
             return {}
         return rec if isinstance(rec, dict) else {}
 
-    parsed = out["raw"].apply(_parse) if "raw" in out.columns else pd.Series([{}] * len(out), index=out.index)
+    parsed = (out["raw"].apply(_parse) if "raw" in out.columns
+              else pd.Series([{}] * len(out), index=out.index))
     for f in fields:
         # object dtype + per-value str(): a numeric field must format the same
         # ("2", never "2.0") regardless of whether OTHER rows are missing it

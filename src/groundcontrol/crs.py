@@ -305,7 +305,7 @@ def ngs_datum_to_epsg(datum: str) -> str:
     carried as if it were NAD83(2011)).
     """
     s = (datum or "").upper().replace(" ", "").replace("_", "")
-    if s.startswith("NAD83") or s.startswith("NAD_83"):
+    if s.startswith(("NAD83", "NAD_83")):
         for token, epsg in _NGS_DATUM_RULES:
             if token in s:
                 return epsg
@@ -331,9 +331,7 @@ def _plate_fixed_datum(crs_obj) -> bool:
     if "dynamic" in tname:
         return False
     name = ((d.name or "") if d is not None else "").upper()
-    if "WGS" in name or "WORLD GEODETIC" in name:
-        return False
-    return True
+    return not ("WGS" in name or "WORLD GEODETIC" in name)
 
 
 def is_dynamic_frame(crs_like) -> bool:
@@ -655,7 +653,7 @@ def _pb2002_plates():
     packaging — see ``src/groundcontrol/data/README.md`` for attribution and
     the decimation parameters.
     """
-    global _pb2002_plates_cache
+    global _pb2002_plates_cache  # noqa: PLW0603 - module-level lazy cache is the point
     if _pb2002_plates_cache is None:
         from importlib.resources import as_file, files
 
@@ -1018,7 +1016,7 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
     )
     if "transform_id" in out.columns:
         existing = out["transform_id"].tolist()
-        chained = [t if pd.isna(e) else f"{e}+{t}" for e, t in zip(existing, tag)]
+        chained = [t if pd.isna(e) else f"{e}+{t}" for e, t in zip(existing, tag, strict=True)]
         out["transform_id"] = pd.array(chained, dtype="string")
 
     # report + fail-loud-adjacent surfacing

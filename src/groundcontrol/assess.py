@@ -113,11 +113,12 @@ def transform_control(control, target_crs, *, target_epoch=2010.0,
         "description": t.description,
         "accuracy_m": t.accuracy,
         "pipeline": t.definition,
-        "n_points": int(len(out)),
+        "n_points": len(out),
         # h_ell - H == applied geoid undulation + frame tie; a gross-error tripwire
         "dh_stats": {k: float(v) for k, v in
                      zip(("min", "median", "max"),
-                         (np.min(dh[finite]), np.median(dh[finite]), np.max(dh[finite])))}
+                         (np.min(dh[finite]), np.median(dh[finite]), np.max(dh[finite])),
+                         strict=True)}
         if finite.any() else None,
     }
     logger.info("transform_control: %s (accuracy %s m), h_ell-H median %s",
@@ -205,8 +206,8 @@ def summarize_dz(sampled, products=None, segments=SEGMENTS):
         col = f"dh_{prod}_before"
         v_all = sampled[col].to_numpy(dtype="float64")
         is_dtm = "DTM" in prod.upper()
-        for label, (maskfn, in_dsm, in_dtm) in list(segments.items()) + [
-                ("ALL", (lambda d: pd.Series(True, index=d.index), True, True))]:
+        all_seg = ("ALL", (lambda d: pd.Series(True, index=d.index), True, True))
+        for label, (maskfn, in_dsm, in_dtm) in [*segments.items(), all_seg]:
             # fillna(False): source columns are pandas nullable strings — one
             # NA point_type upstream must exclude the row, not crash the table
             m = pd.Series(maskfn(sampled)).fillna(False).to_numpy(dtype=bool)

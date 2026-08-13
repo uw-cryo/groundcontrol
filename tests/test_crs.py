@@ -4,12 +4,13 @@ All offline. The geoid/Helmert fixture tests (docs/crs_implementation.md §8)
 land with the committed clipped-grid fixtures.
 """
 
+from typing import ClassVar
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from groundcontrol.crs import NoTransformPathError, decyear, decyear_inv, get_transformer
-
 
 # ---------------------------------------------------------------------------
 # decyear known values (exact, per plan B9)
@@ -33,7 +34,8 @@ def test_decyear_polymorphic_scalar_types():
     v = decyear("2010-07-02T12:00:00")
     assert decyear(pd.Timestamp("2010-07-02T12:00:00")) == v
     import datetime
-    assert decyear(datetime.datetime(2010, 7, 2, 12)) == v
+    # naive datetime is the input under test here, not an oversight
+    assert decyear(datetime.datetime(2010, 7, 2, 12)) == v  # noqa: DTZ001
 
 
 def test_decyear_series_preserves_index():
@@ -94,8 +96,8 @@ def test_get_transformer_raises_no_path_not_indexerror(monkeypatch):
     import groundcontrol.crs as gc_crs
 
     class _FakeTG:
-        transformers = []
-        unavailable_operations = []
+        transformers: ClassVar[list] = []
+        unavailable_operations: ClassVar[list] = []
         best_available = False
 
         def __init__(self, *a, **k):
@@ -126,8 +128,9 @@ def _pts_gdf(crs="EPSG:4979", vertical=None):
 
 
 def test_transform_points_3d_source_to_utm3d():
-    from groundcontrol.crs import transform_points
     import pyproj
+
+    from groundcontrol.crs import transform_points
     target = pyproj.CRS("EPSG:32612").to_3d()
     out = transform_points(_pts_gdf("EPSG:4979"), target, tt=2020.0)
     # geographic->projected conversion: heights unchanged, x/y in meters
@@ -159,8 +162,9 @@ def test_transform_points_infers_compound_from_vertical_crs(monkeypatch):
 
 
 def test_transform_points_refuses_ambiguous_vertical():
-    from groundcontrol.crs import transform_points
     import pytest as _pt
+
+    from groundcontrol.crs import transform_points
     g = _pts_gdf("EPSG:6318", vertical="EPSG:5703")
     g.loc[g.index[1], "vertical_crs"] = "EPSG:7968"  # mixed
     with _pt.raises(ValueError, match="uniform"):
@@ -171,9 +175,10 @@ def test_transform_points_refuses_ambiguous_vertical():
 
 
 def test_transform_points_requires_finite_tt():
-    from groundcontrol.crs import transform_points
     import numpy as np
     import pytest as _pt
+
+    from groundcontrol.crs import transform_points
     with _pt.raises(ValueError, match="tt"):
         transform_points(_pts_gdf("EPSG:4979"), "EPSG:7912",
                          tt=np.array([2020.0, np.nan]))

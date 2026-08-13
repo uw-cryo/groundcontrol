@@ -7,12 +7,11 @@ two-block "fault" (no real geometry hardcoded anywhere) and the tier-1 -> propag
 hand-off is checked end-to-end against the production kernel.
 """
 
+import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pytest
 from shapely.geometry import Point
-
-import geopandas as gpd
 
 from groundcontrol import velocity as V
 from groundcontrol.crs import propagate_epoch
@@ -61,10 +60,11 @@ def test_known_velocity_synthetic_exact():
 def test_nearest_station_selection_within_radius():
     """Radius is a hard cutoff; selection is the nearest-N inside it, sorted by distance."""
     st = _stations([
-        {"sta": "AT0", "lon": -115.15, "lat": 36.10, "vel_e": 0.02, "vel_n": 0.0, "vel_u": 0.0},   # 0 km
-        {"sta": "NR1", "lon": -115.15, "lat": 36.20, "vel_e": 0.02, "vel_n": 0.0, "vel_u": 0.0},   # ~11 km
-        {"sta": "MD2", "lon": -115.15, "lat": 36.55, "vel_e": 0.02, "vel_n": 0.0, "vel_u": 0.0},   # ~50 km
-        {"sta": "FAR", "lon": -115.15, "lat": 37.10, "vel_e": 0.99, "vel_n": 0.0, "vel_u": 0.0},   # ~111 km (out)
+        # distances from the (-115.15, 36.10) target: 0, ~11, ~50, ~111 km (last one out)
+        {"sta": "AT0", "lon": -115.15, "lat": 36.10, "vel_e": 0.02, "vel_n": 0.0, "vel_u": 0.0},
+        {"sta": "NR1", "lon": -115.15, "lat": 36.20, "vel_e": 0.02, "vel_n": 0.0, "vel_u": 0.0},
+        {"sta": "MD2", "lon": -115.15, "lat": 36.55, "vel_e": 0.02, "vel_n": 0.0, "vel_u": 0.0},
+        {"sta": "FAR", "lon": -115.15, "lat": 37.10, "vel_e": 0.99, "vel_n": 0.0, "vel_u": 0.0},
     ])
     r = V.interpolate_velocity(-115.15, 36.10, st, radius_km=75.0).iloc[0]
     assert r["n_stations_used"] == 3            # FAR excluded by radius
@@ -82,8 +82,9 @@ def test_max_stations_caps_selection():
 def test_median_vs_idw_combine():
     """Median = component median; IDW pulls toward the nearer station (hand-checked)."""
     st = _stations([
-        {"sta": "A", "lon": -115.15, "lat": 36.15, "vel_e": 0.030, "vel_n": 0.0, "vel_u": 0.0},  # ~5.56 km
-        {"sta": "B", "lon": -115.15, "lat": 36.30, "vel_e": 0.010, "vel_n": 0.0, "vel_u": 0.0},  # ~22.24 km
+        # ~5.56 km and ~22.24 km from the target
+        {"sta": "A", "lon": -115.15, "lat": 36.15, "vel_e": 0.030, "vel_n": 0.0, "vel_u": 0.0},
+        {"sta": "B", "lon": -115.15, "lat": 36.30, "vel_e": 0.010, "vel_n": 0.0, "vel_u": 0.0},
     ])
     med = V.interpolate_velocity(-115.15, 36.10, st, min_stations=2, method="median").iloc[0]
     idw = V.interpolate_velocity(-115.15, 36.10, st, min_stations=2, method="idw").iloc[0]
@@ -100,9 +101,12 @@ def test_spread_gate_flags_boundary_straddle():
     """A selection spanning a synthetic velocity discontinuity trips the spread gate;
     a coherent selection does not. No fault geometry is encoded — only the spread."""
     coherent = _stations([
-        {"sta": "C0", "lon": -115.15, "lat": 36.10, "vel_e": -0.0150, "vel_n": -0.0084, "vel_u": 0.0},
-        {"sta": "C1", "lon": -115.15, "lat": 36.20, "vel_e": -0.0155, "vel_n": -0.0088, "vel_u": 0.0},
-        {"sta": "C2", "lon": -115.05, "lat": 36.15, "vel_e": -0.0149, "vel_n": -0.0089, "vel_u": 0.0},
+        {"sta": "C0", "lon": -115.15, "lat": 36.10,
+         "vel_e": -0.0150, "vel_n": -0.0084, "vel_u": 0.0},
+        {"sta": "C1", "lon": -115.15, "lat": 36.20,
+         "vel_e": -0.0155, "vel_n": -0.0088, "vel_u": 0.0},
+        {"sta": "C2", "lon": -115.05, "lat": 36.15,
+         "vel_e": -0.0149, "vel_n": -0.0089, "vel_u": 0.0},
     ])
     r_ok = V.interpolate_velocity(-115.10, 36.15, coherent).iloc[0]
     assert r_ok["quality"] == V.QUALITY_OK
@@ -222,7 +226,8 @@ def _reference_interpolate(lon, lat, stations, **kw):
     lat_arr = np.atleast_1d(np.asarray(lat, dtype="float64")).ravel()
     st = stations.reset_index(drop=True)
     cols = ("lon", "lat", "vel_e", "vel_n", "vel_u")
-    finite = np.isfinite(st[list(cols)].apply(pd.to_numeric, errors="coerce").to_numpy()).all(axis=1)
+    numeric = st[list(cols)].apply(pd.to_numeric, errors="coerce").to_numpy()
+    finite = np.isfinite(numeric).all(axis=1)
     st = st.loc[finite]
     slon = st["lon"].to_numpy(dtype="float64")
     slat = st["lat"].to_numpy(dtype="float64")
@@ -234,7 +239,7 @@ def _reference_interpolate(lon, lat, stations, **kw):
                           kw.get("max_stations", V.DEFAULT_MAX_STATIONS),
                           kw.get("method", "median"), kw.get("idw_power", 1.0),
                           kw.get("spread_threshold_mm_yr", V.DEFAULT_SPREAD_THRESHOLD_MM_YR))
-            for a, b in zip(lon_arr, lat_arr)]
+            for a, b in zip(lon_arr, lat_arr, strict=True)]
     out = pd.DataFrame.from_records(rows, columns=V.RESULT_COLUMNS)
     out["n_stations_used"] = out["n_stations_used"].astype("int64")
     out["quality"] = out["quality"].astype("string")

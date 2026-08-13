@@ -119,13 +119,13 @@ def test_dispatcher_degrades_gracefully(monkeypatch):
 def test_dispatcher_total_failure_returns_empty_schema(monkeypatch):
     import groundcontrol.sources as srcs
     monkeypatch.setitem(srcs.PROVIDERS, "ngs", (_fake_provider_boom, ngs.parse_nde))
-    gdf, status = fetch_control((-112, 32, -111, 33), sources=("ngs",))
+    gdf, _status = fetch_control((-112, 32, -111, 33), sources=("ngs",))
     assert len(gdf) == 0
     assert list(schema.COLUMNS.keys()) == [c for c in gdf.columns if c != "geometry"]
 
 
 def test_dispatcher_unknown_source_reported():
-    gdf, status = fetch_control((-112, 32, -111, 33), sources=("nope",))
+    _gdf, status = fetch_control((-112, 32, -111, 33), sources=("nope",))
     assert "unknown source" in status["nope"]["error"]
 
 

@@ -157,7 +157,8 @@ def interpolate_velocity(lon, lat, stations: pd.DataFrame, *,
     needed = (lon_col, lat_col, *vel_cols)
     missing = [c for c in needed if c not in stations.columns]
     if missing:
-        raise ValueError(f"stations DataFrame missing column(s) {missing}; has {list(stations.columns)}")
+        raise ValueError(f"stations DataFrame missing column(s) {missing}; "
+                         f"has {list(stations.columns)}")
 
     lon_arr = np.atleast_1d(np.asarray(lon, dtype="float64"))
     lat_arr = np.atleast_1d(np.asarray(lat, dtype="float64"))
@@ -180,7 +181,8 @@ def interpolate_velocity(lon, lat, stations: pd.DataFrame, *,
     # target): a site-scale lookup against a continental network is otherwise dominated by
     # stations thousands of km away. Order-preserving, so the index tie-break is unchanged.
     flat_lon, flat_lat = lon_arr.ravel(), lat_arr.ravel()
-    finite = np.flatnonzero(np.isfinite(flat_lon) & np.isfinite(flat_lat))  # NaN targets reach nothing
+    # NaN targets reach nothing
+    finite = np.flatnonzero(np.isfinite(flat_lon) & np.isfinite(flat_lat))
     if slon.size and finite.size:
         alon, alat = flat_lon[finite[0]], flat_lat[finite[0]]
         # nanmax over the targets as-is: NaN targets yield NaN distance and are ignored,
@@ -246,7 +248,7 @@ def _lookup_block(tlon, tlat, slon, slat, sids, svel, radius_km, min_stations,
     inside = np.where(dist <= radius_km, dist, np.inf)     # outside radius -> never selected
     k = int(min(max_stations, m))
 
-    if m > k:
+    if m > k:  # noqa: SIM108 - ternary here is a 100-column one-liner
         cand = np.argpartition(inside, k - 1, axis=1)[:, :k]
     else:
         cand = np.tile(np.arange(m), (n, 1))
@@ -284,7 +286,8 @@ def _lookup_block(tlon, tlat, slon, slat, sids, svel, radius_km, min_stations,
     spread_u = spread[:, 2]
 
     quality = np.full(n, QUALITY_OK, dtype=object)
-    quality[np.isfinite(spread_h) & (spread_h * 1e3 > spread_threshold_mm_yr)] = QUALITY_SPREAD_WARNING
+    over_spread = np.isfinite(spread_h) & (spread_h * 1e3 > spread_threshold_mm_yr)
+    quality[over_spread] = QUALITY_SPREAD_WARNING
     quality[n_used == 1] = QUALITY_SINGLE_STATION
     # `| n_used == 0` matters only when a caller passes min_stations=0: the reference returns
     # its `empty` (NaN + low_density) whenever NO station is inside the radius, before the
@@ -319,9 +322,9 @@ def _lookup_one(tlon, tlat, slon, slat, svel, sids, radius_km, min_stations,
     runs the block-vectorized :func:`_lookup_block` instead; ``tests/test_velocity.py``
     asserts the two agree exactly, so this stays the specification.
     """
-    empty = dict(vel_e=np.nan, vel_n=np.nan, vel_u=np.nan, vel_spread_h=np.nan,
-                 vel_spread_u=np.nan, n_stations_used=0, nearest_dist_km=np.nan,
-                 nearest_sta=pd.NA, quality=QUALITY_LOW_DENSITY)
+    empty = {"vel_e": np.nan, "vel_n": np.nan, "vel_u": np.nan, "vel_spread_h": np.nan,
+             "vel_spread_u": np.nan, "n_stations_used": 0, "nearest_dist_km": np.nan,
+             "nearest_sta": pd.NA, "quality": QUALITY_LOW_DENSITY}
     if slon.size == 0:
         return empty
     dist = _haversine_km(tlon, tlat, slon, slat)
@@ -354,9 +357,9 @@ def _lookup_one(tlon, tlat, slon, slat, svel, sids, radius_km, min_stations,
     else:
         quality = QUALITY_OK
 
-    return dict(vel_e=float(ve), vel_n=float(vn), vel_u=float(vu),
-                vel_spread_h=spread_h, vel_spread_u=spread_u, n_stations_used=n_used,
-                nearest_dist_km=nearest_dist, nearest_sta=nearest_sta, quality=quality)
+    return {"vel_e": float(ve), "vel_n": float(vn), "vel_u": float(vu),
+            "vel_spread_h": spread_h, "vel_spread_u": spread_u, "n_stations_used": n_used,
+            "nearest_dist_km": nearest_dist, "nearest_sta": nearest_sta, "quality": quality}
 
 
 #: ``fill_velocities(per_row='auto')`` attaches the per-row lookup table up to this many
@@ -404,14 +407,14 @@ def fill_velocities(gdf, stations: pd.DataFrame, *,
     lon = out.geometry.x.to_numpy(dtype="float64")
     lat = out.geometry.y.to_numpy(dtype="float64")
     res = interpolate_velocity(lon, lat, stations, **kwargs)
-    for col, src in zip(vel_cols, ("vel_e", "vel_n", "vel_u")):
+    for col, src in zip(vel_cols, ("vel_e", "vel_n", "vel_u"), strict=True):
         out[col] = res[src].to_numpy(dtype="float64")
     if quality_col is not None:
         out[quality_col] = res["quality"].to_numpy()
     counts = res["quality"].value_counts().to_dict()
     keep_rows = len(res) <= PER_ROW_PROVENANCE_MAX if per_row == "auto" else per_row
     out.attrs["velocity_fill"] = {
-        "n_total": int(len(res)),
+        "n_total": len(res),
         "n_filled": int(res["vel_e"].notna().sum()),
         "quality_counts": {str(k): int(v) for k, v in counts.items()},
         "per_row": res.to_dict("records") if keep_rows else None,

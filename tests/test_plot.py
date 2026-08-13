@@ -6,12 +6,10 @@ matplotlib.use("Agg")
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import pytest
 
-import pandas as pd
-
 from groundcontrol.plot import hillshade, plot_dh_map, plot_velocity_vectors
-
 
 # ---------------------------------------------------------------------------
 # hillshade

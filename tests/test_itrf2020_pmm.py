@@ -6,12 +6,11 @@ transcription against the paper's independent mas/yr form (Table 1) and the
 kernel's pole/rate construction path.
 """
 
+import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pytest
 from shapely.geometry import Point
-
-import geopandas as gpd
 
 from groundcontrol.crs import (
     ITRF2020_ORB_MM_PER_YR,
@@ -62,10 +61,10 @@ def test_pole_table_matches_bundled_dat_file():
 
     text = (files("groundcontrol") / "data" / "ITRF2020-PMM.dat").read_text()
     rows = re.findall(
-        r"^\s+([A-Z]{4})\s+(-?[\d.]+),\s+(-?[\d.]+),\s+(-?[\d.]+),", text, re.M)
+        r"^\s+([A-Z]{4})\s+(-?[\d.]+),\s+(-?[\d.]+),\s+(-?[\d.]+),", text, re.MULTILINE)
     table = {k: (float(a), float(b), float(c)) for k, a, b, c in rows}
     assert table == ITRF2020_PMM_DEG_PER_MYR
-    orb = re.findall(r"^T[XYZ] = (-?[\d.]+)", text, re.M)
+    orb = re.findall(r"^T[XYZ] = (-?[\d.]+)", text, re.MULTILINE)
     assert tuple(float(v) for v in orb) == ITRF2020_ORB_MM_PER_YR
 
 

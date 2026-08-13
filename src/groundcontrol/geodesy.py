@@ -121,13 +121,13 @@ def geographic_base_epsg(crs_input) -> int:
     crs = CRS.from_epsg(int(s)) if s.isdigit() else CRS.from_user_input(crs_input)
     base = crs.geodetic_crs
     code = base.to_epsg() if base is not None else None
-    if code is not None and code not in NAD83_FAMILY_GEOGRAPHIC:
-        # projected CRSs may report a 3D/other variant: try name matching
-        if (base is not None and base.name.startswith("NAD83")
-                and "PA11" not in base.name and "MA11" not in base.name):
-            for cand in NAD83_FAMILY_GEOGRAPHIC:
-                if CRS.from_epsg(cand).name == base.name:
-                    return cand
+    # projected CRSs may report a 3D/other variant: try name matching
+    if (code is not None and code not in NAD83_FAMILY_GEOGRAPHIC
+            and base is not None and base.name.startswith("NAD83")
+            and "PA11" not in base.name and "MA11" not in base.name):
+        for cand in NAD83_FAMILY_GEOGRAPHIC:
+            if CRS.from_epsg(cand).name == base.name:
+                return cand
     if code in NAD83_FAMILY_GEOGRAPHIC:
         return code
     raise ValueError(
@@ -247,7 +247,8 @@ def build_utm_target(utm_epsg: int, output_datum: str = "wgs84_g2139") -> tuple[
     except KeyError:
         raise ValueError(
             f"Unknown output_datum '{output_datum}'; choose from "
-            f"{sorted(OUTPUT_DATUM_BUILDERS)} or pass an explicit dst_crs WKT file.")
+            f"{sorted(OUTPUT_DATUM_BUILDERS)} or pass an explicit dst_crs WKT file."
+        ) from None
     return builder(utm_epsg), f"UTM_{utm_zone_label(utm_epsg)}_{label}_3D.wkt"
 
 
@@ -306,7 +307,8 @@ def epoch_pinned_pipeline(src_crs, dst_crs, coord_epoch: float,
         w, s, e, n = aoi_bounds
         cmd += ["--bbox", f"{w},{s},{e},{n}"]
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=60,
+                             check=False)
     except subprocess.TimeoutExpired as e:
         raise RuntimeError(
             f"projinfo did not finish within 60 s for {src_crs!r} -> "
@@ -386,8 +388,8 @@ def preflight_vertical_transform(
     src_crs: CRS | str,
     dst_crs: CRS | str,
     download: bool = True,
-    aoi_bounds: tuple = None,
-    prefer_grids: str = None,
+    aoi_bounds: tuple | None = None,
+    prefer_grids: str | None = None,
 ) -> dict:
     """Verify PROJ can rigorously transform src_crs -> dst_crs before compute.
 

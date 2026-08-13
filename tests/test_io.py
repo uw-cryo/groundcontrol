@@ -86,10 +86,11 @@ def test_write_rejects_unknown_format(tmp_path):
 
 def test_cli_fetch_end_to_end(tmp_path, monkeypatch):
     """Milestone command, offline: fetch (mocked) -> land -> export -> read back."""
+    from pathlib import Path
+
     import groundcontrol.sources as srcs
     from groundcontrol.cli import fetch_control_main
     from groundcontrol.sources import ngs
-    from pathlib import Path
 
     records = json.loads((Path(__file__).parent / "data" / "ngs_nde_sample.json").read_text())
     monkeypatch.setitem(srcs.PROVIDERS, "ngs", (lambda b: records, ngs.parse_nde))

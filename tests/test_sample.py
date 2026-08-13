@@ -60,7 +60,7 @@ def south_up_tif(tmp_path):
 
 def _points(xy, crs=CRS, **cols):
     """Points from raster-relative (rx, ry) pairs (see _exp)."""
-    xs, ys = zip(*xy)
+    xs, ys = zip(*xy, strict=True)
     return gpd.GeoDataFrame(
         cols, geometry=gpd.points_from_xy(np.asarray(xs) + X0, np.asarray(ys) + Y0), crs=crs)
 
@@ -92,7 +92,8 @@ def test_nearest_known_values_pixel_centers(fixture, request):
 def test_north_up_and_south_up_agree(north_up_tif, south_up_tif, method):
     """B4: the two encodings of the same field must sample identically."""
     rng = np.random.default_rng(4)
-    pts = list(zip(rng.uniform(0.6, NX - 0.6, 50), rng.uniform(0.6, NY - 0.6, 50)))
+    pts = list(zip(rng.uniform(0.6, NX - 0.6, 50), rng.uniform(0.6, NY - 0.6, 50),
+                   strict=True))
     a = sample_raster(_points(pts), north_up_tif, method=method)
     b = sample_raster(_points(pts), south_up_tif, method=method)
     np.testing.assert_allclose(a[a.columns[-1]].to_numpy(), b[b.columns[-1]].to_numpy(),
@@ -162,7 +163,7 @@ def test_tiled_matches_single_window_bit_identical(tmp_path):
     # add points ON pixel seams near tile boundaries
     xs = np.concatenate([xs, [15.0, 16.0, 17.0, 31.5, 32.5]])
     ys = np.concatenate([ys, [16.0, 15.5, 32.0, 31.0, 16.5]])
-    pts = _points(list(zip(xs, ys)))
+    pts = _points(list(zip(xs, ys, strict=True)))
     single = sample_raster(pts, tif, method="linear", block=4096)
     tiled = sample_raster(pts, tif, method="linear", block=16)
     np.testing.assert_array_equal(single["tiles"].to_numpy(), tiled["tiles"].to_numpy())
@@ -174,7 +175,7 @@ def test_tiled_matches_single_window_nearest(tmp_path):
     arr = rng.normal(0.0, 1.0, size=(ny, nx))
     tif = _write_tif(tmp_path / "tiles_n.tif", arr,
                      Affine(1.0, 0.0, X0, 0.0, -1.0, Y0 + ny))
-    pts = _points(list(zip(rng.uniform(0, nx, 200), rng.uniform(0, ny, 200))))
+    pts = _points(list(zip(rng.uniform(0, nx, 200), rng.uniform(0, ny, 200), strict=True)))
     single = sample_raster(pts, tif, method="nearest", block=4096)
     tiled = sample_raster(pts, tif, method="nearest", block=8)
     np.testing.assert_array_equal(single["tiles_n"].to_numpy(), tiled["tiles_n"].to_numpy())
@@ -330,7 +331,7 @@ def test_radius_tiled_matches_single_window(tmp_path):
                      Affine(1.0, 0.0, X0, 0.0, -1.0, Y0 + ny), nodata=np.nan)
     xs = np.concatenate([rng.uniform(0.0, nx, 250), [15.9, 16.1, 31.5, 32.5, 16.0]])
     ys = np.concatenate([rng.uniform(0.0, ny, 250), [16.1, 15.9, 32.5, 31.5, 16.0]])
-    pts = _points(list(zip(xs, ys)))
+    pts = _points(list(zip(xs, ys, strict=True)))
     single = sample_raster(pts, tif, radius=2.5, block=4096)
     tiled = sample_raster(pts, tif, radius=2.5, block=16)
     for suffix in ("", "_nmad", "_n"):

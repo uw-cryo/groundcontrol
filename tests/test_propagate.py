@@ -8,17 +8,16 @@ the original. Also covers the velocity priority ladder (per-point → plate mode
 none+bound), the fail-loud guards, and the frame_epoch QC.
 """
 
+import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pyproj
 import pytest
 from shapely.geometry import Point
 
-import geopandas as gpd
-
 from groundcontrol.crs import (
-    EulerPoleModel,
     PLATE_MOTION_RATE_BOUND,
+    EulerPoleModel,
     check_frame_epoch_reduced,
     ecef_to_enu,
     enu_to_ecef,
@@ -450,6 +449,7 @@ def test_per_row_report_capped_but_column_complete(monkeypatch):
     column carries the same numbers, uncapped."""
     import geopandas as gpd
     from shapely.geometry import Point
+
     from groundcontrol import crs as C
 
     n = 50

@@ -173,9 +173,8 @@ def _normalize_time_range(time_range) -> tuple[pd.Timestamp, pd.Timestamp]:
         raise ValueError(f"time_range must be (start, end), got {time_range!r}")
     out = []
     for v in time_range:
-        if isinstance(v, (int, float, np.floating)):
-            v = decyear_inv(float(v))
-        out.append(pd.to_datetime(v, utc=True))
+        stamp = decyear_inv(float(v)) if isinstance(v, (int, float, np.floating)) else v
+        out.append(pd.to_datetime(stamp, utc=True))
     t0, t1 = out
     if t0 > t1:
         raise ValueError(f"time_range start {t0} is after end {t1}")
@@ -238,7 +237,7 @@ def _midas_velocity_map(frame: str) -> dict:
                     _MIDAS_FRAME, _MIDAS_FRAME, frame)
     try:
         m = read_midas(frame=_MIDAS_FRAME)
-    except Exception as e:  # network/404/parse — degrade to no velocities
+    except Exception as e:  # noqa: BLE001 - network/404/parse: degrade to no velocities
         logger.warning("NGL: MIDAS velocities unavailable (%s: %s); vel_e/n/u stay NaN",
                        type(e).__name__, e)
         return {}
@@ -585,7 +584,7 @@ def _position_from_window(win: pd.DataFrame) -> dict:
         "height": float(np.median(win["height"].to_numpy())),
         "coord_epoch": med_dy,
         "measurement_datetime": nearest["date"],
-        "n_solutions_used": int(len(win)),
+        "n_solutions_used": len(win),
         # per-solution formal sigmas: medians go to raw, not acc_* (TODO(D3))
         "sig_e_m": float(np.median(win["sig_e"].to_numpy())),
         "sig_n_m": float(np.median(win["sig_n"].to_numpy())),

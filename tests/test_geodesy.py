@@ -185,6 +185,7 @@ def test_library_versions_gdal_free():
 def test_navd88_offset_fail_loud_without_grid(monkeypatch):
     """A missing geoid grid must raise, never return N = 0 (audit, MEDIUM)."""
     import pyproj.exceptions
+
     from groundcontrol import geodesy as _g
 
     captured = {}

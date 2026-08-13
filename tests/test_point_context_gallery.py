@@ -75,6 +75,25 @@ class TestPointContextGallery:
                                            "building": "#8B4E00"})
         assert fp.name == "TEST_opus_gallery_30m.png"
 
+    def test_fallback_chain(self, points, tmp_path, caplog):
+        # primary raster does not cover the point (window all fill) -> the
+        # fallback source renders instead, and the fallback use is logged
+        import logging
+
+        near = _write(tmp_path, "near.tif", 3)
+        miss = tmp_path / "miss.tif"
+        with rasterio.open(miss, "w", driver="GTiff", width=50, height=50,
+                           count=3, dtype="float32", crs=CRS_A,
+                           nodata=-9999.0,
+                           transform=from_origin(700000, 4000000, 1, 1)) as d:
+            d.write(np.full((3, 50, 50), 15, dtype="float32"))
+        with caplog.at_level(logging.INFO, logger="groundcontrol.figures"):
+            fp = point_context_gallery(
+                points.iloc[[0]], [("o", [miss, near], "rgb")], tmp_path,
+                "TEST", half_m=10)
+        assert fp.exists()
+        assert any("fallback source 1" in m for m in caplog.messages)
+
     def test_non_square_pixels(self, points, tmp_path):
         # Copilot PR #17: transform.a used for both axes distorted windows
         # on non-square-pixel rasters; per-axis sizes must hold half_m in

@@ -28,14 +28,53 @@ logger = logging.getLogger(__name__)
 
 #: point_type -> (marker, color, size, zorder, label). GNSS/OPUS plots BEHIND
 #: the 3DEP checkpoints; NVA above VVA (owner figure review, 2026-07-15).
+def _heliport_marker():
+    """FAA VFR-chart heliport symbol as a Path marker: 'H' inside a circle
+    ring. Compound path: outer circle + reversed inner circle (annulus via
+    winding) + a TextPath 'H' scaled into the ring."""
+    from matplotlib.path import Path as _P
+    from matplotlib.textpath import TextPath
+
+    outer = _P.circle((0, 0), 1.0)
+    inner = _P.circle((0, 0), 0.78)
+    inner = _P(inner.vertices[::-1], inner.codes)  # reverse winding -> ring
+    h = TextPath((0, 0), "H", size=1.0)
+    b = h.get_extents()
+    verts = ((h.vertices - ((b.x0 + b.x1) / 2.0, (b.y0 + b.y1) / 2.0))
+             / max(b.width, b.height) * 1.15)
+    return _P.make_compound_path(outer, inner, _P(verts, h.codes))
+
+
+#: package-level marker key, convention-based where conventions exist
+#: (primary sources verified 2026-08-13):
+#: - helipad = H-in-circle: exact match to the FAA Aeronautical Chart
+#:   Users' Guide heliport symbol (aeronav.faa.gov/user_guide, p. 23);
+#: - runway end / displaced threshold = chevrons (matplotlib carets 6/7):
+#:   simplification of the FAA CUG runway-construction bars + arrow/
+#:   chevron stems (p. 124), which are runway-oriented and don't reduce
+#:   to a scatter marker;
+#: - NGS monument '+': near the USGS topo benchmark "x" (USGS
+#:   Topographic Map Symbols, pubs.usgs.gov/gip/TopographicMapSymbols).
+#:   The NGS web-map de facto scheme (circle = vertical, triangle =
+#:   horizontal, square = combined; filled = order 1) is a possible
+#:   future refinement requiring a control-type split per monument;
+#: - GNSS star / 3DEP circle+square: no authority defines symbols for
+#:   CORS or lidar checkpoints — house choices, kept distinct from the
+#:   triangle/circle/square control conventions above.
+#: Values: (marker, color, size, zorder, label).
 POINT_STYLE = {
     "monument": ("+", "#111111", 30, 4, "NGS monument"),
     "gnss": ("*", "#0033A0", 90, 5, "GNSS/OPUS"),
     "VVA": ("s", "#E69F00", 45, 6, "3DEP VVA"),
     "NVA": ("o", "#C00000", 55, 7, "3DEP NVA"),
+    "runway_end": (6, "#1B7837", 55, 6, "FAA runway end"),
+    "displaced_threshold": (7, "#66A61E", 50, 6, "FAA displaced threshold"),
+    "helipad": (_heliport_marker(), "#1B7837", 110, 6, "FAA helipad"),
 }
-#: legend order: the two 3DEP checkpoint classes adjacent, then GNSS, then NGS.
-LEGEND_ORDER = ("NVA", "VVA", "gnss", "monument")
+#: legend order: the two 3DEP checkpoint classes adjacent, then GNSS, then
+#: NGS, then the FAA runway classes.
+LEGEND_ORDER = ("NVA", "VVA", "gnss", "monument", "runway_end",
+                "displaced_threshold", "helipad")
 #: dz map/histogram colormap, CENTRALIZED for easy revert (owner 2026-07-15):
 #: RdYlBu puts RED = negative dz (product below control) — the same
 #: red-means-down convention as the subsidence/rate maps. Revert to the old
@@ -109,7 +148,11 @@ def point_context_gallery(points, layers, outdir, site_name, *,
         (bands 1-3, per-band 0.5-99.5% stretch), ``"gray"`` (band 1,
         0.5-99.5% stretch), ``"relief"`` (band 1 as :func:`cpt_rainbow` at
         0.4 alpha over a multidirectional hillshade — env figures.md house
-        style). Panels render left-to-right in list order.
+        style). Panels render left-to-right in list order. ``path`` may be
+        a LIST of paths — a fallback chain: the first source whose window
+        holds >1% valid pixels renders (e.g. ``[ortho, web_basemap]`` so an
+        ortho nodata hole falls back to fetched imagery); if every source
+        is empty the last renders as-is (an honest blank, never invented).
     half_m : half-window in meters (60 -> 120 m context; ~15 with
         ``interp="nearest"`` for a native-pixel tier).
     tier_tag : filename tag; defaults to ``f"{2*half_m:g}m"``.
@@ -150,12 +193,25 @@ def point_context_gallery(points, layers, outdir, site_name, *,
         return arr, [x - halfx * px, x + halfx * px,
                      y - halfy * py, y + halfy * py], (px, py)
 
-    def _panel(ax, src, kind, x, y):
-        if src.crs is not None and points.crs is not None \
-                and src.crs.to_wkt() != points.crs.to_wkt():
-            xs, ys = _rio_transform(points.crs, src.crs, [x], [y])
-            x, y = xs[0], ys[0]
-        arr, ext, (px, py) = _window(src, x, y)
+    def _valid_frac(arr):
+        # fraction of pixels carrying signal: finite AND (any band) nonzero
+        # — Byte RGB mosaics fill gaps with 0 and carry no nodata tag
+        ok = np.isfinite(arr).all(axis=0) & (arr != 0).any(axis=0)
+        return float(ok.mean()) if ok.size else 0.0
+
+    def _panel(ax, dss, kind, x0, y0):
+        for i, src in enumerate(dss):
+            x, y = x0, y0
+            if src.crs is not None and points.crs is not None \
+                    and src.crs.to_wkt() != points.crs.to_wkt():
+                xs, ys = _rio_transform(points.crs, src.crs, [x], [y])
+                x, y = xs[0], ys[0]
+            arr, ext, (px, py) = _window(src, x, y)
+            if _valid_frac(arr) > 0.01 or i == len(dss) - 1:
+                if i:
+                    logger.info("fallback source %d used at (%.0f, %.0f)",
+                                i, x0, y0)
+                break
         if kind == "rgb":
             img = arr[:3]
             lo = np.nanpercentile(img, 0.5, axis=(1, 2))[:, None, None]
@@ -191,7 +247,8 @@ def point_context_gallery(points, layers, outdir, site_name, *,
     srcs = []  # built inside the try: a failed open must not leak the others
     try:
         for tag, p, kind in layers:
-            srcs.append((tag, rasterio.open(p), kind))
+            chain = p if isinstance(p, (list, tuple)) else [p]
+            srcs.append((tag, [rasterio.open(q) for q in chain], kind))
         n = len(points)
         npanel = len(srcs)
         if ncell is None:
@@ -207,10 +264,10 @@ def point_context_gallery(points, layers, outdir, site_name, *,
             row_i, cell = divmod(i, ncell)
             cls = r[class_col] if class_col else None
             color = (class_colors or {}).get(cls, "#C00000")
-            for j, (tag, src, kind) in enumerate(srcs):
+            for j, (tag, chain, kind) in enumerate(srcs):
                 ax = fig.add_subplot(gs[row_i, cell * (npanel + 1) + j])
                 try:
-                    x, y, ext = _panel(ax, src, kind,
+                    x, y, ext = _panel(ax, chain, kind,
                                        r.geometry.x, r.geometry.y)
                     ax.scatter([x], [y], s=170, facecolors="none",
                                edgecolors=color, linewidths=2.0, zorder=5)
@@ -238,8 +295,9 @@ def point_context_gallery(points, layers, outdir, site_name, *,
         fig.savefig(fp, dpi=dpi)
         plt.close(fig)
     finally:
-        for _, src, _ in srcs:
-            src.close()
+        for _, chain, _ in srcs:
+            for src in chain:
+                src.close()
     logger.info("wrote %s (%d points)", fp, n)
     return fp
 
@@ -351,8 +409,16 @@ def _aspect_panel_w(aoi_gdf, map_h, lo=0.5, hi=1.5):
 def standard_control_figures(control, aoi, outdir, site_name, *,
                              dem_tif=None, hs_tif=None, cmap=None,
                              dem_alpha=0.4, midas_frame="IGS14",
-                             buffer_km=60.0, clip_to_aoi=True, dpi=200):
-    """Write the default control figure bundle for a site; returns paths."""
+                             buffer_km=60.0, clip_to_aoi=True,
+                             label_points=True, dpi=200):
+    """Write the default control figure bundle for a site; returns paths.
+
+    ``label_points`` (owner request 2026-08-13, the NGS-map convention):
+    sparse, named classes get text labels — NGL/CORS station ids per point,
+    FAA points one label per AIRPORT (grouped by the id prefix; per-runway-
+    end labels would be unreadable). Dense classes (3DEP checkpoints, NGS
+    monuments) are never labeled.
+    """
     import geopandas as gpd
     import matplotlib
     matplotlib.use("Agg")
@@ -387,6 +453,22 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
                    edgecolors="white" if mk != "+" else col, zorder=zo)
         by_type[ptype] = Line2D([], [], marker=mk, ls="", color=col, ms=9,
                                 label=f"{lab} (n={len(sub)})")
+    if label_points and "source" in ctl.columns:
+        import matplotlib.patheffects as _pe
+        halo = [_pe.withStroke(linewidth=2.2, foreground="white")]
+        for _, r in ctl[ctl["source"] == "ngl"].iterrows():
+            ax.annotate(str(r["id"]), (r.geometry.x, r.geometry.y),
+                        xytext=(5, 4), textcoords="offset points",
+                        fontsize=7, fontweight="bold", color="#0033A0",
+                        path_effects=halo, zorder=8)
+        f = ctl[ctl["source"] == "faa"]
+        if len(f):
+            for name, sub in f.groupby(f["id"].astype(str).str.split("_").str[0]):
+                ax.annotate(name, (float(sub.geometry.x.mean()),
+                                   float(sub.geometry.y.mean())),
+                            xytext=(0, 7), textcoords="offset points",
+                            ha="center", fontsize=8, fontweight="bold",
+                            color="#1B7837", path_effects=halo, zorder=8)
     handles = [by_type[p] for p in LEGEND_ORDER if p in by_type]
     if not clip_to_aoi:
         handles.append(Line2D([], [], ls="--", color=_INK, alpha=0.45,
@@ -589,6 +671,23 @@ DZ_FAMILIES = {
     ]),
     "ngs_best": ("NGS MONUMENTS (best)", [
         ("NGS best", None, "monument", "o"),   # mask injected from ngs_best
+    ]),
+    # FAA NASR runway control, split by published coordinate provenance
+    # (raw['pos_class'] from sources/faa.py): the surveyed class is
+    # AC 150/5300-18C survey-grade; OWNER/FAA-EST/ADO positions are
+    # meters-to-tens-of-meters (LV A/B 2026-08-13: NMAD 0.019 vs 2.78 m)
+    # short panel labels: long ones collide on narrow-aspect AOIs (SF);
+    # surveyed = 3RD PARTY SURVEY/NGS/MILITARY/ARPTS CONTRACTOR,
+    # estimated = OWNER/FAA-EST IMAGERY/ADO/OE-AAA/blank
+    "faa": ("FAA RUNWAY CONTROL (by position source)", [
+        ("Surveyed",
+         lambda d: (d["source"] == "faa")
+         & (_raw_field(d["raw"], "pos_class") == "surveyed"),
+         "runway_end", "^"),
+        ("Estimated",
+         lambda d: (d["source"] == "faa")
+         & (_raw_field(d["raw"], "pos_class") == "estimated"),
+         "#8C6BB1", "v"),
     ]),
 }
 

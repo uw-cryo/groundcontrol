@@ -125,11 +125,31 @@ def cpt_rainbow(reverse: bool = False):
     return _CPT_RAINBOW_CACHE[reverse]
 
 
+def _point_azimuth(r) -> float:
+    """Optional true azimuth (deg) for a point row: a ``true_az`` column
+    when present, else the raw-JSON field (dispatcher-normalized frames
+    keep source extras in ``raw``). NaN when unavailable."""
+    import json as _json
+
+    v = r.get("true_az") if hasattr(r, "get") else None
+    if v is None or (isinstance(v, float) and not np.isfinite(v)):
+        raw = r.get("raw") if hasattr(r, "get") else None
+        if isinstance(raw, str):
+            try:
+                v = _json.loads(raw).get("true_az")
+            except ValueError:
+                v = None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return float("nan")
+
+
 def point_context_gallery(points, layers, outdir, site_name, *,
                           half_m=60.0, tier_tag=None, interp="antialiased",
                           scale_len=25, id_col="id", class_col=None,
                           class_colors=None, subset_tag="station",
-                          ncell=None, dpi=200):
+                          ncell=None, max_rows=12, sort=True, dpi=200):
     """Per-point context contact sheet: one row-cell of image panels per point.
 
     OPT-IN QA/QC figure (not part of the default reels): for each point, a
@@ -157,11 +177,18 @@ def point_context_gallery(points, layers, outdir, site_name, *,
         ``interp="nearest"`` for a native-pixel tier).
     tier_tag : filename tag; defaults to ``f"{2*half_m:g}m"``.
     class_col / class_colors : optional point-class column + {class: color}
-        for the marker circles (default single crimson).
-    ncell : point-cells per row (default 2 for 3+ layers else 3).
+        for the marker circles (default single crimson). The
+        ``class_colors`` KEY ORDER is also the sort priority.
+    ncell : point-cells per row (default 3 for 3+ layers else 4).
+    max_rows : rows per sheet; longer subsets paginate into
+        ``..._gallery_<tier>_pN.png`` pages (owner 2026-08-13: single
+        very-long sheets do not review well).
+    sort : order cells by (class, id) — class from the ``class_colors``
+        key order, and the id's facility prefix groups airports/stations.
+        Pass False to keep the caller's order.
 
-    Returns the written path
-    (``<outdir>/<site>_<subset_tag>_gallery_<tier>.png``).
+    Returns the LIST of written paths (one per page;
+    ``<outdir>/<site>_<subset_tag>_gallery_<tier>[_pN].png``).
 
     A layer that cannot be read at a point renders an "unavailable" panel
     rather than failing the sheet (points outside one product's footprint
@@ -249,73 +276,109 @@ def point_context_gallery(points, layers, outdir, site_name, *,
         for tag, p, kind in layers:
             chain = p if isinstance(p, (list, tuple)) else [p]
             srcs.append((tag, [rasterio.open(q) for q in chain], kind))
+        from matplotlib.markers import MarkerStyle
+        from matplotlib.transforms import Affine2D
+
         n = len(points)
         npanel = len(srcs)
         if ncell is None:
-            ncell = 2 if npanel >= 3 else 3
-        nrow = int(np.ceil(n / ncell))
-        pw = 2.7
-        fig = plt.figure(
-            figsize=(pw * npanel * ncell + 0.5, (pw + 0.42) * nrow + 0.5))
-        wr = ([1] * npanel + [0.12]) * (ncell - 1) + [1] * npanel
-        gs = fig.add_gridspec(nrow, (npanel + 1) * ncell - 1,
-                              width_ratios=wr, hspace=0.16, wspace=0.04)
-        for i, (_, r) in enumerate(points.iterrows()):
-            row_i, cell = divmod(i, ncell)
-            cls = r[class_col] if class_col else None
-            color = (class_colors or {}).get(cls, "#C00000")
-            for j, (tag, chain, kind) in enumerate(srcs):
-                ax = fig.add_subplot(gs[row_i, cell * (npanel + 1) + j])
-                try:
-                    x, y, ext = _panel(ax, chain, kind,
-                                       r.geometry.x, r.geometry.y)
-                    # locator = the package marker key's shape for this
-                    # point_type, drawn as an outline so the imagery stays
-                    # readable (unfilled markers take color=, not
-                    # facecolors="none" — matplotlib warns otherwise)
-                    from matplotlib.markers import MarkerStyle
-                    ptype = str(r.get("point_type", "")) if "point_type" in r \
-                        else ""
-                    mk = POINT_STYLE.get(ptype, ("o",))[0]
-                    if MarkerStyle(mk).is_filled():
-                        mkw = dict(facecolors="none", edgecolors=color)
-                    else:
-                        mkw = dict(color=color)
-                    # helipad H-ring locator SURROUNDS the pad paint (a
-                    # standard-size compound path reads as a blob over the
-                    # very feature under review)
-                    s = 650 if ptype == "helipad" else 170
-                    ax.scatter([x], [y], s=s, marker=mk,
-                               linewidths=2.0, zorder=5, **mkw)
-                    ax.set_xlim(ext[0], ext[1]), ax.set_ylim(ext[2], ext[3])
-                except Exception as e:
-                    ax.text(0.5, 0.5, f"{tag}\nunavailable", ha="center",
-                            va="center", transform=ax.transAxes, fontsize=8)
-                    logger.warning("%s %s panel failed: %s",
-                                   r[id_col], tag, e)
-                ax.set_aspect("equal")
-                ax.set_xticks([]), ax.set_yticks([])
-                if j == 0:
-                    label = f"{r[id_col]}" + (f" · {cls}" if cls else "")
-                    ax.set_title(label, fontsize=8.5, loc="left")
-                if j == npanel - 1:
-                    add_scalebar(ax, length=scale_len,
-                                 label=f"{scale_len} m")
-        tags = " | ".join(t for t, _, _ in srcs)
-        fig.suptitle(
-            f"{site_name} {subset_tag} points — {tags} ({2*half_m:.0f} m "
-            f"windows{', native pixels' if interp == 'nearest' else ''})",
-            fontsize=12, y=0.99)
-        fig.subplots_adjust(left=0.01, right=0.995, top=0.93, bottom=0.02)
-        fp = outdir / f"{site_name}_{subset_tag}_gallery_{tier}.png"
-        fig.savefig(fp, dpi=dpi)
-        plt.close(fig)
+            ncell = 3 if npanel >= 3 else 4
+        # intelligent order (owner 2026-08-13): class first (class_colors key
+        # order = priority), then id — the facility prefix in the id groups
+        # airports/stations naturally within each class
+        if sort and id_col in points.columns:
+            if class_col and class_col in points.columns:
+                rank = {c: k for k, c in enumerate(class_colors or {})}
+                ckey = points[class_col].map(
+                    lambda c: rank.get(c, len(rank))).to_numpy()
+                points = points.iloc[np.lexsort(
+                    (points[id_col].astype(str).to_numpy(), ckey))]
+            else:
+                points = points.sort_values(id_col)
+        per_page = max(1, max_rows) * ncell
+        pages = [points.iloc[k:k + per_page]
+                 for k in range(0, n, per_page)] or [points]
+        out_paths = []
+        for pg, pts_pg in enumerate(pages, start=1):
+            nrow = int(np.ceil(len(pts_pg) / ncell))
+            pw = 2.7
+            # ABSOLUTE title/footer margins: fractional top= on a tall sheet
+            # reserved inches of whitespace under the title (owner 2026-08-13)
+            fig_h = (pw + 0.42) * nrow + 0.85
+            fig = plt.figure(figsize=(pw * npanel * ncell + 0.5, fig_h))
+            wr = ([1] * npanel + [0.12]) * (ncell - 1) + [1] * npanel
+            gs = fig.add_gridspec(nrow, (npanel + 1) * ncell - 1,
+                                  width_ratios=wr, hspace=0.16, wspace=0.04)
+            for i, (_, r) in enumerate(pts_pg.iterrows()):
+                row_i, cell = divmod(i, ncell)
+                cls = r[class_col] if class_col else None
+                color = (class_colors or {}).get(cls, "#C00000")
+                for j, (tag, chain, kind) in enumerate(srcs):
+                    ax = fig.add_subplot(gs[row_i, cell * (npanel + 1) + j])
+                    try:
+                        x, y, ext = _panel(ax, chain, kind,
+                                           r.geometry.x, r.geometry.y)
+                        # locator = the package marker key's shape for this
+                        # point_type, drawn as an outline so the imagery
+                        # stays readable (unfilled markers take color=, not
+                        # facecolors="none" — matplotlib warns otherwise)
+                        ptype = str(r.get("point_type", "")) \
+                            if "point_type" in r else ""
+                        mk = POINT_STYLE.get(ptype, ("o",))[0]
+                        if MarkerStyle(mk).is_filled():
+                            mkw = dict(facecolors="none", edgecolors=color)
+                        else:
+                            mkw = dict(color=color)
+                        # runway/threshold chevrons rotate to the published
+                        # runway-end true alignment (E46), tip pointing
+                        # inward along the runway; grid convergence is
+                        # < ~2 deg at site scale — symbology, not survey
+                        az = _point_azimuth(r)
+                        if np.isfinite(az) and ptype in (
+                                "runway_end", "displaced_threshold"):
+                            mk = MarkerStyle(
+                                mk, transform=Affine2D().rotate_deg(-az))
+                        # helipad H-ring locator SURROUNDS the pad paint
+                        s = 450 if ptype == "helipad" else 170
+                        ax.scatter([x], [y], s=s, marker=mk,
+                                   linewidths=2.0, zorder=5, **mkw)
+                        ax.set_xlim(ext[0], ext[1])
+                        ax.set_ylim(ext[2], ext[3])
+                    except Exception as e:
+                        ax.text(0.5, 0.5, f"{tag}\nunavailable", ha="center",
+                                va="center", transform=ax.transAxes,
+                                fontsize=8)
+                        logger.warning("%s %s panel failed: %s",
+                                       r[id_col], tag, e)
+                    ax.set_aspect("equal")
+                    ax.set_xticks([]), ax.set_yticks([])
+                    if j == 0:
+                        label = f"{r[id_col]}" + (f" · {cls}" if cls else "")
+                        ax.set_title(label, fontsize=8.5, loc="left")
+                    if j == npanel - 1:
+                        add_scalebar(ax, length=scale_len,
+                                     label=f"{scale_len} m")
+            tags = " | ".join(t for t, _, _ in srcs)
+            page_note = f" — page {pg}/{len(pages)}" if len(pages) > 1 else ""
+            fig.suptitle(
+                f"{site_name} {subset_tag} points — {tags} ({2*half_m:.0f} m "
+                f"windows{', native pixels' if interp == 'nearest' else ''})"
+                f"{page_note}",
+                fontsize=12, y=1.0 - 0.12 / fig_h)
+            fig.subplots_adjust(left=0.01, right=0.995,
+                                top=1.0 - 0.52 / fig_h, bottom=0.18 / fig_h)
+            suffix = f"_p{pg}" if len(pages) > 1 else ""
+            fp = outdir / f"{site_name}_{subset_tag}_gallery_{tier}{suffix}.png"
+            fig.savefig(fp, dpi=dpi)
+            plt.close(fig)
+            out_paths.append(fp)
     finally:
         for _, chain, _ in srcs:
             for src in chain:
                 src.close()
-    logger.info("wrote %s (%d points)", fp, n)
-    return fp
+    logger.info("wrote %d page(s), %d points: %s", len(out_paths), n,
+                [p.name for p in out_paths])
+    return out_paths
 
 
 def snap_clim(values, k=3.0, tiers=CLIM_TIERS):
@@ -462,32 +525,65 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
     # ---- 1. control map ---------------------------------------------------
     fig, ax = plt.subplots(figsize=(10.5, 10))
     _relief(ax, dem_tif, hs_tif, cmap, dem_alpha, fig)
+    from matplotlib.markers import MarkerStyle
+    from matplotlib.transforms import Affine2D
+
     by_type = {}
     for ptype, (mk, col, sz, zo, lab) in POINT_STYLE.items():
         sub = ctl[ctl.point_type == ptype]
         if not len(sub):
             continue
-        ax.scatter(sub.geometry.x, sub.geometry.y, marker=mk, s=sz, c=col,
-                   linewidths=1.1 if mk == "+" else 0.5,
-                   edgecolors="white" if mk != "+" else col, zorder=zo)
+        lw = 1.1 if mk == "+" else 0.5
+        ec = "white" if mk != "+" else col
+        if ptype in ("runway_end", "displaced_threshold"):
+            # chevrons rotate to the published runway-end true alignment
+            # (tips point inward along the runway; owner 2026-08-13)
+            for _, rr in sub.iterrows():
+                az = _point_azimuth(rr)
+                m = MarkerStyle(mk, transform=Affine2D().rotate_deg(-az)) \
+                    if np.isfinite(az) else mk
+                ax.scatter([rr.geometry.x], [rr.geometry.y], marker=m, s=sz,
+                           c=col, linewidths=lw, edgecolors=ec, zorder=zo)
+        else:
+            ax.scatter(sub.geometry.x, sub.geometry.y, marker=mk, s=sz,
+                       c=col, linewidths=lw, edgecolors=ec, zorder=zo)
         by_type[ptype] = Line2D([], [], marker=mk, ls="", color=col, ms=9,
                                 label=f"{lab} (n={len(sub)})")
     if label_points and "source" in ctl.columns:
         import matplotlib.patheffects as _pe
         halo = [_pe.withStroke(linewidth=2.2, foreground="white")]
+        # GNSS/CORS labels place FIRST and unconditionally; FAA airport
+        # labels yield to them (owner 2026-08-13): dodge below on a close
+        # approach, drop entirely on a collision
+        anchors = []
         for _, r in ctl[ctl["source"] == "ngl"].iterrows():
             ax.annotate(str(r["id"]), (r.geometry.x, r.geometry.y),
                         xytext=(5, 4), textcoords="offset points",
                         fontsize=7, fontweight="bold", color="#0033A0",
                         path_effects=halo, zorder=8)
+            anchors.append((float(r.geometry.x), float(r.geometry.y)))
         f = ctl[ctl["source"] == "faa"]
         if len(f):
+            b = ctl.total_bounds
+            dmin = 0.03 * max(b[2] - b[0], b[3] - b[1])
+            anch = np.asarray(anchors, dtype="float64") \
+                if anchors else np.empty((0, 2))
             for name, sub in f.groupby(f["id"].astype(str).str.split("_").str[0]):
-                ax.annotate(name, (float(sub.geometry.x.mean()),
-                                   float(sub.geometry.y.mean())),
-                            xytext=(0, 7), textcoords="offset points",
-                            ha="center", fontsize=8, fontweight="bold",
-                            color="#1B7837", path_effects=halo, zorder=8)
+                cx = float(sub.geometry.x.mean())
+                cy = float(sub.geometry.y.mean())
+                d = np.min(np.hypot(anch[:, 0] - cx, anch[:, 1] - cy)) \
+                    if len(anch) else np.inf
+                if d < 0.5 * dmin:
+                    continue  # too close to a placed label: drop, don't clash
+                dy, va = ((7, "bottom") if d >= dmin else (-9, "top"))
+                ax.annotate(name, (cx, cy), xytext=(0, dy),
+                            textcoords="offset points", ha="center", va=va,
+                            fontsize=8, fontweight="bold", color="#1B7837",
+                            path_effects=halo, zorder=8)
+                # placed FAA labels become anchors too, so FAA labels also
+                # dodge each other (dense-cluster clashes, owner 2026-08-13)
+                anch = np.vstack([anch, [[cx, cy]]]) if len(anch) \
+                    else np.array([[cx, cy]], dtype="float64")
     handles = [by_type[p] for p in LEGEND_ORDER if p in by_type]
     if not clip_to_aoi:
         handles.append(Line2D([], [], ls="--", color=_INK, alpha=0.45,

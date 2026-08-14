@@ -141,6 +141,7 @@ _RWY_ID = slice(16, 23)        # 00017 L7  runway identification '01L/19R'
 _END_OFF = 222                 # reciprocal offset, GEOGRAPHIC blocks
 _SRC_OFF = 291                 # reciprocal offset, ADDITIONAL-DATA blocks
 _END_ID = slice(65, 68)        # 00066 L3  end identifier
+_END_AZ = slice(68, 71)        # 00069 L3  runway end true alignment (deg)
 _END_LAT = slice(103, 115)     # 00104 L12 physical end latitude (seconds)
 _END_LON = slice(130, 142)     # 00131 L12 physical end longitude (seconds)
 _END_ELEV = slice(142, 149)    # 00143 L7  end elevation, feet MSL
@@ -202,11 +203,17 @@ def _rows(lines) -> list[dict]:
                 # helipad "runways" (H1/H2...) are pad points, not runway
                 # ends — their own marker class and photo-ID semantics
                 ptype = "helipad" if rwy.upper().startswith("H") else "runway_end"
+                # E46 true alignment (deg): the heading of the runway
+                # direction this end names — i.e. pointing INWARD along the
+                # runway from this end. Feeds oriented map/gallery chevrons.
+                az = rec[_shift(_END_AZ, off)].strip()
+                true_az = float(az) if az.isdigit() else np.nan
                 rows.append({
                     **base, "point_type": ptype,
                     "id": f"{ap['loc_id'] or site}_{end_id}",
                     "lat": lat, "lon": lon,
                     "height": _feet_m(rec[_shift(_END_ELEV, off)]),
+                    "true_az": true_az,
                     "pos_src": rec[_shift(_END_POS_SRC, soff)].strip(),
                     "pos_src_date": rec[_shift(_END_POS_DATE, soff)].strip(),
                     "elev_src": rec[_shift(_END_ELEV_SRC, soff)].strip(),
@@ -219,6 +226,7 @@ def _rows(lines) -> list[dict]:
                         "id": f"{ap['loc_id'] or site}_{end_id}_DT",
                         "lat": dlat, "lon": dlon,
                         "height": _feet_m(rec[_shift(_DT_ELEV, off)]),
+                        "true_az": true_az,
                         "pos_src": rec[_shift(_DT_POS_SRC, soff)].strip(),
                         "pos_src_date": rec[_shift(_DT_POS_DATE, soff)].strip(),
                         "dt_len_ft": rec[_shift(_DT_LEN, off)].strip(),

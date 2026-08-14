@@ -157,3 +157,14 @@ def test_fetch_live_las_vegas():
     assert len(out) > 20
     norm = schema.normalize(out, source="faa")
     schema.validate(norm)
+
+
+def test_true_alignment_in_raw():
+    """E46 runway-end true alignment feeds the oriented map/gallery
+    chevrons; reciprocal ends differ by 180 and helipads carry none."""
+    out = faa.parse(_raw()).set_index("id")
+    az = {i: json.loads(out.loc[i, "raw"]).get("true_az")
+          for i in ("LAS_01L", "LAS_19R", "LAS_01L_DT", "NV53_H1")}
+    assert az["LAS_01L"] == "25.0" and az["LAS_19R"] == "205.0"
+    assert az["LAS_01L_DT"] == "25.0"   # DT rides its end's alignment
+    assert az["NV53_H1"] is None        # helipads have no runway azimuth

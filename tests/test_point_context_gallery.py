@@ -74,7 +74,10 @@ class TestPointContextGallery:
             interp="nearest", tier_tag="30m", subset_tag="opus",
             class_col="cls", class_colors={"mast": "#111111",
                                            "building": "#8B4E00"})
-        assert fp[0].name == "TEST_opus_gallery_30m.png"
+        # two classes -> class-separated pages (owner 2026-08-13)
+        assert [f.name for f in fp] == [
+            "TEST_opus_gallery_30m_p1.png",
+            "TEST_opus_gallery_30m_p2.png"]
 
     def test_fallback_chain(self, points, tmp_path, caplog):
         # primary raster does not cover the point (window all fill) -> the

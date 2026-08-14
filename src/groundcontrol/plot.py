@@ -412,8 +412,13 @@ def _scalebar_auto_loc(ax) -> str:
     taken = {_LEG_CODES.get(getattr(leg, "_loc", None))} if leg else set()
     corners = [c for c in _SCALEBAR_CORNERS if c[0] not in taken] \
         or list(_SCALEBAR_CORNERS)
+    # only scatter PathCollections vote (per the docstring): boundary/patch
+    # collections from geopandas plots carry no true point offsets and must
+    # not skew the count (Copilot review, PR #25)
+    from matplotlib.collections import PathCollection
     pts = [np.asarray(c.get_offsets(), dtype="float64")
-           for c in ax.collections if len(c.get_offsets())]
+           for c in ax.collections
+           if isinstance(c, PathCollection) and len(c.get_offsets())]
     if not pts:
         return corners[0][0]
     xy = np.vstack(pts)

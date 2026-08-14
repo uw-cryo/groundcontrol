@@ -220,10 +220,14 @@ def point_context_gallery(points, layers, outdir, site_name, *,
         return arr, [x - halfx * px, x + halfx * px,
                      y - halfy * py, y + halfy * py], (px, py)
 
-    def _valid_frac(arr):
-        # fraction of pixels carrying signal: finite AND (any band) nonzero
-        # — Byte RGB mosaics fill gaps with 0 and carry no nodata tag
-        ok = np.isfinite(arr).all(axis=0) & (arr != 0).any(axis=0)
+    def _valid_frac(arr, src, kind):
+        # fraction of pixels carrying signal. The all-bands-zero heuristic
+        # applies ONLY to untagged RGB (Byte mosaics fill gaps with 0 and
+        # carry no nodata) — zero is a legitimate value in single-band
+        # products (intensity, elevations near 0 m; Copilot review, PR #25)
+        ok = np.isfinite(arr).all(axis=0)
+        if kind == "rgb" and src.nodata is None:
+            ok &= (arr != 0).any(axis=0)
         return float(ok.mean()) if ok.size else 0.0
 
     def _panel(ax, dss, kind, x0, y0):
@@ -234,7 +238,7 @@ def point_context_gallery(points, layers, outdir, site_name, *,
                 xs, ys = _rio_transform(points.crs, src.crs, [x], [y])
                 x, y = xs[0], ys[0]
             arr, ext, (px, py) = _window(src, x, y)
-            if _valid_frac(arr) > 0.01 or i == len(dss) - 1:
+            if _valid_frac(arr, src, kind) > 0.01 or i == len(dss) - 1:
                 if i:
                     logger.info("fallback source %d used at (%.0f, %.0f)",
                                 i, x0, y0)
@@ -275,7 +279,17 @@ def point_context_gallery(points, layers, outdir, site_name, *,
     try:
         for tag, p, kind in layers:
             chain = p if isinstance(p, (list, tuple)) else [p]
-            srcs.append((tag, [rasterio.open(q) for q in chain], kind))
+            # open sequentially: a comprehension that raises mid-chain
+            # leaks the already-opened members (Copilot review, PR #25)
+            opened = []
+            try:
+                for q in chain:
+                    opened.append(rasterio.open(q))
+            except Exception:
+                for src in opened:
+                    src.close()
+                raise
+            srcs.append((tag, opened, kind))
         from matplotlib.markers import MarkerStyle
         from matplotlib.transforms import Affine2D
 

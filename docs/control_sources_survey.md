@@ -1,8 +1,9 @@
 # Control-point sources survey — candidates beyond the implemented set
 
 Web-research survey (2026-07, live-verified endpoints; citations inline). Implemented
-sources (3DEP checkpoints, NGS/OPUS, NGL) and already-planned ones (ICESat-2, GAGE, EPN,
-IGS) are excluded. Feeds the v2 source roadmap in `plan.md`.
+sources (3DEP checkpoints, NGS/OPUS, NGL, and — since 2026-08 — FAA NASR runway
+control, `sources/faa.py`) and already-planned ones (ICESat-2, GAGE, EPN, IGS) are
+excluded. Feeds the v2 source roadmap in `plan.md`.
 
 ## Ranked shortlist
 
@@ -45,6 +46,7 @@ swisstopo, Sweden (CC0), Norway, Germany-NRW, and US state services (e.g. NC One
 | NOAA CO-OPS tidal bench marks | Skip — API elevations null, m-level coords, tidal plumbing |
 | State DOT/RTN monuments | Skip as class — no aggregator; bluebooked subset already in NGS |
 | FAA/NGS PACS-SACS | Skip — inside the NGS datasheet DB (redundant) |
+| FAA NASR runway ends/thresholds/helipads | **Added 2026-08** (`faa`) — photo-identifiable pavement features, distinct from the PACS-SACS geodetic monuments skipped above; surveyed class validated at ~2 cm NMAD vertical vs GNSS-validated lidar |
 | USACE U-SMART | Skip — DoD-gated in practice, no API |
 | BLM PLSS corners | Skip — horizontal-only, m-level, no vertical |
 | Geoscience Australia | No national DB; **NSW SCIMS add** (anon REST, per-mark PU/LU); QLD/VIC/SA/TAS open |

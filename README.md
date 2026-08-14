@@ -33,6 +33,7 @@ per-source status report:
 | NGS Data Explorer (NDE) | `ngs` | monumented control, per-realization datum landing |
 | OPUS shared solutions | `opus` | GNSS-derived |
 | Nevada Geodetic Lab GNSS | `ngl` | daily `.tenv3` series, `steps.txt`, MIDAS velocities |
+| FAA NASR runway control | `faa` | photo-identifiable runway ends, displaced thresholds, helipads from the public-domain 28-day NASR subscription; per-point position-source provenance (surveyed vs estimated) with AC 150/5300-18C accuracies on the surveyed class |
 
 - **One normalized schema** (`schema.py`) — a single canonical control-point GeoDataFrame
   contract: source/id, height + datum provenance, `ref_frame`, `frame_epoch` / `coord_epoch` /

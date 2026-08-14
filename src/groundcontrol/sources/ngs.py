@@ -153,6 +153,14 @@ def _map_realizations_quarantine(ref_frame: pd.Series, pids: pd.Series):
 
     mapped, keep, skipped = [], [], {}
     for v in ref_frame:
+        # missing posDatum/refFrame -> pd.NA, which raises TypeError (not
+        # ValueError) inside the mapper — handle it explicitly or one null
+        # row still kills the source (Copilot review, PR #26)
+        if pd.isna(v):
+            mapped.append(pd.NA)
+            keep.append(False)
+            skipped["(missing)"] = skipped.get("(missing)", 0) + 1
+            continue
         try:
             mapped.append(ngs_datum_to_epsg(v))
             keep.append(True)

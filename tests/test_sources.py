@@ -186,3 +186,15 @@ def test_parse_nde_all_rows_quarantined_returns_schema_empty():
     out = ngs.parse_nde(bad)
     assert len(out) == 0 and out.crs is not None
     assert out.attrs["skipped"]["n"] == len(bad)
+
+
+def test_parse_nde_quarantines_missing_realization():
+    """#21 follow-up (Copilot, PR #26): a null posDatum maps to pd.NA and
+    must quarantine as '(missing)', not raise TypeError."""
+    records = json.loads((DATA / "ngs_nde_sample.json").read_text())
+    bad = dict(records[0])
+    bad["pid"] = "XX9998"
+    bad.pop("posDatum", None)
+    out = ngs.parse_nde(records + [bad])
+    assert "XX9998" not in set(out["id"])
+    assert out.attrs["skipped"]["reasons"].get("(missing)") == 1

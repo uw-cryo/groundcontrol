@@ -274,13 +274,18 @@ def point_context_gallery(points, layers, outdir, site_name, *,
                     # readable (unfilled markers take color=, not
                     # facecolors="none" — matplotlib warns otherwise)
                     from matplotlib.markers import MarkerStyle
-                    mk = POINT_STYLE.get(str(r.get("point_type", "")),
-                                         ("o",))[0] if "point_type" in r else "o"
+                    ptype = str(r.get("point_type", "")) if "point_type" in r \
+                        else ""
+                    mk = POINT_STYLE.get(ptype, ("o",))[0]
                     if MarkerStyle(mk).is_filled():
                         mkw = dict(facecolors="none", edgecolors=color)
                     else:
                         mkw = dict(color=color)
-                    ax.scatter([x], [y], s=170, marker=mk,
+                    # helipad H-ring locator SURROUNDS the pad paint (a
+                    # standard-size compound path reads as a blob over the
+                    # very feature under review)
+                    s = 650 if ptype == "helipad" else 170
+                    ax.scatter([x], [y], s=s, marker=mk,
                                linewidths=2.0, zorder=5, **mkw)
                     ax.set_xlim(ext[0], ext[1]), ax.set_ylim(ext[2], ext[3])
                 except Exception as e:

@@ -226,6 +226,7 @@ def summarize_dz(sampled, products=None, segments=SEGMENTS):
 def assess_products(control, products, target_crs, *, outdir, site_name,
                     aoi=None, hs=None, target_epoch=2010.0, method="linear",
                     radius=None, source_crs=None, figures=True, write=True,
+                    point_lim=None, vendor_lim=None, wide_lim=None,
                     command=None):
     """Fetch-free assessment: transform -> sample -> stats (+ figures, files).
 
@@ -271,5 +272,6 @@ def assess_products(control, products, target_crs, *, outdir, site_name,
             aoi_gdf = aoi_gdf.to_crs(sampled.crs)
         artifacts["figures"] = validation_dz_figures(
             sampled, aoi_gdf, outdir, site_name,
-            products=list(products), hs_tif=hs)
+            products=list(products), hs_tif=hs,
+            point_lim=point_lim, vendor_lim=vendor_lim, wide_lim=wide_lim)
     return sampled, stats, artifacts

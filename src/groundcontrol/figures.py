@@ -269,8 +269,19 @@ def point_context_gallery(points, layers, outdir, site_name, *,
                 try:
                     x, y, ext = _panel(ax, chain, kind,
                                        r.geometry.x, r.geometry.y)
-                    ax.scatter([x], [y], s=170, facecolors="none",
-                               edgecolors=color, linewidths=2.0, zorder=5)
+                    # locator = the package marker key's shape for this
+                    # point_type, drawn as an outline so the imagery stays
+                    # readable (unfilled markers take color=, not
+                    # facecolors="none" — matplotlib warns otherwise)
+                    from matplotlib.markers import MarkerStyle
+                    mk = POINT_STYLE.get(str(r.get("point_type", "")),
+                                         ("o",))[0] if "point_type" in r else "o"
+                    if MarkerStyle(mk).is_filled():
+                        mkw = dict(facecolors="none", edgecolors=color)
+                    else:
+                        mkw = dict(color=color)
+                    ax.scatter([x], [y], s=170, marker=mk,
+                               linewidths=2.0, zorder=5, **mkw)
                     ax.set_xlim(ext[0], ext[1]), ax.set_ylim(ext[2], ext[3])
                 except Exception as e:
                     ax.text(0.5, 0.5, f"{tag}\nunavailable", ha="center",
@@ -389,6 +400,9 @@ def _finish_map(ax, aoi_gdf, clip_to_aoi=True):
             aoi_gdf.boundary.plot(ax=ax, color=_INK, lw=1.0, ls="--", alpha=0.45)
     ax.set_xticks([])
     ax.set_yticks([])
+    # equal aspect is the map contract (env figures.md) and silences the
+    # matplotlib-scalebar unequal-aspect warning (#23)
+    ax.set_aspect("equal")
     add_scalebar(ax)
 
 
@@ -550,7 +564,7 @@ def _ngs_gate(v, mult):
 
 
 def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"),
-                          hs_tif=None, point_lim=0.25, vendor_lim=0.6, wide_lim=4.0,
+                          hs_tif=None, point_lim=None, vendor_lim=None, wide_lim=None,
                           ngs_nmad_gate=3.0, dpi=200):
     # hs_tif: a single path, or a {product: path} dict for PRODUCT-MATCHED
     # backgrounds (DTM diffs belong on the DTM hillshade — David, 2026-07-15).
@@ -558,12 +572,19 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
     item 5; requested by David 2026-07-15 after the SF run).
 
     One figure per product: (a) map of control points over shaded relief
-    colored by ``dh_<product>_before`` (product - control, RdBu_r, clipped at
-    +/- ``point_lim``); (b) histograms for the survey-grade segments (vendor
-    NVA/VVA, GNSS/OPUS; +/- ``vendor_lim``); (c) histogram for NGS monuments
-    after a ``ngs_nmad_gate``-NMAD filter (+/- ``wide_lim``). Segment rules:
-    NVA validates DSM and DTM; VVA validates DTM only; NGS/OPUS shown for
-    both as datum-sanity context. Median/NMAD/n annotated per segment.
+    colored by ``dh_<product>_before`` (product - control, RdBu_r); (b)
+    histograms for the survey-grade segments (vendor NVA/VVA, GNSS/OPUS);
+    (c) histogram for NGS monuments after a ``ngs_nmad_gate``-NMAD filter.
+    Segment rules: NVA validates DSM and DTM; VVA validates DTM only;
+    NGS/OPUS shown for both as datum-sanity context. Median/NMAD/n
+    annotated per segment.
+
+    Limits (``point_lim``/``vendor_lim``/``wide_lim``) default to
+    EMPIRICAL, tier-snapped values from the plotted dz (:func:`snap_clim`)
+    — issue #23: the former lidar-tuned constants (0.25/0.6/4.0 m)
+    saturated the map and clipped the histograms into piles at the edges
+    on photogrammetric DEMs (NMAD ~1-8 m). Pass explicit values to pin
+    comparable limits across runs.
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -603,8 +624,9 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         hs_prod = hs_tif.get(prod) if isinstance(hs_tif, dict) else hs_tif
         _relief(axes[0], None, hs_prod, None, 0.0, None)
         use = sampled[np.isfinite(sampled[col])]
+        pl = point_lim if point_lim is not None else snap_clim(use[col], k=3.0)
         sc = axes[0].scatter(use.geometry.x, use.geometry.y, c=use[col],
-                             cmap=DZ_CMAP, vmin=-point_lim, vmax=point_lim,
+                             cmap=DZ_CMAP, vmin=-pl, vmax=pl,
                              s=34, edgecolors="#333333", linewidths=0.5, zorder=5)
         cb = fig.colorbar(sc, ax=axes[0], shrink=0.75, pad=0.02, extend="both")
         cb.set_label(f"dz = {prod} − control (m)", fontsize=9, color=_INK)
@@ -613,21 +635,28 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         axes[0].set_title(f"{site_name} {prod} − control  (n={len(use)})",
                           fontsize=11, color=_INK)
 
-        for ax, labels, lim in (
+        for ax, labels, lim_over in (
                 (axes[1], [lbl for lbl, s in seg_defs.items()
                            if s[2 if prod == "DSM" else 3] and lbl != "NGS monument"],
                  vendor_lim),
                 (axes[2], ["NGS monument"], wide_lim)):
-            txt = []
+            seg_vals = {}
             for lab in labels:
                 maskfn, style, *_ = seg_defs[lab]
                 v = use.loc[maskfn(use), col].to_numpy(float)
                 v = v[np.isfinite(v)]
                 if lab == "NGS monument" and len(v):
                     v = _ngs_gate(v, ngs_nmad_gate)
-                if not len(v):
-                    continue
-                color = POINT_STYLE[style][1]
+                if len(v):
+                    seg_vals[lab] = v
+            # empirical tier-snapped panel limit unless overridden (#23);
+            # never tighter than the map so the panels stay comparable
+            lim = lim_over if lim_over is not None else (
+                max(snap_clim(np.concatenate(list(seg_vals.values())), k=3.0),
+                    pl) if seg_vals else pl)
+            txt = []
+            for lab, v in seg_vals.items():
+                color = POINT_STYLE[seg_defs[lab][1]][1]
                 ax.hist(np.clip(v, -lim, lim), bins=41, range=(-lim, lim),
                         histtype="stepfilled", alpha=0.45, color=color,
                         edgecolor=color, label=lab)
@@ -636,10 +665,17 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
             ax.axvline(0, color=_INK, lw=0.8)
             ax.set_xlim(-lim, lim)
             ax.set_xlabel(f"dz = {prod} − control (m)", fontsize=9, color=_INK)
-            ax.legend(fontsize=8, loc="upper right")
-            ax.text(0.02, 0.98, "\n".join(txt), transform=ax.transAxes,
-                    fontsize=8, va="top", color=_INK,
-                    bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.85))
+            if txt:  # legend/stats only when something plotted (#23: an
+                # NGS-only site rendered a bare axes + empty legend box)
+                ax.legend(fontsize=8, loc="upper right")
+                ax.text(0.02, 0.98, "\n".join(txt), transform=ax.transAxes,
+                        fontsize=8, va="top", color=_INK,
+                        bbox=dict(boxstyle="round,pad=0.3", fc="white",
+                                  alpha=0.85))
+            else:
+                ax.text(0.5, 0.5, "no matching checkpoints in AOI",
+                        transform=ax.transAxes, ha="center", va="center",
+                        fontsize=9, color=_MUT)
             ax.tick_params(labelsize=8, colors=_MUT)
             ax.grid(alpha=0.25, lw=0.5)
         axes[1].set_title("survey-grade segments", fontsize=10, color=_INK)

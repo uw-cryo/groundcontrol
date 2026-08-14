@@ -176,3 +176,13 @@ def test_dispatcher_reports_quarantined_rows(monkeypatch):
     assert status["ngs"]["n_skipped"] == 1
     assert any("CORS" in k for k in status["ngs"]["skip_reasons"])
     assert "XX9999" not in set(gdf["id"])
+
+
+def test_parse_nde_all_rows_quarantined_returns_schema_empty():
+    """#21 edge: EVERY row unmappable must yield a schema-shaped empty
+    frame with a valid CRS (not a CRS-less frame that fails landing)."""
+    records = json.loads((DATA / "ngs_nde_sample.json").read_text())
+    bad = [dict(r, posDatum="NAD 83(CORS)") for r in records]
+    out = ngs.parse_nde(bad)
+    assert len(out) == 0 and out.crs is not None
+    assert out.attrs["skipped"]["n"] == len(bad)

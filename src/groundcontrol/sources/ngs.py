@@ -184,6 +184,11 @@ def parse_nde(records: list[dict]) -> gpd.GeoDataFrame:
     # quarantined per-row, never allowed to kill the source (#21)
     h_crs, keep, skipped = _map_realizations_quarantine(ref_frame, df["pid"])
     if skipped:
+        if not keep.any():  # EVERY row unmappable: schema-shaped empty,
+            from groundcontrol import schema  # not a CRS-less frame that
+            out = schema.empty(crs="EPSG:6318")  # would fail landing
+            out.attrs["skipped"] = {"n": int(len(keep)), "reasons": skipped}
+            return out
         df = df[keep].reset_index(drop=True)
         lat, lon, ortho = (s[keep].reset_index(drop=True)
                            for s in (lat, lon, ortho))
@@ -250,6 +255,11 @@ def parse_opus(records: list[dict]) -> gpd.GeoDataFrame:
     # B7 (usually all 2011); unmapped realizations quarantined per-row (#21)
     h_crs, keep, skipped = _map_realizations_quarantine(ref_frame, df["pid"])
     if skipped:
+        if not keep.any():  # EVERY row unmappable: schema-shaped empty,
+            from groundcontrol import schema  # not a CRS-less frame that
+            out = schema.empty(crs="EPSG:6318")  # would fail landing
+            out.attrs["skipped"] = {"n": int(len(keep)), "reasons": skipped}
+            return out
         df = df[keep].reset_index(drop=True)
         lat, lon, ortho = (s[keep].reset_index(drop=True)
                            for s in (lat, lon, ortho))

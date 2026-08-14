@@ -116,6 +116,13 @@ def assess_dem_main(argv=None) -> int:
                    help="NAME=PATH hillshade underlay for figures (repeatable, "
                         "product-matched; single unnamed path also accepted)")
     p.add_argument("--no-figures", action="store_true", help="skip figure output")
+    p.add_argument("--point-lim", type=float, default=None,
+                   help="pin the validation-figure map color limit (m); default "
+                        "empirical tier-snapped from the plotted dz (issue #23)")
+    p.add_argument("--vendor-lim", type=float, default=None,
+                   help="pin the survey-grade histogram limit (m); default empirical")
+    p.add_argument("--wide-lim", type=float, default=None,
+                   help="pin the NGS-monument histogram limit (m); default empirical")
     args = p.parse_args(argv)
     if args.radius is not None and args.method != p.get_default("method"):
         p.error("--radius and --method are mutually exclusive (radius mode "
@@ -174,6 +181,8 @@ def assess_dem_main(argv=None) -> int:
         outdir=outdir, site_name=args.site_name, aoi=aoi if not isinstance(aoi, tuple) else None,
         hs=hs, target_epoch=args.target_epoch, method=args.method,
         radius=args.radius, source_crs=args.source_crs, figures=not args.no_figures,
+        point_lim=args.point_lim, vendor_lim=args.vendor_lim,
+        wide_lim=args.wide_lim,
         command="groundcontrol-assess " + " ".join(argv or sys.argv[1:]))
 
     t = artifacts["transform"]

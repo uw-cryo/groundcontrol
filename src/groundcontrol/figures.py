@@ -28,14 +28,53 @@ logger = logging.getLogger(__name__)
 
 #: point_type -> (marker, color, size, zorder, label). GNSS/OPUS plots BEHIND
 #: the 3DEP checkpoints; NVA above VVA (owner figure review, 2026-07-15).
+def _heliport_marker():
+    """FAA VFR-chart heliport symbol as a Path marker: 'H' inside a circle
+    ring. Compound path: outer circle + reversed inner circle (annulus via
+    winding) + a TextPath 'H' scaled into the ring."""
+    from matplotlib.path import Path as _P
+    from matplotlib.textpath import TextPath
+
+    outer = _P.circle((0, 0), 1.0)
+    inner = _P.circle((0, 0), 0.78)
+    inner = _P(inner.vertices[::-1], inner.codes)  # reverse winding -> ring
+    h = TextPath((0, 0), "H", size=1.0)
+    b = h.get_extents()
+    verts = ((h.vertices - ((b.x0 + b.x1) / 2.0, (b.y0 + b.y1) / 2.0))
+             / max(b.width, b.height) * 1.15)
+    return _P.make_compound_path(outer, inner, _P(verts, h.codes))
+
+
+#: package-level marker key, convention-based where conventions exist
+#: (primary sources verified 2026-08-13):
+#: - helipad = H-in-circle: exact match to the FAA Aeronautical Chart
+#:   Users' Guide heliport symbol (aeronav.faa.gov/user_guide, p. 23);
+#: - runway end / displaced threshold = chevrons (matplotlib carets 6/7):
+#:   simplification of the FAA CUG runway-construction bars + arrow/
+#:   chevron stems (p. 124), which are runway-oriented and don't reduce
+#:   to a scatter marker;
+#: - NGS monument '+': near the USGS topo benchmark "x" (USGS
+#:   Topographic Map Symbols, pubs.usgs.gov/gip/TopographicMapSymbols).
+#:   The NGS web-map de facto scheme (circle = vertical, triangle =
+#:   horizontal, square = combined; filled = order 1) is a possible
+#:   future refinement requiring a control-type split per monument;
+#: - GNSS star / 3DEP circle+square: no authority defines symbols for
+#:   CORS or lidar checkpoints — house choices, kept distinct from the
+#:   triangle/circle/square control conventions above.
+#: Values: (marker, color, size, zorder, label).
 POINT_STYLE = {
     "monument": ("+", "#111111", 30, 4, "NGS monument"),
     "gnss": ("*", "#0033A0", 90, 5, "GNSS/OPUS"),
     "VVA": ("s", "#E69F00", 45, 6, "3DEP VVA"),
     "NVA": ("o", "#C00000", 55, 7, "3DEP NVA"),
+    "runway_end": (6, "#1B7837", 55, 6, "FAA runway end"),
+    "displaced_threshold": (7, "#66A61E", 50, 6, "FAA displaced threshold"),
+    "helipad": (_heliport_marker(), "#1B7837", 110, 6, "FAA helipad"),
 }
-#: legend order: the two 3DEP checkpoint classes adjacent, then GNSS, then NGS.
-LEGEND_ORDER = ("NVA", "VVA", "gnss", "monument")
+#: legend order: the two 3DEP checkpoint classes adjacent, then GNSS, then
+#: NGS, then the FAA runway classes.
+LEGEND_ORDER = ("NVA", "VVA", "gnss", "monument", "runway_end",
+                "displaced_threshold", "helipad")
 #: dz map/histogram colormap, CENTRALIZED for easy revert (owner 2026-07-15):
 #: RdYlBu puts RED = negative dz (product below control) — the same
 #: red-means-down convention as the subsidence/rate maps. Revert to the old
@@ -86,11 +125,31 @@ def cpt_rainbow(reverse: bool = False):
     return _CPT_RAINBOW_CACHE[reverse]
 
 
+def _point_azimuth(r) -> float:
+    """Optional true azimuth (deg) for a point row: a ``true_az`` column
+    when present, else the raw-JSON field (dispatcher-normalized frames
+    keep source extras in ``raw``). NaN when unavailable."""
+    import json as _json
+
+    v = r.get("true_az") if hasattr(r, "get") else None
+    if v is None or (isinstance(v, float) and not np.isfinite(v)):
+        raw = r.get("raw") if hasattr(r, "get") else None
+        if isinstance(raw, str):
+            try:
+                v = _json.loads(raw).get("true_az")
+            except ValueError:
+                v = None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return float("nan")
+
+
 def point_context_gallery(points, layers, outdir, site_name, *,
                           half_m=60.0, tier_tag=None, interp="antialiased",
                           scale_len=25, id_col="id", class_col=None,
                           class_colors=None, subset_tag="station",
-                          ncell=None, dpi=200):
+                          ncell=None, max_rows=12, sort=True, dpi=200):
     """Per-point context contact sheet: one row-cell of image panels per point.
 
     OPT-IN QA/QC figure (not part of the default reels): for each point, a
@@ -109,16 +168,27 @@ def point_context_gallery(points, layers, outdir, site_name, *,
         (bands 1-3, per-band 0.5-99.5% stretch), ``"gray"`` (band 1,
         0.5-99.5% stretch), ``"relief"`` (band 1 as :func:`cpt_rainbow` at
         0.4 alpha over a multidirectional hillshade — env figures.md house
-        style). Panels render left-to-right in list order.
+        style). Panels render left-to-right in list order. ``path`` may be
+        a LIST of paths — a fallback chain: the first source whose window
+        holds >1% valid pixels renders (e.g. ``[ortho, web_basemap]`` so an
+        ortho nodata hole falls back to fetched imagery); if every source
+        is empty the last renders as-is (an honest blank, never invented).
     half_m : half-window in meters (60 -> 120 m context; ~15 with
         ``interp="nearest"`` for a native-pixel tier).
     tier_tag : filename tag; defaults to ``f"{2*half_m:g}m"``.
     class_col / class_colors : optional point-class column + {class: color}
-        for the marker circles (default single crimson).
-    ncell : point-cells per row (default 2 for 3+ layers else 3).
+        for the marker circles (default single crimson). The
+        ``class_colors`` KEY ORDER is also the sort priority.
+    ncell : point-cells per row (default 3 for 3+ layers else 4).
+    max_rows : rows per sheet; longer subsets paginate into
+        ``..._gallery_<tier>_pN.png`` pages (owner 2026-08-13: single
+        very-long sheets do not review well).
+    sort : order cells by (class, id) — class from the ``class_colors``
+        key order, and the id's facility prefix groups airports/stations.
+        Pass False to keep the caller's order.
 
-    Returns the written path
-    (``<outdir>/<site>_<subset_tag>_gallery_<tier>.png``).
+    Returns the LIST of written paths (one per page;
+    ``<outdir>/<site>_<subset_tag>_gallery_<tier>[_pN].png``).
 
     A layer that cannot be read at a point renders an "unavailable" panel
     rather than failing the sheet (points outside one product's footprint
@@ -150,12 +220,29 @@ def point_context_gallery(points, layers, outdir, site_name, *,
         return arr, [x - halfx * px, x + halfx * px,
                      y - halfy * py, y + halfy * py], (px, py)
 
-    def _panel(ax, src, kind, x, y):
-        if src.crs is not None and points.crs is not None \
-                and src.crs.to_wkt() != points.crs.to_wkt():
-            xs, ys = _rio_transform(points.crs, src.crs, [x], [y])
-            x, y = xs[0], ys[0]
-        arr, ext, (px, py) = _window(src, x, y)
+    def _valid_frac(arr, src, kind):
+        # fraction of pixels carrying signal. The all-bands-zero heuristic
+        # applies ONLY to untagged RGB (Byte mosaics fill gaps with 0 and
+        # carry no nodata) — zero is a legitimate value in single-band
+        # products (intensity, elevations near 0 m; Copilot review, PR #25)
+        ok = np.isfinite(arr).all(axis=0)
+        if kind == "rgb" and src.nodata is None:
+            ok &= (arr != 0).any(axis=0)
+        return float(ok.mean()) if ok.size else 0.0
+
+    def _panel(ax, dss, kind, x0, y0):
+        for i, src in enumerate(dss):
+            x, y = x0, y0
+            if src.crs is not None and points.crs is not None \
+                    and src.crs.to_wkt() != points.crs.to_wkt():
+                xs, ys = _rio_transform(points.crs, src.crs, [x], [y])
+                x, y = xs[0], ys[0]
+            arr, ext, (px, py) = _window(src, x, y)
+            if _valid_frac(arr, src, kind) > 0.01 or i == len(dss) - 1:
+                if i:
+                    logger.info("fallback source %d used at (%.0f, %.0f)",
+                                i, x0, y0)
+                break
         if kind == "rgb":
             img = arr[:3]
             lo = np.nanpercentile(img, 0.5, axis=(1, 2))[:, None, None]
@@ -191,57 +278,133 @@ def point_context_gallery(points, layers, outdir, site_name, *,
     srcs = []  # built inside the try: a failed open must not leak the others
     try:
         for tag, p, kind in layers:
-            srcs.append((tag, rasterio.open(p), kind))
+            chain = p if isinstance(p, (list, tuple)) else [p]
+            # open sequentially: a comprehension that raises mid-chain
+            # leaks the already-opened members (Copilot review, PR #25)
+            opened = []
+            try:
+                for q in chain:
+                    opened.append(rasterio.open(q))
+            except Exception:
+                for src in opened:
+                    src.close()
+                raise
+            srcs.append((tag, opened, kind))
+        from matplotlib.markers import MarkerStyle
+        from matplotlib.transforms import Affine2D
+
         n = len(points)
         npanel = len(srcs)
         if ncell is None:
-            ncell = 2 if npanel >= 3 else 3
-        nrow = int(np.ceil(n / ncell))
-        pw = 2.7
-        fig = plt.figure(
-            figsize=(pw * npanel * ncell + 0.5, (pw + 0.42) * nrow + 0.5))
-        wr = ([1] * npanel + [0.12]) * (ncell - 1) + [1] * npanel
-        gs = fig.add_gridspec(nrow, (npanel + 1) * ncell - 1,
-                              width_ratios=wr, hspace=0.16, wspace=0.04)
-        for i, (_, r) in enumerate(points.iterrows()):
-            row_i, cell = divmod(i, ncell)
-            cls = r[class_col] if class_col else None
-            color = (class_colors or {}).get(cls, "#C00000")
-            for j, (tag, src, kind) in enumerate(srcs):
-                ax = fig.add_subplot(gs[row_i, cell * (npanel + 1) + j])
-                try:
-                    x, y, ext = _panel(ax, src, kind,
-                                       r.geometry.x, r.geometry.y)
-                    ax.scatter([x], [y], s=170, facecolors="none",
-                               edgecolors=color, linewidths=2.0, zorder=5)
-                    ax.set_xlim(ext[0], ext[1]), ax.set_ylim(ext[2], ext[3])
-                except Exception as e:
-                    ax.text(0.5, 0.5, f"{tag}\nunavailable", ha="center",
-                            va="center", transform=ax.transAxes, fontsize=8)
-                    logger.warning("%s %s panel failed: %s",
-                                   r[id_col], tag, e)
-                ax.set_aspect("equal")
-                ax.set_xticks([]), ax.set_yticks([])
-                if j == 0:
-                    label = f"{r[id_col]}" + (f" · {cls}" if cls else "")
-                    ax.set_title(label, fontsize=8.5, loc="left")
-                if j == npanel - 1:
-                    add_scalebar(ax, length=scale_len,
-                                 label=f"{scale_len} m")
-        tags = " | ".join(t for t, _, _ in srcs)
-        fig.suptitle(
-            f"{site_name} {subset_tag} points — {tags} ({2*half_m:.0f} m "
-            f"windows{', native pixels' if interp == 'nearest' else ''})",
-            fontsize=12, y=0.99)
-        fig.subplots_adjust(left=0.01, right=0.995, top=0.93, bottom=0.02)
-        fp = outdir / f"{site_name}_{subset_tag}_gallery_{tier}.png"
-        fig.savefig(fp, dpi=dpi)
-        plt.close(fig)
+            ncell = 3 if npanel >= 3 else 4
+        # intelligent order (owner 2026-08-13): class first (class_colors key
+        # order = priority), then id — the facility prefix in the id groups
+        # airports/stations naturally within each class
+        groups = [points]
+        if sort and id_col in points.columns:
+            if class_col and class_col in points.columns:
+                rank = {c: k for k, c in enumerate(class_colors or {})}
+                ckey = points[class_col].map(
+                    lambda c: rank.get(c, len(rank))).to_numpy()
+                points = points.iloc[np.lexsort(
+                    (points[id_col].astype(str).to_numpy(), ckey))]
+                # classes NEVER share a page (owner 2026-08-13: surveyed
+                # and estimated review as separate sheets)
+                groups = [g for _, g in points.groupby(
+                    points[class_col].map(lambda c: rank.get(c, len(rank))),
+                    sort=True)]
+            else:
+                points = points.sort_values(id_col)
+                groups = [points]
+        per_page = max(1, max_rows) * ncell
+        pages = [g.iloc[k:k + per_page] for g in groups
+                 for k in range(0, len(g), per_page)] or [points]
+        out_paths = []
+        for pg, pts_pg in enumerate(pages, start=1):
+            nrow = int(np.ceil(len(pts_pg) / ncell))
+            pw = 2.7
+            # ABSOLUTE title/footer margins: fractional top= on a tall sheet
+            # reserved inches of whitespace under the title (owner 2026-08-13)
+            fig_h = (pw + 0.42) * nrow + 0.85
+            fig = plt.figure(figsize=(pw * npanel * ncell + 0.5, fig_h))
+            wr = ([1] * npanel + [0.12]) * (ncell - 1) + [1] * npanel
+            gs = fig.add_gridspec(nrow, (npanel + 1) * ncell - 1,
+                                  width_ratios=wr, hspace=0.16, wspace=0.04)
+            for i, (_, r) in enumerate(pts_pg.iterrows()):
+                row_i, cell = divmod(i, ncell)
+                cls = r[class_col] if class_col else None
+                color = (class_colors or {}).get(cls, "#C00000")
+                for j, (tag, chain, kind) in enumerate(srcs):
+                    ax = fig.add_subplot(gs[row_i, cell * (npanel + 1) + j])
+                    try:
+                        x, y, ext = _panel(ax, chain, kind,
+                                           r.geometry.x, r.geometry.y)
+                        # locator = the package marker key's shape for this
+                        # point_type, drawn as an outline so the imagery
+                        # stays readable (unfilled markers take color=, not
+                        # facecolors="none" — matplotlib warns otherwise)
+                        ptype = str(r.get("point_type", "")) \
+                            if "point_type" in r else ""
+                        mk = POINT_STYLE.get(ptype, ("o",))[0]
+                        if MarkerStyle(mk).is_filled():
+                            mkw = dict(facecolors="none", edgecolors=color)
+                        else:
+                            mkw = dict(color=color)
+                        # runway/threshold chevrons rotate to the published
+                        # runway-end true alignment (E46), tip pointing
+                        # inward along the runway; grid convergence is
+                        # < ~2 deg at site scale — symbology, not survey
+                        az = _point_azimuth(r)
+                        if np.isfinite(az) and ptype in (
+                                "runway_end", "displaced_threshold"):
+                            mk = MarkerStyle(
+                                mk, transform=Affine2D().rotate_deg(-az))
+                        # helipad H-ring locator SURROUNDS the pad paint
+                        s = 450 if ptype == "helipad" else 170
+                        ax.scatter([x], [y], s=s, marker=mk,
+                                   linewidths=2.0, zorder=5, **mkw)
+                        ax.set_xlim(ext[0], ext[1])
+                        ax.set_ylim(ext[2], ext[3])
+                    except Exception as e:
+                        ax.text(0.5, 0.5, f"{tag}\nunavailable", ha="center",
+                                va="center", transform=ax.transAxes,
+                                fontsize=8)
+                        logger.warning("%s %s panel failed: %s",
+                                       r[id_col], tag, e)
+                    ax.set_aspect("equal")
+                    ax.set_xticks([]), ax.set_yticks([])
+                    if j == 0:
+                        label = f"{r[id_col]}" + (f" · {cls}" if cls else "")
+                        ax.set_title(label, fontsize=8.5, loc="left")
+                    if j == npanel - 1:
+                        add_scalebar(ax, length=scale_len,
+                                     label=f"{scale_len} m")
+            tags = " | ".join(t for t, _, _ in srcs)
+            page_cls = ""
+            if class_col and class_col in pts_pg.columns \
+                    and pts_pg[class_col].nunique() == 1:
+                page_cls = f" — {pts_pg[class_col].iloc[0].upper()}"
+            page_note = (f"{page_cls} — page {pg}/{len(pages)}"
+                         if len(pages) > 1 else page_cls)
+            fig.suptitle(
+                f"{site_name} {subset_tag} points — {tags} ({2*half_m:.0f} m "
+                f"windows{', native pixels' if interp == 'nearest' else ''})"
+                f"{page_note}",
+                fontsize=12, y=1.0 - 0.12 / fig_h)
+            fig.subplots_adjust(left=0.01, right=0.995,
+                                top=1.0 - 0.52 / fig_h, bottom=0.18 / fig_h)
+            suffix = f"_p{pg}" if len(pages) > 1 else ""
+            fp = outdir / f"{site_name}_{subset_tag}_gallery_{tier}{suffix}.png"
+            fig.savefig(fp, dpi=dpi)
+            plt.close(fig)
+            out_paths.append(fp)
     finally:
-        for _, src, _ in srcs:
-            src.close()
-    logger.info("wrote %s (%d points)", fp, n)
-    return fp
+        for _, chain, _ in srcs:
+            for src in chain:
+                src.close()
+    logger.info("wrote %d page(s), %d points: %s", len(out_paths), n,
+                [p.name for p in out_paths])
+    return out_paths
 
 
 def snap_clim(values, k=3.0, tiers=CLIM_TIERS):
@@ -331,6 +494,9 @@ def _finish_map(ax, aoi_gdf, clip_to_aoi=True):
             aoi_gdf.boundary.plot(ax=ax, color=_INK, lw=1.0, ls="--", alpha=0.45)
     ax.set_xticks([])
     ax.set_yticks([])
+    # equal aspect is the map contract (env figures.md) and silences the
+    # matplotlib-scalebar unequal-aspect warning (#23)
+    ax.set_aspect("equal")
     add_scalebar(ax)
 
 
@@ -351,8 +517,16 @@ def _aspect_panel_w(aoi_gdf, map_h, lo=0.5, hi=1.5):
 def standard_control_figures(control, aoi, outdir, site_name, *,
                              dem_tif=None, hs_tif=None, cmap=None,
                              dem_alpha=0.4, midas_frame="IGS14",
-                             buffer_km=60.0, clip_to_aoi=True, dpi=200):
-    """Write the default control figure bundle for a site; returns paths."""
+                             buffer_km=60.0, clip_to_aoi=True,
+                             label_points=True, dpi=200):
+    """Write the default control figure bundle for a site; returns paths.
+
+    ``label_points`` (owner request 2026-08-13, the NGS-map convention):
+    sparse, named classes get text labels — NGL/CORS station ids per point,
+    FAA points one label per AIRPORT (grouped by the id prefix; per-runway-
+    end labels would be unreadable). Dense classes (3DEP checkpoints, NGS
+    monuments) are never labeled.
+    """
     import geopandas as gpd
     import matplotlib
     matplotlib.use("Agg")
@@ -377,16 +551,65 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
     # ---- 1. control map ---------------------------------------------------
     fig, ax = plt.subplots(figsize=(10.5, 10))
     _relief(ax, dem_tif, hs_tif, cmap, dem_alpha, fig)
+    from matplotlib.markers import MarkerStyle
+    from matplotlib.transforms import Affine2D
+
     by_type = {}
     for ptype, (mk, col, sz, zo, lab) in POINT_STYLE.items():
         sub = ctl[ctl.point_type == ptype]
         if not len(sub):
             continue
-        ax.scatter(sub.geometry.x, sub.geometry.y, marker=mk, s=sz, c=col,
-                   linewidths=1.1 if mk == "+" else 0.5,
-                   edgecolors="white" if mk != "+" else col, zorder=zo)
+        lw = 1.1 if mk == "+" else 0.5
+        ec = "white" if mk != "+" else col
+        if ptype in ("runway_end", "displaced_threshold"):
+            # chevrons rotate to the published runway-end true alignment
+            # (tips point inward along the runway; owner 2026-08-13)
+            for _, rr in sub.iterrows():
+                az = _point_azimuth(rr)
+                m = MarkerStyle(mk, transform=Affine2D().rotate_deg(-az)) \
+                    if np.isfinite(az) else mk
+                ax.scatter([rr.geometry.x], [rr.geometry.y], marker=m, s=sz,
+                           c=col, linewidths=lw, edgecolors=ec, zorder=zo)
+        else:
+            ax.scatter(sub.geometry.x, sub.geometry.y, marker=mk, s=sz,
+                       c=col, linewidths=lw, edgecolors=ec, zorder=zo)
         by_type[ptype] = Line2D([], [], marker=mk, ls="", color=col, ms=9,
                                 label=f"{lab} (n={len(sub)})")
+    if label_points and "source" in ctl.columns:
+        import matplotlib.patheffects as _pe
+        halo = [_pe.withStroke(linewidth=2.2, foreground="white")]
+        # GNSS/CORS labels place FIRST and unconditionally; FAA airport
+        # labels yield to them (owner 2026-08-13): dodge below on a close
+        # approach, drop entirely on a collision
+        anchors = []
+        for _, r in ctl[ctl["source"] == "ngl"].iterrows():
+            ax.annotate(str(r["id"]), (r.geometry.x, r.geometry.y),
+                        xytext=(5, 4), textcoords="offset points",
+                        fontsize=7, fontweight="bold", color="#0033A0",
+                        path_effects=halo, zorder=8)
+            anchors.append((float(r.geometry.x), float(r.geometry.y)))
+        f = ctl[ctl["source"] == "faa"]
+        if len(f):
+            b = ctl.total_bounds
+            dmin = 0.03 * max(b[2] - b[0], b[3] - b[1])
+            anch = np.asarray(anchors, dtype="float64") \
+                if anchors else np.empty((0, 2))
+            for name, sub in f.groupby(f["id"].astype(str).str.split("_").str[0]):
+                cx = float(sub.geometry.x.mean())
+                cy = float(sub.geometry.y.mean())
+                d = np.min(np.hypot(anch[:, 0] - cx, anch[:, 1] - cy)) \
+                    if len(anch) else np.inf
+                if d < 0.5 * dmin:
+                    continue  # too close to a placed label: drop, don't clash
+                dy, va = ((7, "bottom") if d >= dmin else (-9, "top"))
+                ax.annotate(name, (cx, cy), xytext=(0, dy),
+                            textcoords="offset points", ha="center", va=va,
+                            fontsize=8, fontweight="bold", color="#1B7837",
+                            path_effects=halo, zorder=8)
+                # placed FAA labels become anchors too, so FAA labels also
+                # dodge each other (dense-cluster clashes, owner 2026-08-13)
+                anch = np.vstack([anch, [[cx, cy]]]) if len(anch) \
+                    else np.array([[cx, cy]], dtype="float64")
     handles = [by_type[p] for p in LEGEND_ORDER if p in by_type]
     if not clip_to_aoi:
         handles.append(Line2D([], [], ls="--", color=_INK, alpha=0.45,
@@ -468,7 +691,7 @@ def _ngs_gate(v, mult):
 
 
 def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"),
-                          hs_tif=None, point_lim=0.25, vendor_lim=0.6, wide_lim=4.0,
+                          hs_tif=None, point_lim=None, vendor_lim=None, wide_lim=None,
                           ngs_nmad_gate=3.0, dpi=200):
     # hs_tif: a single path, or a {product: path} dict for PRODUCT-MATCHED
     # backgrounds (DTM diffs belong on the DTM hillshade — David, 2026-07-15).
@@ -476,12 +699,19 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
     item 5; requested by David 2026-07-15 after the SF run).
 
     One figure per product: (a) map of control points over shaded relief
-    colored by ``dh_<product>_before`` (product - control, RdBu_r, clipped at
-    +/- ``point_lim``); (b) histograms for the survey-grade segments (vendor
-    NVA/VVA, GNSS/OPUS; +/- ``vendor_lim``); (c) histogram for NGS monuments
-    after a ``ngs_nmad_gate``-NMAD filter (+/- ``wide_lim``). Segment rules:
-    NVA validates DSM and DTM; VVA validates DTM only; NGS/OPUS shown for
-    both as datum-sanity context. Median/NMAD/n annotated per segment.
+    colored by ``dh_<product>_before`` (product - control, RdBu_r); (b)
+    histograms for the survey-grade segments (vendor NVA/VVA, GNSS/OPUS);
+    (c) histogram for NGS monuments after a ``ngs_nmad_gate``-NMAD filter.
+    Segment rules: NVA validates DSM and DTM; VVA validates DTM only;
+    NGS/OPUS shown for both as datum-sanity context. Median/NMAD/n
+    annotated per segment.
+
+    Limits (``point_lim``/``vendor_lim``/``wide_lim``) default to
+    EMPIRICAL, tier-snapped values from the plotted dz (:func:`snap_clim`)
+    — issue #23: the former lidar-tuned constants (0.25/0.6/4.0 m)
+    saturated the map and clipped the histograms into piles at the edges
+    on photogrammetric DEMs (NMAD ~1-8 m). Pass explicit values to pin
+    comparable limits across runs.
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -521,8 +751,9 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         hs_prod = hs_tif.get(prod) if isinstance(hs_tif, dict) else hs_tif
         _relief(axes[0], None, hs_prod, None, 0.0, None)
         use = sampled[np.isfinite(sampled[col])]
+        pl = point_lim if point_lim is not None else snap_clim(use[col], k=3.0)
         sc = axes[0].scatter(use.geometry.x, use.geometry.y, c=use[col],
-                             cmap=DZ_CMAP, vmin=-point_lim, vmax=point_lim,
+                             cmap=DZ_CMAP, vmin=-pl, vmax=pl,
                              s=34, edgecolors="#333333", linewidths=0.5, zorder=5)
         cb = fig.colorbar(sc, ax=axes[0], shrink=0.75, pad=0.02, extend="both")
         cb.set_label(f"dz = {prod} − control (m)", fontsize=9, color=_INK)
@@ -531,21 +762,28 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         axes[0].set_title(f"{site_name} {prod} − control  (n={len(use)})",
                           fontsize=11, color=_INK)
 
-        for ax, labels, lim in (
+        for ax, labels, lim_over in (
                 (axes[1], [lbl for lbl, s in seg_defs.items()
                            if s[2 if prod == "DSM" else 3] and lbl != "NGS monument"],
                  vendor_lim),
                 (axes[2], ["NGS monument"], wide_lim)):
-            txt = []
+            seg_vals = {}
             for lab in labels:
                 maskfn, style, *_ = seg_defs[lab]
                 v = use.loc[maskfn(use), col].to_numpy(float)
                 v = v[np.isfinite(v)]
                 if lab == "NGS monument" and len(v):
                     v = _ngs_gate(v, ngs_nmad_gate)
-                if not len(v):
-                    continue
-                color = POINT_STYLE[style][1]
+                if len(v):
+                    seg_vals[lab] = v
+            # empirical tier-snapped panel limit unless overridden (#23);
+            # never tighter than the map so the panels stay comparable
+            lim = lim_over if lim_over is not None else (
+                max(snap_clim(np.concatenate(list(seg_vals.values())), k=3.0),
+                    pl) if seg_vals else pl)
+            txt = []
+            for lab, v in seg_vals.items():
+                color = POINT_STYLE[seg_defs[lab][1]][1]
                 ax.hist(np.clip(v, -lim, lim), bins=41, range=(-lim, lim),
                         histtype="stepfilled", alpha=0.45, color=color,
                         edgecolor=color, label=lab)
@@ -554,10 +792,17 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
             ax.axvline(0, color=_INK, lw=0.8)
             ax.set_xlim(-lim, lim)
             ax.set_xlabel(f"dz = {prod} − control (m)", fontsize=9, color=_INK)
-            ax.legend(fontsize=8, loc="upper right")
-            ax.text(0.02, 0.98, "\n".join(txt), transform=ax.transAxes,
-                    fontsize=8, va="top", color=_INK,
-                    bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.85))
+            if txt:  # legend/stats only when something plotted (#23: an
+                # NGS-only site rendered a bare axes + empty legend box)
+                ax.legend(fontsize=8, loc="upper right")
+                ax.text(0.02, 0.98, "\n".join(txt), transform=ax.transAxes,
+                        fontsize=8, va="top", color=_INK,
+                        bbox=dict(boxstyle="round,pad=0.3", fc="white",
+                                  alpha=0.85))
+            else:
+                ax.text(0.5, 0.5, "no matching checkpoints in AOI",
+                        transform=ax.transAxes, ha="center", va="center",
+                        fontsize=9, color=_MUT)
             ax.tick_params(labelsize=8, colors=_MUT)
             ax.grid(alpha=0.25, lw=0.5)
         axes[1].set_title("survey-grade segments", fontsize=10, color=_INK)
@@ -589,6 +834,23 @@ DZ_FAMILIES = {
     ]),
     "ngs_best": ("NGS MONUMENTS (best)", [
         ("NGS best", None, "monument", "o"),   # mask injected from ngs_best
+    ]),
+    # FAA NASR runway control, split by published coordinate provenance
+    # (raw['pos_class'] from sources/faa.py): the surveyed class is
+    # AC 150/5300-18C survey-grade; OWNER/FAA-EST/ADO positions are
+    # meters-to-tens-of-meters (LV A/B 2026-08-13: NMAD 0.019 vs 2.78 m)
+    # short panel labels: long ones collide on narrow-aspect AOIs (SF);
+    # surveyed = 3RD PARTY SURVEY/NGS/MILITARY/ARPTS CONTRACTOR,
+    # estimated = OWNER/FAA-EST IMAGERY/ADO/OE-AAA/blank
+    "faa": ("FAA RUNWAY CONTROL (by position source)", [
+        ("Surveyed",
+         lambda d: (d["source"] == "faa")
+         & (_raw_field(d["raw"], "pos_class") == "surveyed"),
+         "runway_end", "^"),
+        ("Estimated",
+         lambda d: (d["source"] == "faa")
+         & (_raw_field(d["raw"], "pos_class") == "estimated"),
+         "#8C6BB1", "v"),
     ]),
 }
 

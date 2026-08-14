@@ -50,14 +50,15 @@ class TestPointContextGallery:
     def test_writes_sheet(self, layers, points, tmp_path):
         fp = point_context_gallery(points, layers, tmp_path, "TEST",
                                    half_m=20, scale_len=10)
-        assert fp.exists() and fp.name == "TEST_station_gallery_40m.png"
+        assert len(fp) == 1 and fp[0].exists()
+        assert fp[0].name == "TEST_station_gallery_40m.png"
 
     def test_out_of_footprint_point_survives(self, layers, points, tmp_path):
         # FAR is outside every raster: sheet still writes (panel renders
         # "unavailable" or an all-nodata window, never raises)
         fp = point_context_gallery(points, layers, tmp_path, "TEST",
                                    half_m=20)
-        assert fp.exists()
+        assert all(f.exists() for f in fp)
 
     def test_reprojects_mismatched_layer(self, points, tmp_path):
         # layer in a different CRS: per-panel reprojection path must run
@@ -65,7 +66,7 @@ class TestPointContextGallery:
         lyr = [("gray-b", _write(tmp_path, "b.tif", 1, crs=CRS_B), "gray")]
         fp = point_context_gallery(points.iloc[:2], lyr, tmp_path, "TEST",
                                    half_m=20)
-        assert fp.exists()
+        assert all(f.exists() for f in fp)
 
     def test_class_colors_and_tier_tag(self, layers, points, tmp_path):
         fp = point_context_gallery(
@@ -73,7 +74,29 @@ class TestPointContextGallery:
             interp="nearest", tier_tag="30m", subset_tag="opus",
             class_col="cls", class_colors={"mast": "#111111",
                                            "building": "#8B4E00"})
-        assert fp.name == "TEST_opus_gallery_30m.png"
+        # two classes -> class-separated pages (owner 2026-08-13)
+        assert [f.name for f in fp] == [
+            "TEST_opus_gallery_30m_p1.png",
+            "TEST_opus_gallery_30m_p2.png"]
+
+    def test_fallback_chain(self, points, tmp_path, caplog):
+        # primary raster does not cover the point (window all fill) -> the
+        # fallback source renders instead, and the fallback use is logged
+        import logging
+
+        near = _write(tmp_path, "near.tif", 3)
+        miss = tmp_path / "miss.tif"
+        with rasterio.open(miss, "w", driver="GTiff", width=50, height=50,
+                           count=3, dtype="float32", crs=CRS_A,
+                           nodata=-9999.0,
+                           transform=from_origin(700000, 4000000, 1, 1)) as d:
+            d.write(np.full((3, 50, 50), 15, dtype="float32"))
+        with caplog.at_level(logging.INFO, logger="groundcontrol.figures"):
+            fp = point_context_gallery(
+                points.iloc[[0]], [("o", [miss, near], "rgb")], tmp_path,
+                "TEST", half_m=10)
+        assert all(f.exists() for f in fp)
+        assert any("fallback source 1" in m for m in caplog.messages)
 
     def test_non_square_pixels(self, points, tmp_path):
         # Copilot PR #17: transform.a used for both axes distorted windows
@@ -83,11 +106,11 @@ class TestPointContextGallery:
                 "relief")]
         fp = point_context_gallery(points.iloc[:1], lyr, tmp_path, "TEST",
                                    half_m=20)
-        assert fp.exists()
+        assert all(f.exists() for f in fp)
 
     def test_unknown_kind_is_loud(self, points, tmp_path):
         lyr = [("bad", _write(tmp_path, "x.tif", 1), "slope")]
         fp = point_context_gallery(points.iloc[:1], lyr, tmp_path, "TEST")
         # the bad kind lands in the per-panel guard -> "unavailable" panel,
         # sheet still written; nothing silently mis-rendered
-        assert fp.exists()
+        assert all(f.exists() for f in fp)

@@ -383,8 +383,60 @@ def nice_scale_length(span: float) -> float:
     return float(nice * 10.0**k)
 
 
+#: candidate corners in preference order + their axes-fraction footprints
+#: (generous scalebar-sized boxes: ~40% width, ~18% height)
+_SCALEBAR_CORNERS = (
+    ("lower right", (0.58, 0.00, 1.00, 0.18)),
+    ("lower left", (0.00, 0.00, 0.42, 0.18)),
+    ("upper right", (0.58, 0.82, 1.00, 1.00)),
+    ("upper left", (0.00, 0.82, 0.42, 1.00)),
+)
+
+
+def _scalebar_auto_loc(ax) -> str:
+    """Corner whose footprint covers the fewest plotted points.
+
+    Upstream ``matplotlib-scalebar`` cannot do this: ``location="best"``
+    raises (matplotlib's AnchoredOffsetbox has no auto placement; verified
+    2026-08-13), so the canonical helper picks the corner itself — the
+    imview/pygeotools "best scalebar" behavior. Only point collections
+    (scatters) vote: lines/outlines and images are background, and a
+    scalebar over the AOI boundary is fine, over control points is not
+    (SFO cluster hidden at SF, owner 2026-08-13).
+    """
+    # a corner already holding the legend is out of the running (the SF
+    # control map put legend + scalebar in the same corner, owner 2026-08-13)
+    _LEG_CODES = {1: "upper right", 2: "upper left", 3: "lower left",
+                  4: "lower right"}
+    leg = ax.get_legend()
+    taken = {_LEG_CODES.get(getattr(leg, "_loc", None))} if leg else set()
+    corners = [c for c in _SCALEBAR_CORNERS if c[0] not in taken] \
+        or list(_SCALEBAR_CORNERS)
+    # only scatter PathCollections vote (per the docstring): boundary/patch
+    # collections from geopandas plots carry no true point offsets and must
+    # not skew the count (Copilot review, PR #25)
+    from matplotlib.collections import PathCollection
+    pts = [np.asarray(c.get_offsets(), dtype="float64")
+           for c in ax.collections
+           if isinstance(c, PathCollection) and len(c.get_offsets())]
+    if not pts:
+        return corners[0][0]
+    xy = np.vstack(pts)
+    (x0, x1), (y0, y1) = sorted(ax.get_xlim()), sorted(ax.get_ylim())
+    fx = (xy[:, 0] - x0) / max(x1 - x0, 1e-12)
+    fy = (xy[:, 1] - y0) / max(y1 - y0, 1e-12)
+    best, best_n = corners[0][0], np.inf
+    for name, (bx0, by0, bx1, by1) in corners:
+        n = int(np.sum((fx >= bx0) & (fx <= bx1) & (fy >= by0) & (fy <= by1)))
+        if n == 0:
+            return name
+        if n < best_n:
+            best, best_n = name, n
+    return best
+
+
 def add_scalebar(ax, length: float | None = None, label: str | None = None,
-                 loc: str = "lower right", color: str = "k"):
+                 loc: str = "auto", color: str = "k"):
     """Add a scalebar in data units (meters for projected CRSs).
 
     Intended companion to :func:`plot_dh_map` when axis tick labels are
@@ -392,10 +444,15 @@ def add_scalebar(ax, length: float | None = None, label: str | None = None,
     env figures.md 2026-08-11; replaces the earlier hand-anchored
     ``AnchoredSizeBar``). ``length=None`` picks a round 1/2/5x10^k value
     spanning ~1/5 of the current x-range; the auto label renders km above
-    1000 m; pass ``label`` to force exact text. Returns the added artist.
+    1000 m; pass ``label`` to force exact text. ``loc="auto"`` (default)
+    picks the corner covering the fewest plotted points — call AFTER the
+    data and axis limits are final; pass a concrete location to pin it.
+    Returns the added artist.
     """
     from matplotlib_scalebar.scalebar import ScaleBar
 
+    if loc == "auto":
+        loc = _scalebar_auto_loc(ax)
     if length is None:
         x0, x1 = ax.get_xlim()
         length = nice_scale_length(abs(x1 - x0))

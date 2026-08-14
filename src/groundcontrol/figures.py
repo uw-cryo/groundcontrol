@@ -286,6 +286,7 @@ def point_context_gallery(points, layers, outdir, site_name, *,
         # intelligent order (owner 2026-08-13): class first (class_colors key
         # order = priority), then id — the facility prefix in the id groups
         # airports/stations naturally within each class
+        groups = [points]
         if sort and id_col in points.columns:
             if class_col and class_col in points.columns:
                 rank = {c: k for k, c in enumerate(class_colors or {})}
@@ -293,11 +294,17 @@ def point_context_gallery(points, layers, outdir, site_name, *,
                     lambda c: rank.get(c, len(rank))).to_numpy()
                 points = points.iloc[np.lexsort(
                     (points[id_col].astype(str).to_numpy(), ckey))]
+                # classes NEVER share a page (owner 2026-08-13: surveyed
+                # and estimated review as separate sheets)
+                groups = [g for _, g in points.groupby(
+                    points[class_col].map(lambda c: rank.get(c, len(rank))),
+                    sort=True)]
             else:
                 points = points.sort_values(id_col)
+                groups = [points]
         per_page = max(1, max_rows) * ncell
-        pages = [points.iloc[k:k + per_page]
-                 for k in range(0, n, per_page)] or [points]
+        pages = [g.iloc[k:k + per_page] for g in groups
+                 for k in range(0, len(g), per_page)] or [points]
         out_paths = []
         for pg, pts_pg in enumerate(pages, start=1):
             nrow = int(np.ceil(len(pts_pg) / ncell))
@@ -359,7 +366,12 @@ def point_context_gallery(points, layers, outdir, site_name, *,
                         add_scalebar(ax, length=scale_len,
                                      label=f"{scale_len} m")
             tags = " | ".join(t for t, _, _ in srcs)
-            page_note = f" — page {pg}/{len(pages)}" if len(pages) > 1 else ""
+            page_cls = ""
+            if class_col and class_col in pts_pg.columns \
+                    and pts_pg[class_col].nunique() == 1:
+                page_cls = f" — {pts_pg[class_col].iloc[0].upper()}"
+            page_note = (f"{page_cls} — page {pg}/{len(pages)}"
+                         if len(pages) > 1 else page_cls)
             fig.suptitle(
                 f"{site_name} {subset_tag} points — {tags} ({2*half_m:.0f} m "
                 f"windows{', native pixels' if interp == 'nearest' else ''})"

@@ -81,11 +81,17 @@ def fetch_control(aoi, sources=("3dep", "ngs", "opus"), target_crs=None, target_
         fetch, parse = PROVIDERS[name]
         try:
             gdf = parse(fetch(bounds))
+            # per-row quarantine report (e.g. #21 unmapped NGS realizations)
+            # — read BEFORE landing/normalize (pandas ops may drop .attrs)
+            skipped = dict(getattr(gdf, "attrs", {}).get("skipped") or {})
             # B7: per-datum horizontal landing into the interim frame (subset
             # AOIs, fail-loud on missing grids/unknown realizations).
             gdf = crs.land_horizontal(gdf, target=_INTERIM_LANDING_CRS)
             gdf = schema.normalize(gdf, source=name)
             status[name] = {"n_rows": len(gdf), "error": None}
+            if skipped:
+                status[name]["n_skipped"] = skipped.get("n")
+                status[name]["skip_reasons"] = skipped.get("reasons")
             if len(gdf):
                 frames.append(gdf)
         except Exception as e:  # degrade gracefully per-source (dispatcher contract)

@@ -147,3 +147,54 @@ def test_fetch_control_casa_grande_live():
     assert status["ngs"]["n_rows"] > 400  # regression: notebook-era count ~505
     assert status["3dep"]["n_rows"] > 10
     schema.validate(gdf)
+
+
+def test_parse_nde_quarantines_unmapped_realization():
+    """#21: an exotic realization must cost its ROW, never the source."""
+    records = json.loads((DATA / "ngs_nde_sample.json").read_text())
+    bad = dict(records[0])
+    bad["pid"] = "XX9999"
+    bad["posDatum"] = "NAD 83(CORS)"
+    out = ngs.parse_nde(records + [bad])
+    assert len(out) == len(ngs.parse_nde(records))
+    assert "XX9999" not in set(out["id"])
+    sk = out.attrs["skipped"]
+    assert sk["n"] == 1 and any("CORS" in k for k in sk["reasons"])
+
+
+def test_dispatcher_reports_quarantined_rows(monkeypatch):
+    """#21: quarantine surfaces as n_skipped/skip_reasons in status."""
+    import groundcontrol.sources as srcs
+    records = json.loads((DATA / "ngs_nde_sample.json").read_text())
+    bad = dict(records[0])
+    bad["pid"] = "XX9999"
+    bad["posDatum"] = "NAD 83(CORS)"
+    monkeypatch.setitem(srcs.PROVIDERS, "ngs",
+                        (lambda b: records + [bad], ngs.parse_nde))
+    gdf, status = fetch_control((-112, 32, -111, 33), sources=("ngs",))
+    assert status["ngs"]["error"] is None and status["ngs"]["n_rows"] > 0
+    assert status["ngs"]["n_skipped"] == 1
+    assert any("CORS" in k for k in status["ngs"]["skip_reasons"])
+    assert "XX9999" not in set(gdf["id"])
+
+
+def test_parse_nde_all_rows_quarantined_returns_schema_empty():
+    """#21 edge: EVERY row unmappable must yield a schema-shaped empty
+    frame with a valid CRS (not a CRS-less frame that fails landing)."""
+    records = json.loads((DATA / "ngs_nde_sample.json").read_text())
+    bad = [dict(r, posDatum="NAD 83(CORS)") for r in records]
+    out = ngs.parse_nde(bad)
+    assert len(out) == 0 and out.crs is not None
+    assert out.attrs["skipped"]["n"] == len(bad)
+
+
+def test_parse_nde_quarantines_missing_realization():
+    """#21 follow-up (Copilot, PR #26): a null posDatum maps to pd.NA and
+    must quarantine as '(missing)', not raise TypeError."""
+    records = json.loads((DATA / "ngs_nde_sample.json").read_text())
+    bad = dict(records[0])
+    bad["pid"] = "XX9998"
+    bad.pop("posDatum", None)
+    out = ngs.parse_nde(records + [bad])
+    assert "XX9998" not in set(out["id"])
+    assert out.attrs["skipped"]["reasons"].get("(missing)") == 1

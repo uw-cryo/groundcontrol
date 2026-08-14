@@ -87,6 +87,26 @@ def transform_control(control, target_crs, *, target_epoch=2010.0,
                 f"transform source is {src!r} ({assumed.name}); refusing to "
                 "reinterpret coordinates — pass source_crs= matching the data "
                 "(or retag the frame). The vertical datum is never guessed.")
+    # issue #22 guard: a 2D (non-compound) target builds a horizontal-only
+    # pipeline and heights ride through UNTRANSFORMED — the geoid undulation
+    # lands in every dz as bias (Atlanta swept -31 m with a normal-looking
+    # NMAD). The ONLY height-inert 2D case is source == target (identity;
+    # the end-to-end tests use it deliberately) — anything else must carry
+    # 3-axis or compound height semantics.
+    tgt = pyproj.CRS(target_crs)
+    if not tgt.is_compound and len(tgt.axis_info) < 3:
+        src_obj = pyproj.CRS(src)
+        same = src_obj.equals(tgt) or (src_obj.to_epsg() is not None
+                                       and src_obj.to_epsg() == tgt.to_epsg())
+        if not same:
+            raise ValueError(
+                f"target_crs {tgt.name!r} is 2D (non-compound): heights would "
+                "pass through UNTRANSFORMED while the horizontal moves — the "
+                "geoid undulation would land in every dz as bias. Pass the "
+                "product's 3D CRS (e.g. pyproj.CRS('EPSG:32616').to_3d()) or "
+                "a compound 'horizontal+vertical' CRS ('EPSG:32616+5703'); a "
+                "2D target is only valid when source_crs equals it exactly "
+                "(same-frame identity).")
     if aoi_bounds_4326 is None:
         aoi_bounds_4326 = tuple(control.to_crs("EPSG:4326").total_bounds)
     t = get_transformer(src, target_crs, aoi_bounds_4326=aoi_bounds_4326)

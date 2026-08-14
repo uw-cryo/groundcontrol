@@ -135,19 +135,61 @@ def _vert_crs(vert_datum: pd.Series) -> pd.Series:
     return out
 
 
+def _map_realizations_quarantine(ref_frame: pd.Series, pids: pd.Series):
+    """Per-row realization -> EPSG with QUARANTINE of unmapped rows (#21).
+
+    ``ngs_datum_to_epsg`` raises on unrecognized realization strings —
+    fail-loud per DATUM by intent — but mapping a whole column through it
+    made one exotic mark (e.g. a CORS ARP tagged ``NAD 83(CORS)``) zero
+    out the entire source via the dispatcher catch (Mt. Rainier: 2 marks
+    cost a 739-record AOI). Unmappable rows are dropped LOUDLY instead:
+    returns ``(h_crs, keep_mask, skipped)`` with ``skipped`` mapping the
+    realization string -> row count; callers report it in
+    ``gdf.attrs['skipped']`` (surfaced as ``n_skipped`` in the dispatcher
+    status). Owner decision 2026-08-13: quarantine, no silent mapping —
+    a ``NAD 83(CORS)`` mapping needs its own geodesy decision first.
+    """
+    from groundcontrol.crs import ngs_datum_to_epsg
+
+    mapped, keep, skipped = [], [], {}
+    for v in ref_frame:
+        try:
+            mapped.append(ngs_datum_to_epsg(v))
+            keep.append(True)
+        except ValueError:
+            mapped.append(pd.NA)
+            keep.append(False)
+            skipped[str(v)] = skipped.get(str(v), 0) + 1
+    keep = np.asarray(keep, dtype=bool)
+    if skipped:
+        logger.warning(
+            "NGS: quarantined %d record(s) with unmapped realization(s) %s "
+            "(PIDs %s); kept %d — extend crs.ngs_datum_to_epsg with an "
+            "explicit mapping decision to include them",
+            int((~keep).sum()), skipped, list(pids[~keep]), int(keep.sum()))
+    return pd.Series(mapped, index=ref_frame.index, dtype="string"), keep, skipped
+
+
 def parse_nde(records: list[dict]) -> gpd.GeoDataFrame:
     """NDE datasheet records -> schema-shaped native-frame GeoDataFrame."""
     df = pd.DataFrame(records)
     if df.empty:
         from groundcontrol import schema
         return schema.empty(crs="EPSG:6318")
-    from groundcontrol.crs import ngs_datum_to_epsg
 
     lat, lon = _num(df, "lat"), _num(df, "lon")
     ortho = _num(df, "orthoHt")
     ref_frame, frame_epoch = _frame_fields(df.get("posDatum", pd.Series(index=df.index)))
-    # B7: per-row native realization CRS (fail-loud on unrecognized strings)
-    h_crs = ref_frame.map(ngs_datum_to_epsg).astype("string")
+    # B7: per-row native realization CRS; unmapped realizations are
+    # quarantined per-row, never allowed to kill the source (#21)
+    h_crs, keep, skipped = _map_realizations_quarantine(ref_frame, df["pid"])
+    if skipped:
+        df = df[keep].reset_index(drop=True)
+        lat, lon, ortho = (s[keep].reset_index(drop=True)
+                           for s in (lat, lon, ortho))
+        ref_frame = ref_frame[keep].reset_index(drop=True)
+        frame_epoch = frame_epoch[keep].reset_index(drop=True)
+        h_crs = h_crs[keep].reset_index(drop=True)
     mdt = _parse_recovered(df.get("lastRecovered", pd.Series(index=df.index)))
     consumed = {"pid", "lat", "lon", "orthoHt", "lastRecovered"}
     extras = [c for c in df.columns if c not in consumed]
@@ -190,6 +232,8 @@ def parse_nde(records: list[dict]) -> gpd.GeoDataFrame:
         crs=None,
         index=df.index,
     )
+    if skipped:
+        out.attrs["skipped"] = {"n": int((~keep).sum()), "reasons": skipped}
     return out
 
 
@@ -199,16 +243,23 @@ def parse_opus(records: list[dict]) -> gpd.GeoDataFrame:
     if df.empty:
         from groundcontrol import schema
         return schema.empty(crs="EPSG:6318")
-    from groundcontrol.crs import ngs_datum_to_epsg
 
     lat, lon = _num(df, "lat"), _num(df, "lon")
     ortho = _num(df, "orthoHt")
     ref_frame, frame_epoch = _frame_fields(df.get("refFrame", pd.Series(index=df.index)))
-    h_crs = ref_frame.map(ngs_datum_to_epsg).astype("string")  # B7 (usually all 2011)
+    # B7 (usually all 2011); unmapped realizations quarantined per-row (#21)
+    h_crs, keep, skipped = _map_realizations_quarantine(ref_frame, df["pid"])
+    if skipped:
+        df = df[keep].reset_index(drop=True)
+        lat, lon, ortho = (s[keep].reset_index(drop=True)
+                           for s in (lat, lon, ortho))
+        ref_frame = ref_frame[keep].reset_index(drop=True)
+        frame_epoch = frame_epoch[keep].reset_index(drop=True)
+        h_crs = h_crs[keep].reset_index(drop=True)
     mdt = pd.to_datetime(df.get("obsTimeStart"), utc=True, errors="coerce")
     consumed = {"pid", "lat", "lon", "orthoHt", "obsTimeStart"}
     extras = [c for c in df.columns if c not in consumed]
-    return gpd.GeoDataFrame(
+    out = gpd.GeoDataFrame(
         {
             "id": df["pid"].astype("string"),
             "point_type": pd.Series(["gnss"] * len(df), dtype="string"),  # TODO(D2)
@@ -237,6 +288,9 @@ def parse_opus(records: list[dict]) -> gpd.GeoDataFrame:
         crs=None,
         index=df.index,
     )
+    if skipped:
+        out.attrs["skipped"] = {"n": int((~keep).sum()), "reasons": skipped}
+    return out
 
 
 def expand_attributes(gdf, fields=None, prefix="ngs_"):

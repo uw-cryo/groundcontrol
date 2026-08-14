@@ -431,3 +431,25 @@ def test_figures_ngs_gate_skipped_when_nmad_zero():
     assert len(out) == 9 and 45.0 in out          # no gate at NMAD=0
     v2 = np.array([0.0, 0.01, -0.01, 0.02, -0.02, 45.0])
     assert 45.0 not in _ngs_gate(v2, 3.0)          # normal spread still gates
+
+
+def test_transform_control_2d_target_raises_issue22():
+    """#22: a 2D non-compound target must fail loud, not skip the vertical."""
+    ctl = _control_6319()
+    with pytest.raises(ValueError, match="2D"):
+        transform_control(ctl, "EPSG:32612", source_crs="EPSG:6319",
+                          aoi_bounds_4326=AOI_AZ)
+
+
+def test_transform_control_2d_identity_still_allowed():
+    """source == target 2D identity is height-inert and stays legal
+    (the end-to-end orchestration tests rely on it)."""
+    n = 3
+    g = gpd.GeoDataFrame(
+        {"height": np.full(n, 100.0)},
+        geometry=gpd.points_from_xy(np.linspace(400000.0, 401000.0, n),
+                                    np.linspace(3600000.0, 3601000.0, n)),
+        crs="EPSG:32611")
+    out, _ = transform_control(g, "EPSG:32611", source_crs="EPSG:32611",
+                               aoi_bounds_4326=(-120.0, 32.0, -119.0, 33.0))
+    np.testing.assert_allclose(out["h_ell"], g["height"])

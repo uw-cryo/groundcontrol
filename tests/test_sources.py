@@ -147,3 +147,32 @@ def test_fetch_control_casa_grande_live():
     assert status["ngs"]["n_rows"] > 400  # regression: notebook-era count ~505
     assert status["3dep"]["n_rows"] > 10
     schema.validate(gdf)
+
+
+def test_parse_nde_quarantines_unmapped_realization():
+    """#21: an exotic realization must cost its ROW, never the source."""
+    records = json.loads((DATA / "ngs_nde_sample.json").read_text())
+    bad = dict(records[0])
+    bad["pid"] = "XX9999"
+    bad["posDatum"] = "NAD 83(CORS)"
+    out = ngs.parse_nde(records + [bad])
+    assert len(out) == len(ngs.parse_nde(records))
+    assert "XX9999" not in set(out["id"])
+    sk = out.attrs["skipped"]
+    assert sk["n"] == 1 and any("CORS" in k for k in sk["reasons"])
+
+
+def test_dispatcher_reports_quarantined_rows(monkeypatch):
+    """#21: quarantine surfaces as n_skipped/skip_reasons in status."""
+    import groundcontrol.sources as srcs
+    records = json.loads((DATA / "ngs_nde_sample.json").read_text())
+    bad = dict(records[0])
+    bad["pid"] = "XX9999"
+    bad["posDatum"] = "NAD 83(CORS)"
+    monkeypatch.setitem(srcs.PROVIDERS, "ngs",
+                        (lambda b: records + [bad], ngs.parse_nde))
+    gdf, status = fetch_control((-112, 32, -111, 33), sources=("ngs",))
+    assert status["ngs"]["error"] is None and status["ngs"]["n_rows"] > 0
+    assert status["ngs"]["n_skipped"] == 1
+    assert any("CORS" in k for k in status["ngs"]["skip_reasons"])
+    assert "XX9999" not in set(gdf["id"])

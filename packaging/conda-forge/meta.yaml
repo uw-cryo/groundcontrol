@@ -1,0 +1,100 @@
+{% set name = "groundcontrol" %}
+{% set version = "0.1.2" %}
+
+# DRAFT staged-recipes submission for conda-forge. Nothing here is submitted yet;
+# see docs/conda-forge.md for the full runbook, the open questions, and the
+# pre-submission checklist. When submitting, this file is copied verbatim to
+# recipes/groundcontrol/meta.yaml in a fork of conda-forge/staged-recipes.
+#
+# Source is the GitHub release, not PyPI: the PyPI `groundcontrol` name is held
+# by an unrelated abandoned project (see docs/releasing.md). conda-forge does not
+# require a PyPI release, so the conda channel is not blocked on that reclamation.
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  # PREFERRED once the sdist is attached to the GitHub Release (see step 1 in
+  # docs/conda-forge.md) — a release asset is immutable, unlike the auto-generated
+  # source tarball below:
+  #   url: https://github.com/uw-cryo/groundcontrol/releases/download/v{{ version }}/groundcontrol-{{ version }}.tar.gz
+  #   sha256: <sha256 of that asset>
+  #
+  # Interim: GitHub's auto-generated tag tarball. sha256 verified 2026-08-12.
+  url: https://github.com/uw-cryo/{{ name }}/archive/refs/tags/v{{ version }}.tar.gz
+  sha256: 600574a1ba8ec68f6369b33482933f644ce47014d4546a9f551327819aab23b7
+
+build:
+  noarch: python
+  number: 0
+  script: {{ PYTHON }} -m pip install . -vv --no-deps --no-build-isolation
+  entry_points:
+    - groundcontrol-fetch = groundcontrol.cli:fetch_control_main
+    - groundcontrol-assess = groundcontrol.cli:assess_dem_main
+
+requirements:
+  # `python_min` is conda-forge's global noarch-python floor (set in
+  # conda_build_config.yaml). pyproject requires >=3.10 — if the global
+  # python_min is ever lower than that, replace these three uses with a
+  # literal 3.10 rather than letting the recipe advertise a Python we do
+  # not support.
+  host:
+    - python {{ python_min }}
+    - setuptools >=64
+    - pip
+  run:
+    - python >={{ python_min }}
+    - numpy
+    - pandas
+    - geopandas >=1.0
+    - pyproj >=3.6
+    - shapely >=2.0
+    - rasterio
+    - rioxarray
+    - scipy
+    - requests
+    # matplotlib-base, not matplotlib: the conda-forge `matplotlib` metapackage
+    # pulls a Qt GUI backend that this library never uses.
+    - matplotlib-base
+    - matplotlib-scalebar
+    - pyarrow >=14
+
+test:
+  requires:
+    - python {{ python_min }}
+    - pip
+  imports:
+    - groundcontrol
+    - groundcontrol.crs
+    - groundcontrol.geodesy
+    - groundcontrol.sources
+  commands:
+    - pip check
+    - groundcontrol-fetch --help
+    - groundcontrol-assess --help
+    # The ITRF2020 PMM poles and PB2002 plate boundaries are package_data and are
+    # invisibly absent if packaging regresses — propagate_epoch would then break
+    # only for installed users. Same guard as the wheel check in release.yml.
+    - python -c "from importlib.resources import files; import groundcontrol; d = files('groundcontrol') / 'data'; [ (d / f).read_bytes() for f in ('ITRF2020-PMM.dat', 'pb2002_plates_decimated.geojson') ]"
+
+about:
+  home: https://github.com/uw-cryo/groundcontrol
+  summary: Fetch ground control points for any AOI and assess DEM accuracy, with rigorous 3D CRS/datum/epoch handling
+  description: |
+    groundcontrol fetches ground control points (3DEP checkpoints, NGS monuments,
+    OPUS shared solutions, Nevada Geodetic Laboratory GNSS) for an area of interest,
+    lands them on a common 3D CRS and epoch, samples a DEM at those points, and
+    reports accuracy statistics with explicit datum, epoch and transformation-accuracy
+    bookkeeping.
+  license: MIT
+  license_file: LICENSE
+  doc_url: https://github.com/uw-cryo/groundcontrol/blob/main/docs/quickstart.md
+  dev_url: https://github.com/uw-cryo/groundcontrol
+
+extra:
+  recipe-maintainers:
+    # TODO: GitHub handles, before submission. Every maintainer listed must
+    # comment "@conda-forge/help-python ready" style consent on the staged PR,
+    # so list only people who have agreed.
+    - TODO-github-handle

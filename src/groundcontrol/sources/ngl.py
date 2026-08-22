@@ -628,6 +628,13 @@ def occupation_class(span_yr, density):
     demonstrates episodic occupation), ``"gnss_semicont"`` (0.2-0.6 buffer
     band), or ``"gnss_cont"`` (density >= 0.6). Fail-loud: non-finite
     evidence raises instead of defaulting a class.
+
+    The class is an OCCUPATION-PATTERN claim only, never a quality claim
+    (owner, 2026-08-22): a continuous record can come from an excellent
+    CORS monument or from a problematic station (rooftop/mast ARP,
+    unstable or on-ice monument, nonlinear motion). Judge quality from
+    separate evidence — monument/stability metadata, MIDAS behavior and
+    steps.txt, CORS membership, dh consistency — never from this label.
     """
     span_yr, density = float(span_yr), float(density)
     if not (np.isfinite(span_yr) and np.isfinite(density)):

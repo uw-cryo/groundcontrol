@@ -31,8 +31,10 @@ CONTROL_LANDING_CRS = "EPSG:6318+5703"
 #: is vegetated/DTM-only, GNSS and NGS are datum-sanity context for both).
 #: GNSS segments follow the PER-ROW occupation class (owner taxonomy,
 #: 2026-08-22; sources.ngl.occupation_class): each station's own record earns
-#: its class, so routing is by point_type, not source. Campaign keeps an
-#: NGL/OPUS split because the two are not height-comparable (NGL heights are
+#: its class, so routing is by point_type, not source. Class = occupation
+#: pattern, NOT quality — a continuous record can sit on an excellent CORS
+#: monument or a problematic one (see ngl.occupation_class). Campaign keeps
+#: an NGL/OPUS split because the two are not height-comparable (NGL heights are
 #: the antenna reference point, OPUS heights are the ground mark); the
 #: pre-split "gnss" label carried by products written before the split gets
 #: its own row so old parquets stay visible in the stats table instead of

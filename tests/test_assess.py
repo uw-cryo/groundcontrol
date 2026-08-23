@@ -30,7 +30,7 @@ def _control_6319(n=4, h=400.0):
     lat = np.linspace(32.6, 32.9, n)
     return gpd.GeoDataFrame(
         {"source": ["3dep", "3dep", "opus", "ngs"][:n],
-         "point_type": ["NVA", "VVA", "gnss", "monument"][:n],
+         "point_type": ["NVA", "VVA", "gnss_campaign", "monument"][:n],
          "id": [f"P{i}" for i in range(n)],
          "height": np.full(n, h)},
         geometry=gpd.points_from_xy(lon, lat), crs="EPSG:6319")
@@ -96,7 +96,7 @@ def _landed(offsets, outside=0):
     plane = 2.0 * xs + 3.0 * ys
     return gpd.GeoDataFrame(
         {"source": (["3dep", "3dep", "opus", "ngs"] * m)[:m],
-         "point_type": (["NVA", "VVA", "gnss", "monument"] * m)[:m],
+         "point_type": (["NVA", "VVA", "gnss_campaign", "monument"] * m)[:m],
          "h_ell": plane - np.append(np.asarray(offsets, dtype="float64"),
                                     np.zeros(outside))},
         geometry=gpd.points_from_xy(xs, ys), crs=CRS)
@@ -137,7 +137,35 @@ def test_summarize_dz_segments_nodata_and_applies(tmp_path):
     assert not vva_dsm["applies"] and vva_dtm["applies"]
     nva = stats[(stats["product"] == "DSM") & (stats.segment == "3DEP NVA")].iloc[0]
     assert nva["median_m"] == pytest.approx(0.10, abs=1e-9)
-    assert set(SEGMENTS) == {"3DEP NVA", "3DEP VVA", "GNSS/OPUS", "NGS monument"}
+    assert set(SEGMENTS) == {
+        "3DEP NVA", "3DEP VVA", "GNSS continuous", "GNSS semi-continuous",
+        "GNSS campaign (OPUS)", "GNSS campaign (NGL)", "GNSS (pre-split)",
+        "NGS monument"}
+
+
+def test_summarize_dz_gnss_routes_by_point_type():
+    # per-row taxonomy (2026-08-22): routing is by each row's OWN class
+    # (ngl.occupation_class), not its source. The legacy pre-split "gnss"
+    # label gets its own segment so old parquets stay visible in the stats
+    # table instead of silently dropping out; campaign keeps the NGL/OPUS
+    # split (ARP vs ground-mark heights are not comparable).
+    g = gpd.GeoDataFrame(
+        {"source": ["ngl", "ngl", "ngl", "opus", "ngl"],
+         "point_type": ["gnss_cont", "gnss_semicont", "gnss_campaign",
+                        "gnss_campaign", "gnss"],
+         "dh_DSM_before": [0.1, 0.2, 0.3, 0.4, 0.5]},
+        geometry=gpd.points_from_xy([0.0, 1.0, 2.0, 3.0, 4.0], [0.0] * 5),
+        crs="EPSG:32611")
+    stats = summarize_dz(g)
+    seg_n = dict(zip(stats.segment, stats.n))
+    assert seg_n["GNSS continuous"] == 1
+    assert seg_n["GNSS semi-continuous"] == 1
+    assert seg_n["GNSS campaign (NGL)"] == 1
+    assert seg_n["GNSS campaign (OPUS)"] == 1
+    assert seg_n["GNSS (pre-split)"] == 1
+    for seg in ("GNSS continuous", "GNSS semi-continuous",
+                "GNSS campaign (OPUS)"):
+        assert stats[stats.segment == seg].iloc[0]["applies"]
 
 
 def test_assess_products_end_to_end_writes_artifacts(tmp_path):
@@ -205,7 +233,8 @@ def test_family_dz_figures_smoke(tmp_path):
     from groundcontrol.figures import default_ngs_best, family_dz_figures
     n = 12
     src = (["3dep"] * 4 + ["opus"] * 2 + ["ngs"] * 6)
-    ptype = (["NVA", "NVA", "VVA", "VVA"] + ["gnss"] * 2 + ["monument"] * 6)
+    ptype = (["NVA", "NVA", "VVA", "VVA"] + ["gnss_campaign"] * 2
+             + ["monument"] * 6)
     raw = [None] * 6 + [json.dumps({"posSource": "ADJUSTED", "vertSource": "GPS OBS"})] * 3 \
         + [json.dumps({"posSource": "SCALED", "vertSource": "VERTCON3"})] * 3
     g = gpd.GeoDataFrame(
@@ -234,7 +263,7 @@ def test_validation_dz_figures_accepts_path_aoi(tmp_path):
     n = 10
     g = gpd.GeoDataFrame(
         {"source": ["3dep"] * 4 + ["opus"] * 2 + ["ngs"] * 4,
-         "point_type": ["NVA", "NVA", "VVA", "VVA"] + ["gnss"] * 2
+         "point_type": ["NVA", "NVA", "VVA", "VVA"] + ["gnss_campaign"] * 2
                        + ["monument"] * 4,
          "dh_DSM_before": np.linspace(-0.1, 0.1, n),
          "dh_DTM_before": np.linspace(-0.1, 0.1, n)},

@@ -31,8 +31,8 @@ per-source status report:
 |--------|-----|-------|
 | USGS 3DEP checkpoints | `3dep` | national GeoParquet with bbox pushdown |
 | NGS Data Explorer (NDE) | `ngs` | monumented control, per-realization datum landing |
-| OPUS shared solutions | `opus` | GNSS-derived |
-| Nevada Geodetic Lab GNSS | `ngl` | daily `.tenv3` series, `steps.txt`, MIDAS velocities |
+| OPUS shared solutions | `opus` | campaign GNSS occupations (`gnss_campaign`): episodic, nothing left on site; NGS monument-stability tier (A/B vs C/D) decoded per record |
+| Nevada Geodetic Lab GNSS | `ngl` | daily `.tenv3` series, `steps.txt`, MIDAS velocities; per-station occupation class earned by the station's own record (`gnss_cont` / `gnss_semicont` / `gnss_campaign`) |
 | FAA NASR runway control | `faa` | photo-identifiable runway ends, displaced thresholds, helipads from the public-domain 28-day NASR subscription; per-point position-source provenance (surveyed vs estimated) with AC 150/5300-18C accuracies on the surveyed class |
 
 - **One normalized schema** (`schema.py`) — a single canonical control-point GeoDataFrame

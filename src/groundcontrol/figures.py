@@ -26,7 +26,7 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-#: point_type -> (marker, color, size, zorder, label). GNSS/OPUS plots BEHIND
+#: point_type -> (marker, color, size, zorder, label). GNSS plots BEHIND
 #: the 3DEP checkpoints; NVA above VVA (owner figure review, 2026-07-15).
 def _heliport_marker():
     """FAA VFR-chart heliport symbol as a Path marker: 'H' inside a circle
@@ -60,21 +60,34 @@ def _heliport_marker():
 #:   future refinement requiring a control-type split per monument;
 #: - GNSS star / 3DEP circle+square: no authority defines symbols for
 #:   CORS or lidar checkpoints — house choices, kept distinct from the
-#:   triangle/circle/square control conventions above.
+#:   triangle/circle/square control conventions above. One star family
+#:   split by color along the PER-ROW occupation class (owner taxonomy,
+#:   2026-08-22; sources.ngl.occupation_class — each station's own record
+#:   earns its class): a dark-to-light blue ramp — deep = continuous
+#:   (permanent hardware, photo-ID candidates), mid = semi-continuous (the
+#:   declared 0.2-0.6 density buffer band), sky = campaign (episodic;
+#:   post-occupation nothing visible but the monument) — plus gray = the
+#:   pre-split "gnss" label carried by products written before the split,
+#:   kept so they still render.
 #: Values: (marker, color, size, zorder, label).
 POINT_STYLE = {
     "monument": ("+", "#111111", 30, 4, "NGS monument"),
-    "gnss": ("*", "#0033A0", 90, 5, "GNSS/OPUS"),
+    "gnss_cont": ("*", "#0033A0", 90, 5, "GNSS continuous"),
+    "gnss_semicont": ("*", "#3B6FCB", 90, 5, "GNSS semi-continuous"),
+    "gnss_campaign": ("*", "#56B4E9", 90, 5, "GNSS campaign"),
+    "gnss": ("*", "#888888", 90, 5, "GNSS (pre-split)"),
     "VVA": ("s", "#E69F00", 45, 6, "3DEP VVA"),
     "NVA": ("o", "#C00000", 55, 7, "3DEP NVA"),
     "runway_end": (6, "#1B7837", 55, 6, "FAA runway end"),
     "displaced_threshold": (7, "#66A61E", 50, 6, "FAA displaced threshold"),
     "helipad": (_heliport_marker(), "#1B7837", 110, 6, "FAA helipad"),
 }
-#: legend order: the two 3DEP checkpoint classes adjacent, then GNSS, then
-#: NGS, then the FAA runway classes.
-LEGEND_ORDER = ("NVA", "VVA", "gnss", "monument", "runway_end",
-                "displaced_threshold", "helipad")
+#: legend order: the two 3DEP checkpoint classes adjacent, then the GNSS
+#: occupation classes dark-to-light (continuous, semi-continuous, campaign,
+#: pre-split legacy), then NGS, then the FAA runway classes.
+LEGEND_ORDER = ("NVA", "VVA", "gnss_cont", "gnss_semicont", "gnss_campaign",
+                "gnss", "monument", "runway_end", "displaced_threshold",
+                "helipad")
 #: dz map/histogram colormap, CENTRALIZED for easy revert (owner 2026-07-15):
 #: RdYlBu puts RED = negative dz (product below control) — the same
 #: red-means-down convention as the subsidence/rate maps. Revert to the old
@@ -700,10 +713,11 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
 
     One figure per product: (a) map of control points over shaded relief
     colored by ``dh_<product>_before`` (product - control, RdBu_r); (b)
-    histograms for the survey-grade segments (vendor NVA/VVA, GNSS/OPUS);
-    (c) histogram for NGS monuments after a ``ngs_nmad_gate``-NMAD filter.
+    histograms for the survey-grade segments (vendor NVA/VVA, the GNSS
+    occupation classes); (c) histogram for NGS monuments after a
+    ``ngs_nmad_gate``-NMAD filter.
     Segment rules: NVA validates DSM and DTM; VVA validates DTM only;
-    NGS/OPUS shown for both as datum-sanity context. Median/NMAD/n
+    GNSS and NGS shown for both as datum-sanity context. Median/NMAD/n
     annotated per segment.
 
     Limits (``point_lim``/``vendor_lim``/``wide_lim``) default to
@@ -732,7 +746,17 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
                      "NVA", True, True),
         "3DEP VVA": (lambda d: (d["source"] == "3dep") & (d["point_type"] == "VVA"),
                      "VVA", False, True),
-        "GNSS/OPUS": (lambda d: d["source"] == "opus", "gnss", True, True),
+        # per-row occupation class (assess.SEGMENTS is the shared taxonomy);
+        # the histograms merge NGL+OPUS campaign into one class-colored
+        # segment — the stats table keeps the ARP-vs-ground-mark split
+        "GNSS continuous": (lambda d: d["point_type"] == "gnss_cont",
+                            "gnss_cont", True, True),
+        "GNSS semi-continuous": (lambda d: d["point_type"] == "gnss_semicont",
+                                 "gnss_semicont", True, True),
+        "GNSS campaign": (lambda d: d["point_type"] == "gnss_campaign",
+                          "gnss_campaign", True, True),
+        "GNSS (pre-split)": (lambda d: d["point_type"] == "gnss",
+                             "gnss", True, True),
         "NGS monument": (lambda d: d["source"] == "ngs", "monument", True, True),
     }
     for prod in products:
@@ -817,6 +841,13 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
     return out
 
 
+def _opus_tier(d):
+    """Row-wise OPUS stability tier for DZ_FAMILIES masks (lazy import —
+    figures must stay importable without the sources subpackage loaded)."""
+    from groundcontrol.sources.ngs import opus_stability_tier
+    return opus_stability_tier(d)
+
+
 #: family key -> (title, [(subclass label, row mask fn, point_type style key
 #: or hex color, marker[, products])]). Optional 5th element restricts the
 #: subclass to those products: VVA canopy checkpoints validate the DTM only —
@@ -829,8 +860,31 @@ DZ_FAMILIES = {
         ("VVA", lambda d: (d["source"] == "3dep") & (d["point_type"] == "VVA"),
          "VVA", "s", ("DTM",)),
     ]),
-    "gnss": ("GNSS/OPUS", [
-        ("GNSS/OPUS", lambda d: d["source"] == "opus", "gnss", "o"),
+    # GNSS by PER-ROW occupation class (owner taxonomy, 2026-08-22): each
+    # station's own record earns its class (sources.ngl.occupation_class).
+    # Continuous stations have permanent hardware (photo-ID candidates,
+    # velocity-rich); campaign occupations leave nothing but the monument.
+    "gnss": ("GNSS CONTROL (by occupation class)", [
+        ("Continuous", lambda d: d["point_type"] == "gnss_cont",
+         "gnss_cont", "o"),
+        ("Semi-continuous", lambda d: d["point_type"] == "gnss_semicont",
+         "gnss_semicont", "o"),
+        ("Campaign", lambda d: d["point_type"] == "gnss_campaign",
+         "gnss_campaign", "o"),
+    ]),
+    # OPUS campaign marks by NGS monument-stability tier (owner taxonomy,
+    # 2026-08-22; sources.ngs.opus_stability_tier — decoded from each
+    # record's stabilityCode, archive-wide split ~49% A/B vs 50% C/D).
+    # Unknown gets its own panel: rows without a decodable code must stay
+    # visible, never silently fall out. Okabe-Ito blue/vermillion = a
+    # quality contrast, deliberately not the occupation-class blue ramp.
+    "opus_stability": ("OPUS CAMPAIGN MARKS (by NGS stability tier)", [
+        ("Stability A/B", lambda d: (d["source"] == "opus")
+         & (_opus_tier(d) == "A/B"), "#0072B2", "o"),
+        ("Stability C/D", lambda d: (d["source"] == "opus")
+         & (_opus_tier(d) == "C/D"), "#D55E00", "o"),
+        ("Stability unknown", lambda d: (d["source"] == "opus")
+         & _opus_tier(d).isna(), "#888888", "o"),
     ]),
     "ngs_best": ("NGS MONUMENTS (best)", [
         ("NGS best", None, "monument", "o"),   # mask injected from ngs_best

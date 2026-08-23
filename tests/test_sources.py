@@ -86,10 +86,31 @@ def test_parse_opus_sample():
     records = json.loads((DATA / "ngs_opus_sample.json").read_text())
     out = schema.normalize(ngs.parse_opus(records), source="opus")
     schema.validate(out, require_crs=False)  # un-landed
-    assert (out["point_type"] == "gnss").all()
+    assert (out["point_type"] == "gnss_campaign").all()
     assert (out["horizontal_crs"] == "EPSG:6318").all()  # OPUS is NAD_83(2011)
     assert (out["coord_epoch"] == 2010.0).all()  # refFrame NAD_83(2011), epoch 2010.0000
     assert out["measurement_datetime"].notna().all()  # obsTimeStart
+
+
+def test_opus_stability_tier():
+    # per-row taxonomy (2026-08-22): tier decoded from each record's own
+    # stabilityCode; anything outside A-D -> NA, never a guessed tier
+    records = json.loads((DATA / "ngs_opus_sample.json").read_text())
+    out = ngs.parse_opus(records)
+    tier = ngs.opus_stability_tier(out)
+    assert set(tier.dropna().unique()) <= {"A/B", "C/D"}
+    # re-derive from raw independently: A/B <-> codes A,B; C/D <-> C,D
+    codes = ngs.expand_attributes(out, fields=["stabilityCode"],
+                                  prefix="x_")["x_stabilityCode"]
+    assert (tier[codes.isin(["A", "B"])] == "A/B").all()
+    assert (tier[codes.isin(["C", "D"])] == "C/D").all()
+    assert tier[~codes.isin(["A", "B", "C", "D"])].isna().all()
+    # rows with no parseable raw (other sources) -> NA
+    import pandas as pd
+    foreign = out.copy()
+    foreign["raw"] = pd.Series(["not json"] * len(out), dtype="string",
+                               index=out.index)
+    assert ngs.opus_stability_tier(foreign).isna().all()
 
 
 # ---------------------------------------------------------------------------

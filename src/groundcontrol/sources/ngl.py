@@ -596,6 +596,51 @@ def _position_from_window(win: pd.DataFrame) -> dict:
     }
 
 
+# ------------------------------------------------------------------------
+# Per-row occupation class (owner taxonomy, 2026-08-22)
+# ------------------------------------------------------------------------
+#: Occupation-class thresholds, applied to each station's OWN DataHoldings
+#: record — never inferred from the source archive. Evidence basis
+#: (sandbox/gnss_class_study.py, archive-wide run 2026-08-14, 23,693
+#: stations): 95% of labeled NGS CORS sit at solution density >= 0.62 (P5)
+#: with span >= 2.1 yr, so >= 0.6 marks demonstrated continuous operation;
+#: the episodic cluster separates from the continuous mode across a broad
+#: low-density trough (~0.05-0.3), and 0.2 is the round-number cut inside
+#: it. The 0.2-0.6 band is a DECLARED buffer ("semi-continuous"), not a
+#: measured population boundary. Terminology: "campaign" and "continuous
+#: station" follow the GAGE/EarthScope glossary
+#: (https://www.unavco.org/help/glossary/glossary.html); "semi-continuous"
+#: is established community usage for the in-between band (no glossary
+#: entry). Owner-confirmed 2026-08-22, explicitly adjustable.
+CAMPAIGN_MAX_SPAN_YR = 1.0
+CAMPAIGN_MAX_DENSITY = 0.2
+CONTINUOUS_MIN_DENSITY = 0.6
+
+
+def occupation_class(span_yr, density):
+    """Occupation class demonstrated by a station's own archive record.
+
+    ``span_yr`` = (dtend - dtbeg) in years; ``density`` = solutions per day
+    of inclusive span (``num_sol / (span_days + 1)``; 1.0 for a single-day
+    record) — exactly the archive-study metrics, and both are carried in
+    ``raw`` so the class stays re-derivable without a refetch. Returns
+    ``"gnss_campaign"`` (span < 1 yr OR density < 0.2: the record
+    demonstrates episodic occupation), ``"gnss_semicont"`` (0.2-0.6 buffer
+    band), or ``"gnss_cont"`` (density >= 0.6). Fail-loud: non-finite
+    evidence raises instead of defaulting a class.
+    """
+    span_yr, density = float(span_yr), float(density)
+    if not (np.isfinite(span_yr) and np.isfinite(density)):
+        raise ValueError(
+            f"occupation_class needs finite evidence, got span_yr={span_yr!r} "
+            f"density={density!r} — DataHoldings record incomplete")
+    if span_yr < CAMPAIGN_MAX_SPAN_YR or density < CAMPAIGN_MAX_DENSITY:
+        return "gnss_campaign"
+    if density < CONTINUOUS_MIN_DENSITY:
+        return "gnss_semicont"
+    return "gnss_cont"
+
+
 def parse(raw: dict) -> gpd.GeoDataFrame:
     """Raw fetch() payload -> schema-shaped native-frame GeoDataFrame.
 
@@ -628,9 +673,20 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
         # arbitrary (non-station) points are filled by spatial interpolation of
         # this same network in groundcontrol.velocity (fill_velocities).
         mv = meta.get("midas") or {}
+        # Per-row occupation class from the station's own DataHoldings
+        # record (never from the source archive); fail-loud when the
+        # evidence fields are missing rather than defaulting a class.
+        if any(meta.get(k) is None for k in ("dtbeg", "dtend", "num_sol")):
+            raise ValueError(
+                f"NGL station {meta.get('sta')!r}: DataHoldings evidence "
+                "(dtbeg/dtend/num_sol) missing — cannot assign an "
+                "occupation class")
+        span_d = (pd.Timestamp(meta["dtend"]) - pd.Timestamp(meta["dtbeg"])).days
+        span_yr = span_d / 365.25
+        density = meta["num_sol"] / (span_d + 1) if span_d > 0 else 1.0
         records.append({
             "id": meta["sta"],
-            "point_type": "gnss",  # TODO(D2)
+            "point_type": occupation_class(span_yr, density),  # TODO(D2)
             "height": pos["height"],            # ELLIPSOIDAL, native frame
             "height_datum": "ellipsoidal",
             "horizontal_crs": crs_code,
@@ -656,6 +712,10 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
                 "dtbeg": meta.get("dtbeg"),
                 "dtend": meta.get("dtend"),
                 "num_sol": meta.get("num_sol"),
+                # occupation-class evidence (the archive-study metrics):
+                # point_type is re-derivable from these without a refetch
+                "span_yr": round(span_yr, 3),
+                "density": round(density, 4),
                 "n_solutions_used": pos["n_solutions_used"],
                 "window": window_desc,
                 "sig_e_m": pos["sig_e_m"],

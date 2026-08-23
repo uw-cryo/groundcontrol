@@ -394,6 +394,47 @@ def test_empty_window_drops_station_with_warning(caplog):
 
 
 # ---------------------------------------------------------------------------
+# occupation class (per-row taxonomy, 2026-08-22)
+# ---------------------------------------------------------------------------
+
+def test_occupation_class_boundaries():
+    # owner-confirmed anchors: campaign = <1 yr span OR density <0.2;
+    # semi-continuous = the declared 0.2-0.6 buffer band; continuous =
+    # >=0.6 (labeled-CORS P5). Boundary values land in the upper class.
+    assert ngl.occupation_class(0.5, 0.95) == "gnss_campaign"  # short span
+    assert ngl.occupation_class(5.0, 0.19) == "gnss_campaign"  # sparse
+    assert ngl.occupation_class(5.0, 0.2) == "gnss_semicont"
+    assert ngl.occupation_class(5.0, 0.59) == "gnss_semicont"
+    assert ngl.occupation_class(5.0, 0.6) == "gnss_cont"
+    assert ngl.occupation_class(20.0, 1.0) == "gnss_cont"
+    # fail-loud: missing evidence never defaults a class
+    with pytest.raises(ValueError, match="finite"):
+        ngl.occupation_class(float("nan"), 0.9)
+    with pytest.raises(ValueError, match="finite"):
+        ngl.occupation_class(5.0, float("nan"))
+
+
+def test_parse_occupation_evidence_in_raw():
+    # the class must be re-derivable from the evidence carried in raw,
+    # using the archive-study metrics (density = num_sol / (span_days + 1))
+    out = ngl.parse(_raw(epoch=2017.95))
+    r = out.iloc[0]
+    payload = json.loads(r["raw"])
+    assert ngl.occupation_class(payload["span_yr"], payload["density"]) \
+        == r["point_type"]
+    span_d = round(payload["span_yr"] * 365.25)
+    assert payload["density"] == pytest.approx(
+        payload["num_sol"] / (span_d + 1), rel=1e-3)
+
+
+def test_parse_missing_evidence_fails_loud():
+    raw = _raw(epoch=2017.95)
+    raw["stations"][0]["meta"].pop("num_sol")
+    with pytest.raises(ValueError, match="occupation class"):
+        ngl.parse(raw)
+
+
+# ---------------------------------------------------------------------------
 # parse() -> schema shape
 # ---------------------------------------------------------------------------
 
@@ -403,7 +444,7 @@ def test_parse_schema_valid_and_frame_aliased():
     schema.validate(out, require_crs=False)  # un-landed: native dynamic frame
     assert len(out) == 1
     r = out.iloc[0]
-    assert r["id"] == "CLV1" and r["point_type"] == "gnss"
+    assert r["id"] == "CLV1" and r["point_type"] == "gnss_cont"
     # §3 frame aliasing: IGS14 -> EPSG:7912, NEVER an EPSG IGS code
     assert r["horizontal_crs"] == "EPSG:7912"
     assert r["vertical_crs"] == "EPSG:7912"

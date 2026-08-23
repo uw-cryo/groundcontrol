@@ -59,7 +59,12 @@ COLUMNS: dict[str, str] = {
     "coord_epoch": _F64,        # coordinate epoch (decimal yr) — feeds the 4D tt
     "measurement_datetime": "datetime64[ns, UTC]",  # acquisition datetime (human-friendly)
     "measurement_epoch": _F64,  # decyear(measurement_datetime)
-    "point_type": _STR,         # gnss / monument / NVA / VVA / control  TODO(D2)
+    "point_type": _STR,         # gnss_cont / gnss_semicont / gnss_campaign
+                                # (per-row occupation class — ngl.occupation_class)
+                                # / monument / NVA / VVA / runway_end /
+                                # displaced_threshold / helipad / control;
+                                # pre-split products carry the legacy "gnss"
+                                # value  TODO(D2)
     "acc_h": _F64,              # reported accuracy (m)  TODO(D3)
     "acc_v": _F64,              # reported accuracy (m)  TODO(D3)
     "vel_e": _F64,              # nullable velocities (m/yr; MIDAS for GNSS)

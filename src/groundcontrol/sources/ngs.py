@@ -280,7 +280,8 @@ def parse_opus(records: list[dict]) -> gpd.GeoDataFrame:
     out = gpd.GeoDataFrame(
         {
             "id": df["pid"].astype("string"),
-            "point_type": pd.Series(["gnss"] * len(df), dtype="string"),  # TODO(D2)
+            "point_type": pd.Series(["gnss_campaign"] * len(df),
+                                    dtype="string"),  # episodic occupation; TODO(D2)
             "height": ortho,
             "height_datum": pd.Series(["NAVD88"] * len(df), dtype="string"),
             "horizontal_crs": h_crs,
@@ -309,6 +310,31 @@ def parse_opus(records: list[dict]) -> gpd.GeoDataFrame:
     if skipped:
         out.attrs["skipped"] = {"n": int((~keep).sum()), "reasons": skipped}
     return out
+
+
+#: NGS stability code -> monument-quality tier (authoritative code book:
+#: geodesy.noaa.gov/marks/descriptors.shtml). A (deep foundation / bedrock)
+#: and B (massive structures, deep rods) = expected to hold; C (concrete
+#: monument tops, footings, slabs) and D (driven objects, pavement, shallow
+#: rods) = commonly subject to movement. Archive-wide OPUS pull (2026-08-14,
+#: 50,015 CONUS marks): 49% A/B vs 50% C/D — the tier is a real split, not
+#: a corner case.
+_STABILITY_TIER = {"A": "A/B", "B": "A/B", "C": "C/D", "D": "C/D"}
+
+
+def opus_stability_tier(gdf):
+    """Per-row monument-stability tier from ``raw``: "A/B", "C/D", or NA.
+
+    Decoded from the ``stabilityCode`` each OPUS-shared record already
+    carries in ``raw`` (no refetch; owner taxonomy, 2026-08-22). Codes
+    outside A-D — and rows without one, e.g. other sources — return pd.NA:
+    no tier is guessed. The ``condition`` code is deliberately NOT
+    consulted: its dominant value "S" is undecoded upstream (survey
+    2026-08-14), so no condition-based masking until it is.
+    """
+    codes = expand_attributes(gdf, fields=["stabilityCode"],
+                              prefix="_tier_")["_tier_stabilityCode"]
+    return codes.map(_STABILITY_TIER).astype("string")
 
 
 def expand_attributes(gdf, fields=None, prefix="ngs_"):

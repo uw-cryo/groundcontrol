@@ -300,7 +300,14 @@ def parse_opus(records: list[dict]) -> gpd.GeoDataFrame:
             "acc_v": _num(df, "orthoHtP2p"),
             "native_x": lon, "native_y": lat, "native_h": ortho,
             "native_crs": (h_crs + "+5703").astype("string"),
-            "raw": pd.Series([json.dumps({k: str(df.iloc[i][k]) for k in extras})
+            # missing values serialize as JSON null, never the string "nan":
+            # raw carries load-bearing evidence here (stabilityCode) and a
+            # coded field must not LOOK coded when absent (audit finding).
+            # parse_nde's sibling still writes "nan" strings — deliberately
+            # untouched pending a check of ngs_class blank-bucketing.
+            "raw": pd.Series([json.dumps({k: (None if pd.isna(df.iloc[i][k])
+                                              else str(df.iloc[i][k]))
+                                          for k in extras})
                               for i in range(len(df))], dtype="string", index=df.index),
         },
         geometry=gpd.points_from_xy(lon, lat),
@@ -381,5 +388,9 @@ def expand_attributes(gdf, fields=None, prefix="ngs_"):
         vals = vals.map(lambda v: (v.strip() if isinstance(v, str) else str(v))
                         if v is not None and not (isinstance(v, float)
                                                   and math.isnan(v)) else None)
-        out[prefix + f] = pd.Series(vals, index=out.index, dtype="string").replace("", pd.NA)
+        # pre-null-fix parquets serialized missing values as the literal
+        # string "nan" (str(float NaN)); normalizing at the ONE reader keeps
+        # old and new parquets bucketing identically (audit round 3)
+        out[prefix + f] = (pd.Series(vals, index=out.index, dtype="string")
+                           .replace({"": pd.NA, "nan": pd.NA}))
     return out

@@ -68,7 +68,10 @@ def _heliport_marker():
 #:   declared 0.2-0.6 density buffer band), sky = campaign (episodic;
 #:   post-occupation nothing visible but the monument) — plus gray = the
 #:   pre-split "gnss" label carried by products written before the split,
-#:   kept so they still render.
+#:   kept so they still render. DELIBERATE map-vs-stats difference for
+#:   legacy OPUS rows (audit round 4): the map keeps them gray (the reader
+#:   sees the parquet predates the split) while the stats table folds them
+#:   into campaign (OPUS) so applies stays continuous with main.
 #: Values: (marker, color, size, zorder, label).
 POINT_STYLE = {
     "monument": ("+", "#111111", 30, 4, "NGS monument"),
@@ -462,7 +465,9 @@ def _raw_field(series, key):
             return None  # missing raw arrives as None OR float NaN (pandas>=3)
         v = r.get(key)
         v = (v or "").strip() if isinstance(v, str) else v
-        return v if v else None
+        if v == "nan":  # pre-null-fix parquets serialized missing values as
+            return None  # str(NaN); normalize like expand_attributes so the
+        return v if v else None  # two raw readers bucket identically (rd 4)
     return series.apply(get)
 
 
@@ -703,6 +708,27 @@ def _ngs_gate(v, mult):
     return v[np.abs(v - med0) < mult * nm0] if nm0 > 0 else v
 
 
+#: validation-figure style per assess.SEGMENTS label: a POINT_STYLE key or a
+#: raw hex. Lives in figures (SEGMENTS' 3-tuple shape is a de facto contract
+#: — sandbox MDV_SEGMENTS uses it, so style cannot move into the tuple);
+#: the sync test pins these keys to SEGMENTS' so a label add/rename fails in
+#: CI, not at figure time. Campaign labels carry DISTINCT colors (audit
+#: round 4: three same-color histograms hid the ARP-vs-ground-mark
+#: distinction the split exists for).
+_SEG_STYLE = {
+    "3DEP NVA": "NVA", "3DEP VVA": "VVA",
+    "GNSS continuous": "gnss_cont",
+    "GNSS semi-continuous": "gnss_semicont",
+    "GNSS campaign (OPUS)": "gnss_campaign",
+    "GNSS campaign (NGL)": "#7BA3CF",
+    "GNSS campaign (other)": "#B07AA1",
+    "GNSS (pre-split)": "gnss",
+    "NGS monument": "monument",
+    "OTHER (unsegmented)": "gnss",  # never rendered (context, non-GNSS
+                                    # label) — placeholder for the sync test
+}
+
+
 def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"),
                           hs_tif=None, point_lim=None, vendor_lim=None, wide_lim=None,
                           ngs_nmad_gate=3.0, dpi=200):
@@ -741,23 +767,16 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         if isinstance(aoi, (str, Path)):
             aoi = gpd.read_file(aoi)
         aoi = aoi.to_crs(sampled.crs)
-    seg_defs = {  # label -> (mask fn, style key, in DSM, in DTM)
-        "3DEP NVA": (lambda d: (d["source"] == "3dep") & (d["point_type"] == "NVA"),
-                     "NVA", True, True),
-        "3DEP VVA": (lambda d: (d["source"] == "3dep") & (d["point_type"] == "VVA"),
-                     "VVA", False, True),
-        # per-row occupation class (assess.SEGMENTS is the shared taxonomy);
-        # the histograms merge NGL+OPUS campaign into one class-colored
-        # segment — the stats table keeps the ARP-vs-ground-mark split
-        "GNSS continuous": (lambda d: d["point_type"] == "gnss_cont",
-                            "gnss_cont", True, True),
-        "GNSS semi-continuous": (lambda d: d["point_type"] == "gnss_semicont",
-                                 "gnss_semicont", True, True),
-        "GNSS campaign": (lambda d: d["point_type"] == "gnss_campaign",
-                          "gnss_campaign", True, True),
-        "GNSS (pre-split)": (lambda d: d["point_type"] == "gnss",
-                             "gnss", True, True),
-        "NGS monument": (lambda d: d["source"] == "ngs", "monument", True, True),
+    # ONE taxonomy: masks and DSM/DTM applicability come from assess.SEGMENTS
+    # (audit round 2: this dict was a hand-copied twin and had already
+    # diverged once); figures add only the style (module-level _SEG_STYLE —
+    # the sync test pins its keys to SEGMENTS', so a label add/rename fails
+    # in CI, not mid-run). Lazy import — assess imports figures lazily too,
+    # no cycle.
+    from groundcontrol.assess import SEGMENTS as _SEGMENTS, is_dtm_product
+    seg_defs = {  # label -> (mask fn, style key or hex, in DSM, in DTM)
+        lbl: (fn, _SEG_STYLE[lbl], in_dsm, in_dtm)
+        for lbl, (fn, in_dsm, in_dtm) in _SEGMENTS.items()
     }
     for prod in products:
         col = f"dh_{prod}_before"
@@ -786,9 +805,17 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         axes[0].set_title(f"{site_name} {prod} − control  (n={len(use)})",
                           fontsize=11, color=_INK)
 
+        is_dtm = is_dtm_product(prod)  # the ONE DSM/DTM classifier (round 4)
         for ax, labels, lim_over in (
+                # display rule != applies rule: context-only GNSS segments
+                # (applies False/False in the stats) still render as
+                # datum-sanity context per this figure's contract — the
+                # validation flags alone silently emptied the GNSS
+                # histograms (audit round 3). Empty segments drop out below.
                 (axes[1], [lbl for lbl, s in seg_defs.items()
-                           if s[2 if prod == "DSM" else 3] and lbl != "NGS monument"],
+                           if ((s[3] if is_dtm else s[2])
+                               or lbl.startswith("GNSS"))
+                           and lbl != "NGS monument"],
                  vendor_lim),
                 (axes[2], ["NGS monument"], wide_lim)):
             seg_vals = {}
@@ -801,13 +828,20 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
                 if len(v):
                     seg_vals[lab] = v
             # empirical tier-snapped panel limit unless overridden (#23);
-            # never tighter than the map so the panels stay comparable
+            # never tighter than the map so the panels stay comparable.
+            # Context-only segments render but do NOT set the shared scale:
+            # ARP-offset values inflating the pooled tier collapsed the
+            # validating distributions (audit round 4)
+            val_vals = [v for lab, v in seg_vals.items()
+                        if (seg_defs[lab][3] if is_dtm else seg_defs[lab][2])]
             lim = lim_over if lim_over is not None else (
-                max(snap_clim(np.concatenate(list(seg_vals.values())), k=3.0),
-                    pl) if seg_vals else pl)
+                max(snap_clim(np.concatenate(val_vals
+                                             or list(seg_vals.values())),
+                              k=3.0), pl) if seg_vals else pl)
             txt = []
             for lab, v in seg_vals.items():
-                color = POINT_STYLE[seg_defs[lab][1]][1]
+                key = seg_defs[lab][1]  # POINT_STYLE key or raw hex
+                color = POINT_STYLE[key][1] if key in POINT_STYLE else key
                 ax.hist(np.clip(v, -lim, lim), bins=41, range=(-lim, lim),
                         histtype="stepfilled", alpha=0.45, color=color,
                         edgecolor=color, label=lab)
@@ -843,9 +877,16 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
 
 def _opus_tier(d):
     """Row-wise OPUS stability tier for DZ_FAMILIES masks (lazy import —
-    figures must stay importable without the sources subpackage loaded)."""
+    figures must stay importable without the sources subpackage loaded).
+    Only OPUS rows are decoded: the family masks are all opus-gated, and
+    the un-gated version JSON-parsed the FULL multi-source raw column on
+    every mask evaluation — up to 12x per figure call (audit finding)."""
     from groundcontrol.sources.ngs import opus_stability_tier
-    return opus_stability_tier(d)
+    out = pd.Series(pd.NA, index=d.index, dtype="string")
+    m = (d["source"] == "opus").fillna(False)
+    if m.any():
+        out[m] = opus_stability_tier(d[m])
+    return out
 
 
 #: family key -> (title, [(subclass label, row mask fn, point_type style key
@@ -864,13 +905,25 @@ DZ_FAMILIES = {
     # station's own record earns its class (sources.ngl.occupation_class).
     # Continuous stations have permanent hardware (photo-ID candidates,
     # velocity-rich); campaign occupations leave nothing but the monument.
+    # campaign split by HEIGHT BASIS, mirroring assess.SEGMENTS (audit
+    # round 3: one pooled Campaign panel blended OPUS ground marks with
+    # NGL antenna-reference points, a mixture whose med/NMAD matches
+    # neither). Legacy OPUS rows fold into Campaign (OPUS) like the stats
+    # table; empty subclasses are skipped at render time.
     "gnss": ("GNSS CONTROL (by occupation class)", [
         ("Continuous", lambda d: d["point_type"] == "gnss_cont",
          "gnss_cont", "o"),
         ("Semi-continuous", lambda d: d["point_type"] == "gnss_semicont",
          "gnss_semicont", "o"),
-        ("Campaign", lambda d: d["point_type"] == "gnss_campaign",
+        ("Campaign (OPUS)", lambda d: (d["source"] == "opus")
+         & d["point_type"].isin(["gnss_campaign", "gnss"]),
          "gnss_campaign", "o"),
+        ("Campaign (NGL ARP)", lambda d: (d["source"] == "ngl")
+         & (d["point_type"] == "gnss_campaign"), "#7BA3CF", "^"),
+        ("Campaign (other)", lambda d: (d["point_type"] == "gnss_campaign")
+         & ~d["source"].isin(["opus", "ngl"]), "#888888", "s"),
+        ("Pre-split (non-OPUS)", lambda d: (d["point_type"] == "gnss")
+         & (d["source"] != "opus"), "gnss", "o"),
     ]),
     # OPUS campaign marks by NGS monument-stability tier (owner taxonomy,
     # 2026-08-22; sources.ngs.opus_stability_tier — decoded from each
@@ -885,12 +938,13 @@ DZ_FAMILIES = {
     "opus_stability": ("OPUS CAMPAIGN MARKS (NGS stability code: "
                        "A/B = bedrock/deep-set, expected to hold; "
                        "C/D = surface/shallow, may move)", [
+        # _opus_tier is NA for every non-OPUS row, so the tier comparison
+        # alone gates A/B and C/D; only the not-coded mask needs the
+        # explicit source gate (isna alone would match every other source)
         ("A/B (expected to hold)",
-         lambda d: (d["source"] == "opus") & (_opus_tier(d) == "A/B"),
-         "#0072B2", "o"),
+         lambda d: _opus_tier(d) == "A/B", "#0072B2", "o"),
         ("C/D (may move)",
-         lambda d: (d["source"] == "opus") & (_opus_tier(d) == "C/D"),
-         "#D55E00", "o"),
+         lambda d: _opus_tier(d) == "C/D", "#D55E00", "o"),
         ("stability not coded",
          lambda d: (d["source"] == "opus") & _opus_tier(d).isna(),
          "#888888", "o"),
@@ -1001,6 +1055,11 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                 continue
             subs = [s for s in subclasses
                     if len(s) < 5 or s[4] is None or prod in s[4]]
+            # skip empty subclasses: the class taxonomies carry many
+            # mutually exclusive subclasses and an n=0 map panel is layout
+            # noise (owner empty-panel note + audit round 3)
+            subs = [s for s in subs
+                    if pd.Series(s[1](sampled)).fillna(False).any()]
             if not subs:
                 continue
             # empirical, tier-snapped color/hist limits from THIS figure's

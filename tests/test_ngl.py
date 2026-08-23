@@ -407,31 +407,112 @@ def test_occupation_class_boundaries():
     assert ngl.occupation_class(5.0, 0.59) == "gnss_semicont"
     assert ngl.occupation_class(5.0, 0.6) == "gnss_cont"
     assert ngl.occupation_class(20.0, 1.0) == "gnss_cont"
-    # fail-loud: missing evidence never defaults a class
+    # fail-loud: missing or corrupt evidence never defaults a class
     with pytest.raises(ValueError, match="finite"):
         ngl.occupation_class(float("nan"), 0.9)
     with pytest.raises(ValueError, match="finite"):
         ngl.occupation_class(5.0, float("nan"))
+    with pytest.raises(ValueError, match="non-negative"):
+        ngl.occupation_class(-2.0, 0.9)  # negative span = corrupt dates
+
+
+def test_occupation_evidence_metrics_and_fail_loud():
+    # the study-exact metrics: density = num_sol / (span_days + 1)
+    span_yr, density = ngl.occupation_evidence("2010-01-01", "2020-12-15", 2401)
+    span_d = (pd.Timestamp("2020-12-15") - pd.Timestamp("2010-01-01")).days
+    assert span_yr == span_d / 365.25
+    assert density == 2401 / (span_d + 1)
+    # single-day record: measured ratio (num_sol / 1), never a pinned 1.0 —
+    # pinning fabricated evidence for zero-solution records (audit round 3)
+    assert ngl.occupation_evidence("2020-01-01", "2020-01-01", 1) == (0.0, 1.0)
+    assert ngl.occupation_evidence("2020-01-01", "2020-01-01", 3) == (0.0, 3.0)
+    assert ngl.occupation_evidence("2020-01-01", "2020-01-01", 0) == (0.0, 0.0)
+    # dtend before dtbeg = corrupt evidence -> raise; the old guard silently
+    # fabricated density=1.0 for negative spans (audit finding)
+    with pytest.raises(ValueError, match="precedes"):
+        ngl.occupation_evidence("2020-01-01", "2010-01-01", 100)
 
 
 def test_parse_occupation_evidence_in_raw():
-    # the class must be re-derivable from the evidence carried in raw,
-    # using the archive-study metrics (density = num_sol / (span_days + 1))
+    # the class must be EXACTLY re-derivable from the evidence carried in
+    # raw — values are stored unrounded (rounding flipped knife-edge
+    # classes at the 0.2/0.6 thresholds, audit finding)
     out = ngl.parse(_raw(epoch=2017.95))
     r = out.iloc[0]
     payload = json.loads(r["raw"])
     assert ngl.occupation_class(payload["span_yr"], payload["density"]) \
         == r["point_type"]
-    span_d = round(payload["span_yr"] * 365.25)
-    assert payload["density"] == pytest.approx(
-        payload["num_sol"] / (span_d + 1), rel=1e-3)
+    span_yr, density = ngl.occupation_evidence(
+        payload["dtbeg"], payload["dtend"], payload["num_sol"])
+    assert payload["span_yr"] == span_yr  # exact, not approx
+    assert payload["density"] == density
 
 
-def test_parse_missing_evidence_fails_loud():
+def test_parse_missing_evidence_drops_station_loudly(caplog):
+    # corrupt/missing evidence drops THAT station with a warning — the
+    # empty-window convention (audit round 4: raising aborted the whole
+    # AOI, which the dispatcher then reduced to a near-silent n_rows=0)
     raw = _raw(epoch=2017.95)
     raw["stations"][0]["meta"].pop("num_sol")
-    with pytest.raises(ValueError, match="occupation class"):
-        ngl.parse(raw)
+    with caplog.at_level("WARNING"):
+        out = ngl.parse(raw)
+    assert len(out) == 0
+    assert "dropping station" in caplog.text
+    raw = _raw(epoch=2017.95)
+    raw["stations"][0]["meta"]["dtend"] = "2000-01-01"  # before dtbeg
+    with caplog.at_level("WARNING"):
+        out = ngl.parse(raw)
+    assert len(out) == 0 and "precedes" in caplog.text
+
+
+def _cors_table():
+    return pd.DataFrame({"id": ["CLV1"], "lat": [36.0], "lon": [-115.0],
+                         "status": ["Operational"]})
+
+
+def test_attach_networks_degrades_on_list_failure(monkeypatch):
+    # membership is supplementary evidence with a designed "not checked"
+    # state: registry-list failure must warn and degrade, never abort the
+    # position fetch (audit finding; the MIDAS-velocity pattern)
+    import groundcontrol.networks as networks
+
+    def _down():
+        raise RuntimeError("registry endpoint down")
+
+    monkeypatch.setattr(networks, "NETWORKS", {"ngs_cors": _down,
+                                               "igs": _down})
+    stations = [{"meta": {"sta": "CLV1", "index_lat": 36.0,
+                          "index_lon": -115.0}}]
+    ngl._attach_networks(stations)  # must not raise
+    assert "networks" not in stations[0]["meta"]  # parse -> null (not checked)
+
+
+def test_attach_networks_partial_degrade(monkeypatch):
+    # one registry down must not discard the other's evidence — and the
+    # partial check is RECORDED, never read as checked-everywhere (rd 4)
+    import groundcontrol.networks as networks
+
+    def _down():
+        raise RuntimeError("registry endpoint down")
+
+    monkeypatch.setattr(networks, "NETWORKS",
+                        {"ngs_cors": _cors_table, "igs": _down})
+    stations = [{"meta": {"sta": "CLV1", "index_lat": 36.0,
+                          "index_lon": -115.0}}]
+    ngl._attach_networks(stations)
+    m = stations[0]["meta"]
+    assert m["networks"] == ["ngs_cors"]
+    assert m["networks_checked"] == ["ngs_cors"]  # igs NOT claimed checked
+
+
+def test_attach_networks_success(monkeypatch):
+    import groundcontrol.networks as networks
+    monkeypatch.setattr(networks, "NETWORKS", {"ngs_cors": _cors_table})
+    stations = [{"meta": {"sta": "CLV1", "index_lat": 36.0,
+                          "index_lon": -115.0}}]
+    ngl._attach_networks(stations)
+    assert stations[0]["meta"]["networks"] == ["ngs_cors"]
+    assert stations[0]["meta"]["networks_checked"] == ["ngs_cors"]
 
 
 def test_parse_carries_network_membership_evidence():

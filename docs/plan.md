@@ -240,7 +240,7 @@ code is source-agnostic:
 | `ref_frame` | realization for GNSS sources: `IGS20` / `IGS14` / plate-fixed (e.g. `NA`) |
 | `frame_epoch` | the realization's reference epoch (decimal year; `2010.00` for NAD83(2011) — published positions are *reduced to* this epoch; NaN for dynamic ITRF/IGS frames). QC role: `coord_epoch ≠ frame_epoch` on a plate-fixed frame flags an unreduced position |
 | `coord_epoch` | **coordinate epoch** (decimal year) — when the coordinate values are valid (NGS datasheet `2010.00`; GNSS solution day); supplies the transform's per-point **time coordinate** (`tt` — pyproj's 4th transform argument, `Transformer.transform(xx, yy, zz, tt)`; PROJ coordinates are 4D) for dynamic-frame sources (plate-fixed→dynamic rows evaluate at `target_epoch` — tt rule, `docs/crs_implementation.md` §1); anchors velocity·Δt propagation |
-| `point_type` | `gnss` / `monument` / `NVA` / `VVA` / `control` |
+| `point_type` | `gnss_cont` / `gnss_semicont` / `gnss_campaign` (per-row occupation class, 2026-08-22) / `monument` / `NVA` / `VVA` / FAA classes / `control`; pre-split products carry legacy `gnss` |
 | `acc_h`, `acc_v` | reported accuracy; for GNSS, per-axis `sig_e/sig_n/sig_u` in `raw` |
 | `vel_e`, `vel_n`, `vel_u` | nullable per-axis velocities (m/yr; MIDAS for GNSS, NaN otherwise) — drive propagation to `target_epoch` |
 | `native_x`, `native_y`, `native_h`, `native_crs` | original source coordinates + frame as typed columns — lossless re-targeting to a new frame without round-tripping through the working frame |

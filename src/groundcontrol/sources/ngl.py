@@ -246,6 +246,41 @@ def _midas_velocity_map(frame: str) -> dict:
     return {str(r["sta"]): {c: float(r[c]) for c in cols} for _, r in m.iterrows()}
 
 
+def _attach_networks(stations) -> None:
+    """Attach corroborated network memberships to each station's meta.
+
+    Membership is supplementary curation evidence with an explicit "not
+    checked" state (raw ``networks=null``), so registry-list failures
+    degrade with a loud warning instead of aborting the position fetch —
+    the ``_midas_velocity_map`` pattern (audit finding: the original
+    inline block let a geodesy.noaa.gov / network.igs.org outage kill the
+    whole per-AOI fetch). ``meta['networks']`` is simply left unset on
+    failure, which parse() records as null.
+    """
+    from groundcontrol import networks  # lazy: avoid import cycles
+    tables = {}
+    # per-registry degrade (audit round 4): one registry being down must
+    # not discard the other's successfully fetched evidence
+    for key in networks.NETWORKS:
+        try:
+            tables[key] = networks.NETWORKS[key]()
+        except Exception as e:  # noqa: BLE001 — degrade, never fabricate
+            logger.warning(
+                "network list %r unavailable (%s: %s); membership for it "
+                "stays unchecked", key, type(e).__name__, e)
+    if not tables:
+        logger.warning("no curated-network lists available; stations will "
+                       "record networks=null (= not checked)")
+        return
+    for s in stations:
+        m = s["meta"]
+        m["networks"] = networks.membership(
+            m["sta"], m["index_lat"], m["index_lon"], tables)
+        # which registries the membership list actually consulted — a
+        # partial check must not read as "checked everywhere"
+        m["networks_checked"] = sorted(tables)
+
+
 def fetch(aoi_bounds_4326, frame: str = "IGS14", epoch=None, time_range=None,
           max_stations: int | None = None, with_velocities: bool = True,
           with_networks: bool = True) -> dict:
@@ -267,7 +302,9 @@ def fetch(aoi_bounds_4326, frame: str = "IGS14", epoch=None, time_range=None,
         (``groundcontrol.networks``: ID join + coordinate check against each
         registry list, one cached GET per network) to ``meta['networks']``
         for :func:`parse` -> ``raw["networks"]``. Default True; set False to
-        skip — the raw evidence then records null (= not checked).
+        skip — the raw evidence then records null (= not checked). List
+        failures degrade to the same null with a loud warning; they never
+        abort the position fetch (see :func:`_attach_networks`).
 
     Returns the raw payload consumed by :func:`parse` (which is pure/offline):
     ``{"frame", "epoch", "time_range", "stations": [{"meta", "tenv3"}, ...]}``
@@ -305,12 +342,7 @@ def fetch(aoi_bounds_4326, frame: str = "IGS14", epoch=None, time_range=None,
         for s in stations:
             s["meta"]["midas"] = vmap.get(s["meta"]["sta"])  # None if absent
     if with_networks:
-        from groundcontrol import networks  # lazy: avoid import cycles
-        tables = networks.load_networks()
-        for s in stations:
-            m = s["meta"]
-            m["networks"] = networks.membership(
-                m["sta"], m["index_lat"], m["index_lon"], tables)
+        _attach_networks(stations)
     return {
         "frame": frame,
         "epoch": None if epoch is None else float(epoch),
@@ -631,13 +663,35 @@ CAMPAIGN_MAX_DENSITY = 0.2
 CONTINUOUS_MIN_DENSITY = 0.6
 
 
+def occupation_evidence(dtbeg, dtend, num_sol):
+    """(span_yr, density) from a station's DataHoldings fields.
+
+    THE archive-study metrics, factored so :func:`parse`, tests, and any
+    re-derivation tool share one implementation: ``span_yr`` = (dtend -
+    dtbeg) in years; ``density`` = solutions per day of inclusive span
+    (``num_sol / (span_days + 1)`` — the +1 also covers a single-day record
+    with denominator 1; the study script pinned single-day density to 1.0
+    for its histogram, but pinning FABRICATES evidence, e.g. "1.0" for a
+    zero-solution placeholder record, so raw carries the measured ratio —
+    audit round 3). Fail-loud: ``dtend`` before ``dtbeg`` is corrupt
+    evidence and raises — the old ``span_d > 0`` guard silently fabricated
+    density for negative spans too (audit round 1).
+    """
+    span_d = (pd.Timestamp(dtend) - pd.Timestamp(dtbeg)).days
+    if span_d < 0:
+        raise ValueError(
+            f"dtend {dtend!r} precedes dtbeg {dtbeg!r} (span {span_d} d) — "
+            "corrupt DataHoldings evidence")
+    return span_d / 365.25, num_sol / (span_d + 1)
+
+
 def occupation_class(span_yr, density):
     """Occupation class demonstrated by a station's own archive record.
 
-    ``span_yr`` = (dtend - dtbeg) in years; ``density`` = solutions per day
-    of inclusive span (``num_sol / (span_days + 1)``; 1.0 for a single-day
-    record) — exactly the archive-study metrics, and both are carried in
-    ``raw`` so the class stays re-derivable without a refetch. Returns
+    ``span_yr``/``density`` come from :func:`occupation_evidence` and are
+    carried UNROUNDED in ``raw`` so the class stays re-derivable without a
+    refetch (rounding flipped the class at the 0.2/0.6 knife edges, audit
+    finding). Returns
     ``"gnss_campaign"`` (span < 1 yr OR density < 0.2: the record
     demonstrates episodic occupation), ``"gnss_semicont"`` (0.2-0.6 buffer
     band), or ``"gnss_cont"`` (density >= 0.6). Fail-loud: non-finite
@@ -651,10 +705,11 @@ def occupation_class(span_yr, density):
     steps.txt, CORS membership, dh consistency — never from this label.
     """
     span_yr, density = float(span_yr), float(density)
-    if not (np.isfinite(span_yr) and np.isfinite(density)):
+    if not (np.isfinite(span_yr) and np.isfinite(density)) or span_yr < 0:
         raise ValueError(
-            f"occupation_class needs finite evidence, got span_yr={span_yr!r} "
-            f"density={density!r} — DataHoldings record incomplete")
+            f"occupation_class needs finite non-negative evidence, got "
+            f"span_yr={span_yr!r} density={density!r} — DataHoldings record "
+            "incomplete or corrupt")
     if span_yr < CAMPAIGN_MAX_SPAN_YR or density < CAMPAIGN_MAX_DENSITY:
         return "gnss_campaign"
     if density < CONTINUOUS_MIN_DENSITY:
@@ -695,16 +750,24 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
         # this same network in groundcontrol.velocity (fill_velocities).
         mv = meta.get("midas") or {}
         # Per-row occupation class from the station's own DataHoldings
-        # record (never from the source archive); fail-loud when the
-        # evidence fields are missing rather than defaulting a class.
+        # record (never from the source archive). Corrupt/missing evidence
+        # drops THAT station with a loud warning — the empty-window
+        # convention above (audit round 4: raising here let one malformed
+        # index row abort the whole AOI, which the dispatcher's per-source
+        # catch then reduced to a near-silent n_rows=0).
         if any(meta.get(k) is None for k in ("dtbeg", "dtend", "num_sol")):
-            raise ValueError(
-                f"NGL station {meta.get('sta')!r}: DataHoldings evidence "
-                "(dtbeg/dtend/num_sol) missing — cannot assign an "
-                "occupation class")
-        span_d = (pd.Timestamp(meta["dtend"]) - pd.Timestamp(meta["dtbeg"])).days
-        span_yr = span_d / 365.25
-        density = meta["num_sol"] / (span_d + 1) if span_d > 0 else 1.0
+            logger.warning(
+                "NGL station %s: DataHoldings evidence (dtbeg/dtend/"
+                "num_sol) missing — cannot assign an occupation class; "
+                "dropping station", meta.get("sta"))
+            continue
+        try:
+            span_yr, density = occupation_evidence(
+                meta["dtbeg"], meta["dtend"], meta["num_sol"])
+        except ValueError as e:
+            logger.warning("NGL station %s: %s; dropping station",
+                           meta.get("sta"), e)
+            continue
         records.append({
             "id": meta["sta"],
             "point_type": occupation_class(span_yr, density),  # TODO(D2)
@@ -733,13 +796,17 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
                 "dtbeg": meta.get("dtbeg"),
                 "dtend": meta.get("dtend"),
                 "num_sol": meta.get("num_sol"),
-                # occupation-class evidence (the archive-study metrics):
-                # point_type is re-derivable from these without a refetch
-                "span_yr": round(span_yr, 3),
-                "density": round(density, 4),
+                # occupation-class evidence (occupation_evidence), stored
+                # UNROUNDED: point_type must re-derive exactly from these
+                # (rounding flipped knife-edge classes, audit finding)
+                "span_yr": span_yr,
+                "density": density,
                 # corroborated curated-network memberships (networks.py):
-                # [] = checked, member of none; null = fetch did not check
+                # [] = checked, member of none; null = fetch did not check;
+                # networks_checked = which registries were consulted (a
+                # partial check must not read as checked-everywhere)
                 "networks": meta.get("networks"),
+                "networks_checked": meta.get("networks_checked"),
                 "n_solutions_used": pos["n_solutions_used"],
                 "window": window_desc,
                 "sig_e_m": pos["sig_e_m"],

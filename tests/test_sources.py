@@ -94,17 +94,33 @@ def test_parse_opus_sample():
 
 def test_opus_stability_tier():
     # per-row taxonomy (2026-08-22): tier decoded from each record's own
-    # stabilityCode; anything outside A-D -> NA, never a guessed tier
-    records = json.loads((DATA / "ngs_opus_sample.json").read_text())
-    out = ngs.parse_opus(records)
+    # stabilityCode. Every branch is exercised on NON-empty selections —
+    # the recorded fixture carries a single "C" record, so mask-based
+    # .all() assertions over it were vacuous (audit finding)
+    import pandas as pd
+    base = json.loads((DATA / "ngs_opus_sample.json").read_text())[0]
+    recs = []
+    for i, code in enumerate(["A", "B", "C", "D", "X", None]):
+        r = dict(base, pid=f"AB{i:04d}")
+        if code is None:
+            r.pop("stabilityCode", None)
+        else:
+            r["stabilityCode"] = code
+        recs.append(r)
+    out = ngs.parse_opus(recs)
     tier = ngs.opus_stability_tier(out)
-    assert set(tier.dropna().unique()) <= {"A/B", "C/D"}
-    # re-derive from raw independently: A/B <-> codes A,B; C/D <-> C,D
-    codes = ngs.expand_attributes(out, fields=["stabilityCode"],
-                                  prefix="x_")["x_stabilityCode"]
-    assert (tier[codes.isin(["A", "B"])] == "A/B").all()
-    assert (tier[codes.isin(["C", "D"])] == "C/D").all()
-    assert tier[~codes.isin(["A", "B", "C", "D"])].isna().all()
+    assert list(tier.iloc[:4]) == ["A/B", "A/B", "C/D", "C/D"]
+    assert tier.iloc[4:].isna().all()  # out-of-range + missing -> NA, no guess
+    # a missing code serializes as JSON null in raw, never the string "nan"
+    assert json.loads(out.iloc[5]["raw"])["stabilityCode"] is None
+    # and pre-null-fix parquets (literal "nan" strings) bucket identically:
+    # expand_attributes normalizes "nan" to NA at the one reader
+    old_style = out.iloc[[0]].copy()
+    old_style["raw"] = pd.Series([json.dumps({"stabilityCode": "nan"})],
+                                 dtype="string", index=old_style.index)
+    assert ngs.opus_stability_tier(old_style).isna().all()
+    assert ngs.expand_attributes(old_style, fields=["stabilityCode"],
+                                 prefix="x_")["x_stabilityCode"].isna().all()
     # rows with no parseable raw (other sources) -> NA
     import pandas as pd
     foreign = out.copy()

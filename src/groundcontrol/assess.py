@@ -26,31 +26,73 @@ logger.addHandler(logging.NullHandler())
 #: NAD83(2011) geographic + NAVD88 orthometric heights.
 CONTROL_LANDING_CRS = "EPSG:6318+5703"
 
-#: label -> (row mask fn, validates DSM, validates DTM) — the segment taxonomy
-#: shared with figures.validation_dz_figures (NVA validates both products, VVA
-#: is vegetated/DTM-only, GNSS and NGS are datum-sanity context for both).
+#: label -> (row mask fn, validates DSM, validates DTM) — THE segment
+#: taxonomy: figures.validation_dz_figures DERIVES its seg_defs from this
+#: dict (audit round 2: the hand-copied twin had already diverged once).
 #: GNSS segments follow the PER-ROW occupation class (owner taxonomy,
 #: 2026-08-22; sources.ngl.occupation_class): each station's own record earns
-#: its class, so routing is by point_type, not source. Class = occupation
-#: pattern, NOT quality — a continuous record can sit on an excellent CORS
-#: monument or a problematic one (see ngl.occupation_class). Campaign keeps
-#: an NGL/OPUS split because the two are not height-comparable (NGL heights are
-#: the antenna reference point, OPUS heights are the ground mark); the
-#: pre-split "gnss" label carried by products written before the split gets
-#: its own row so old parquets stay visible in the stats table instead of
-#: silently dropping out.
+#: its class, so routing is by point_type, qualified by source only where
+#: height bases differ. Class = occupation pattern, NOT quality (see
+#: ngl.occupation_class).
+#: Applicability: only OPUS campaign rows validate products — their heights
+#: are the ground mark. Every NGL-fed segment is CONTEXT-ONLY
+#: (False, False): NGL heights are the antenna reference point and the
+#: assess path applies no ant_m/monument-height correction yet (owner call,
+#: MDV 2026-08: NGL dh = frame check only; audit round 2 caught True flags
+#: biasing class stats by the full antenna height). Pre-split and
+#: other-source GNSS rows are context-only too — height basis unknown or
+#: mixed — but stay visible in the table, never silently dropped.
 SEGMENTS = {
     "3DEP NVA": (lambda d: (d["source"] == "3dep") & (d["point_type"] == "NVA"), True, True),
     "3DEP VVA": (lambda d: (d["source"] == "3dep") & (d["point_type"] == "VVA"), False, True),
-    "GNSS continuous": (lambda d: d["point_type"] == "gnss_cont", True, True),
-    "GNSS semi-continuous": (lambda d: d["point_type"] == "gnss_semicont", True, True),
+    "GNSS continuous": (lambda d: d["point_type"] == "gnss_cont", False, False),
+    "GNSS semi-continuous": (lambda d: d["point_type"] == "gnss_semicont",
+                             False, False),
+    # legacy pre-split OPUS rows ARE campaign ground marks (OPUS is episodic
+    # by definition; same NAVD88 mark heights) — they keep validating here,
+    # exactly as they did before the split (audit round 3: routing them to
+    # the context-only pre-split row silently flipped applies on every
+    # existing parquet — a strictly-additive violation)
     "GNSS campaign (OPUS)": (lambda d: (d["source"] == "opus")
-                             & (d["point_type"] == "gnss_campaign"), True, True),
+                             & d["point_type"].isin(["gnss_campaign", "gnss"]),
+                             True, True),
     "GNSS campaign (NGL)": (lambda d: (d["source"] == "ngl")
-                            & (d["point_type"] == "gnss_campaign"), True, True),
-    "GNSS (pre-split)": (lambda d: d["point_type"] == "gnss", True, True),
+                            & (d["point_type"] == "gnss_campaign"), False, False),
+    # exhaustiveness backstop: a future source emitting gnss_campaign must
+    # surface here (n=0 today), never silently fall out of the table
+    "GNSS campaign (other)": (lambda d: (d["point_type"] == "gnss_campaign")
+                              & ~d["source"].isin(["opus", "ngl"]), False, False),
+    # non-OPUS legacy rows only (OPUS legacy folds into campaign above);
+    # height basis unknown or ARP -> context
+    "GNSS (pre-split)": (lambda d: (d["point_type"] == "gnss")
+                         & (d["source"] != "opus"), False, False),
     "NGS monument": (lambda d: d["source"] == "ngs", True, True),
 }
+
+
+def _unsegmented(d, _segs=tuple(SEGMENTS.values())):
+    """Complement of every mask above — rows no segment claims."""
+    m = np.zeros(len(d), dtype=bool)
+    for fn, _, _ in _segs:
+        m |= pd.Series(fn(d)).fillna(False).to_numpy(dtype=bool)
+    return pd.Series(~m, index=d.index)
+
+
+#: audit round 4: a row matching NO segment (e.g. NA point_type, which the
+#: schema permits) must surface in the table, never silently vanish —
+#: main's source-gated masks caught every row; the class-gated ones don't.
+SEGMENTS["OTHER (unsegmented)"] = (_unsegmented, False, False)
+
+
+def is_dtm_product(name: str) -> bool:
+    """Shared DSM/DTM classifier for the SEGMENTS applies flags.
+
+    Audit round 4: figures keyed on ``prod == "DSM"`` while the stats table
+    used this rule — the same flags read through two different classifiers
+    disagree for names like "dsm" or "DSM_2020". Both consumers now call
+    this one function.
+    """
+    return "DTM" in name.upper()
 
 
 def transform_control(control, target_crs, *, target_epoch=2010.0,
@@ -240,7 +282,7 @@ def summarize_dz(sampled, products=None, segments=SEGMENTS):
     for prod in products:
         col = f"dh_{prod}_before"
         v_all = sampled[col].to_numpy(dtype="float64")
-        is_dtm = "DTM" in prod.upper()
+        is_dtm = is_dtm_product(prod)
         for label, (maskfn, in_dsm, in_dtm) in list(segments.items()) + [
                 ("ALL", (lambda d: pd.Series(True, index=d.index), True, True))]:
             # fillna(False): source columns are pandas nullable strings — one

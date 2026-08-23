@@ -37,11 +37,11 @@ authority), GSI GEONET, EUREF EPN.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import time
 
-import numpy as np
 import pandas as pd
 import requests
 
@@ -69,21 +69,42 @@ def parse_ngs_cors(text: str) -> pd.DataFrame:
     """Parse the NGS ITRF2014 composite -> DataFrame[id, lat, lon, status].
 
     Fixed 17-token data rows (SITE EPOCH lat-DMS+hemi lon-DMS+hemi eht
-    Vn Ve Vu country state status); header/underscore lines are skipped by
-    shape, and any non-conforming non-header line fails loud (the
-    DataHoldings lesson: silent tolerance hides layout drift).
+    Vn Ve Vu country state status). Preamble lines (date, title, headers,
+    underscore rules) are skipped only until the first row that LOOKS like
+    a data row (4-char site + float epoch); from there every data-shaped or
+    subsequent line must conform or the parse fails loud (the DataHoldings
+    lesson: silent tolerance hides layout drift — an earlier lineno-based
+    carve-out silently swallowed a malformed FIRST data row, audit finding).
     """
-    rows = []
+
+    def _data_shaped(t):
+        if len(t) < 2 or len(t[0]) != 4:
+            return False
+        try:
+            float(t[1])
+        except ValueError:
+            return False
+        return True
+
+    rows, seen_data = [], False
     for lineno, line in enumerate(text.splitlines(), start=1):
         t = line.split()
+        if not t:
+            continue
         if len(t) != 17 or len(t[0]) != 4:
-            if t and t[0] == "SITE":  # column-header row
-                continue
-            if not t or lineno <= 8 or set(line.strip()) <= {"_"}:
-                continue  # preamble/blank/rule lines
+            if not seen_data and not _data_shaped(t):
+                continue  # preamble (title/header/rule lines)
             raise ValueError(
                 f"NGS CORS composite line {lineno}: expected 17-token data "
                 f"row, got {len(t)}: {line!r}")
+        seen_data = True
+        # hemisphere tokens are validated, not guessed: a 17-token layout
+        # drift that moves these letters would otherwise silently sign-flip
+        # every coordinate (audit round 2)
+        if t[5] not in ("N", "S") or t[9] not in ("E", "W"):
+            raise ValueError(
+                f"NGS CORS composite line {lineno}: hemisphere tokens "
+                f"{t[5]!r}/{t[9]!r} not N/S / E/W: {line!r}")
         lat = (float(t[2]) + float(t[3]) / 60 + float(t[4]) / 3600)
         lon = (float(t[6]) + float(t[7]) / 60 + float(t[8]) / 3600)
         rows.append({
@@ -130,9 +151,12 @@ def cors_members(df: pd.DataFrame) -> pd.DataFrame:
     return df[df["status"] != "IGS_not_CORS"].reset_index(drop=True)
 
 
+@functools.lru_cache(maxsize=1)
 def load_ngs_cors() -> pd.DataFrame:
     """Cached NGS CORS member list (~/.cache/groundcontrol, DataHoldings
-    pattern).
+    pattern; additionally memoized per process — multi-site drivers call
+    fetch repeatedly and the roster changes at most daily. Treat the
+    returned frame as read-only.
 
     Known limitation (verified live 2026-08-22): the composite carries
     ~2,400 stations vs ~2,950 in dates_sites.txt — the remainder (mostly
@@ -142,32 +166,59 @@ def load_ngs_cors() -> pd.DataFrame:
     local = cache_dir() / "ngs_cors_itrf2014_geo_comp.txt"
     if _stale(local):
         logger.info("downloading %s -> %s", NGS_CORS_URL, local)
-        r = requests.get(NGS_CORS_URL, timeout=120)
+        # short timeout: supplementary evidence on a possibly egress-blocked
+        # host must not stall a fetch for minutes (audit round 2); failures
+        # degrade via ngl._attach_networks
+        r = requests.get(NGS_CORS_URL, timeout=30)
         r.raise_for_status()
-        local.write_text(r.text)
+        # validate BEFORE caching: a 200-OK error/maintenance page written
+        # first would poison the cache for LIST_MAX_AGE_DAYS (audit finding)
+        df = cors_members(parse_ngs_cors(r.text))
+        # atomic write: a crash mid-write must not leave a fresh-mtime
+        # partial file poisoning the cache either (audit round 3)
+        tmp = local.with_suffix(local.suffix + ".part")
+        tmp.write_text(r.text)
+        tmp.replace(local)
+        return df
     return cors_members(parse_ngs_cors(local.read_text()))
 
 
+@functools.lru_cache(maxsize=1)
 def load_igs() -> pd.DataFrame:
-    """Cached IGS station list, following the API's "next" cursor to the end."""
+    """Cached IGS station list, following the API's "next" cursor to the
+    end. Memoized per process like load_ngs_cors; treat as read-only."""
     local = cache_dir() / "igs_stations.json"
     if _stale(local):
-        records, url = [], IGS_URL
+        records, url, pages = [], IGS_URL, 0
         while url:
+            pages += 1
+            if pages > 50:  # cursor-loop backstop (audit round 2): a
+                raise ValueError(  # self-referencing "next" must not spin
+                    "IGS pagination exceeded 50 pages — cursor loop?")
             logger.info("downloading %s", url)
-            r = requests.get(url, timeout=120)
+            r = requests.get(url, timeout=30)
             r.raise_for_status()
             page = r.json()
             records.extend(page["data"])
             url = page.get("next")
         # recordsFiltered = the current public roster this endpoint serves
         # (recordsTotal counts historical stations it never returns —
-        # verified live 2026-08-22: 533 filtered of 814 total)
+        # verified live 2026-08-22: 533 filtered of 814 total). REQUIRED:
+        # without it a truncated list would cache as complete and stations
+        # would record a false "checked, member of none" (audit round 2).
         expect = page.get("recordsFiltered")
-        if expect is not None and len(records) != expect:
+        if expect is None:
+            raise ValueError("IGS response lost the recordsFiltered count — "
+                             "cannot verify pagination completeness")
+        if len(records) != expect:
             raise ValueError(
                 f"IGS pagination incomplete: {len(records)} of {expect}")
-        local.write_text(json.dumps(records))
+        # validate BEFORE caching + atomic write (see load_ngs_cors)
+        df = parse_igs(records)
+        tmp = local.with_suffix(local.suffix + ".part")
+        tmp.write_text(json.dumps(records))
+        tmp.replace(local)
+        return df
     return parse_igs(json.loads(local.read_text()))
 
 
@@ -180,12 +231,12 @@ NETWORKS = {
 
 
 def _dist_m(lat1, lon1, lat2, lon2):
-    """Haversine distance (m); fine at corroboration scales."""
-    p = np.pi / 180.0
-    a = (np.sin((lat2 - lat1) * p / 2) ** 2
-         + np.cos(lat1 * p) * np.cos(lat2 * p)
-         * np.sin((lon2 - lon1) * p / 2) ** 2)
-    return 2 * 6371000.0 * np.arcsin(np.sqrt(a))
+    """Haversine distance (m) — one shared implementation: reuses
+    velocity._haversine_km (which carries the arcsin-domain clip this
+    module's first copy lacked, audit finding). NOTE the helper takes
+    lon-first."""
+    from groundcontrol.velocity import _haversine_km
+    return _haversine_km(lon1, lat1, lon2, lat2) * 1000.0
 
 
 def membership(sta_id: str, lat: float, lon: float,
@@ -228,12 +279,29 @@ def network_member(gdf, key: str) -> pd.Series:
     if key not in NETWORKS:
         raise ValueError(f"unknown network key {key!r}; "
                          f"registry: {sorted(NETWORKS)}")
+    if "raw" not in gdf.columns:  # column-subset frames carry no evidence:
+        return pd.Series(pd.NA, index=gdf.index,  # all-NA, matching the
+                         dtype="boolean")         # expand_attributes guard
 
     def _one(raw):
         try:
-            nets = json.loads(raw).get("networks")
+            rec = json.loads(raw)
         except (TypeError, ValueError):
             return pd.NA
-        return pd.NA if nets is None else key in nets
+        if not isinstance(rec, dict):  # valid-but-non-object JSON (null,
+            return pd.NA               # list, number): no evidence, never
+        nets = rec.get("networks")     # an AttributeError (audit finding)
+        if nets is None:
+            return pd.NA
+        if not isinstance(nets, list):  # corrupt evidence (e.g. a string —
+            return pd.NA                # `in` would substring-match a false
+                                        # membership; audit round 2)
+        checked = rec.get("networks_checked")
+        if isinstance(checked, list) and key not in checked:
+            return pd.NA  # partial check: this registry wasn't consulted
+                          # for the row (audit round 4); rows without the
+                          # key (pre-partial-degrade products) keep the old
+                          # fully-checked semantics
+        return key in nets
 
     return gdf["raw"].map(_one).astype("boolean")

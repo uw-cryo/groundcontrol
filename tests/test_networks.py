@@ -48,6 +48,17 @@ def test_parse_ngs_cors_fails_loud_on_layout_drift():
         networks.parse_ngs_cors(good + "\nABCD 2010.00 not a data row\n")
     with pytest.raises(ValueError, match="no data rows"):
         networks.parse_ngs_cors("June 08, 2025\n\nheader only\n")
+    # a malformed FIRST data row must fail loud too — the old lineno<=8
+    # carve-out silently swallowed it (audit finding). Data-shaped =
+    # 4-char site + float epoch, even when truncated.
+    preamble = "\n".join(good.splitlines()[:7])
+    with pytest.raises(ValueError, match="17-token"):
+        networks.parse_ngs_cors(preamble + "\nABCD  2010.00  30 24\n")
+    # hemisphere tokens are validated, never guessed: a 17-token drift that
+    # moves them would silently sign-flip coordinates (audit round 2)
+    bad_hemi = good.splitlines()[7].replace(" N ", " X ", 1)
+    with pytest.raises(ValueError, match="hemisphere"):
+        networks.parse_ngs_cors(preamble + "\n" + bad_hemi + "\n")
 
 
 def test_parse_igs_sample():
@@ -106,8 +117,12 @@ def test_network_member_mask_three_states():
             json.dumps({"networks": None}),      # fetch did not check
             json.dumps({"other": 1}),            # key absent = not checked
             "not json",                          # other source / no evidence
-        ], dtype="string")},
-        geometry=gpd.points_from_xy(range(5), [0.0] * 5), crs="EPSG:4326")
+            "null",                              # valid JSON, not a dict —
+            "[1, 2]",                            # must be NA, never an
+            "5",                                 # AttributeError (audit)
+            json.dumps({"networks": "ngs_cors"}),  # non-list value: NA, never
+        ], dtype="string")},                       # a substring-match True
+        geometry=gpd.points_from_xy(range(9), [0.0] * 9), crs="EPSG:4326")
     m = networks.network_member(g, "ngs_cors")
     assert m.dtype == "boolean"
     assert m.iloc[0] == True  # noqa: E712  (pandas BooleanDtype comparison)
@@ -115,6 +130,29 @@ def test_network_member_mask_three_states():
     assert m.iloc[2:].isna().all()  # "not checked" stays NA, never False
     with pytest.raises(ValueError, match="unknown network"):
         networks.network_member(g, "cors")  # bare "cors" is not a key
+    # a column-subset frame without raw carries no evidence: all-NA,
+    # matching the expand_attributes guard (audit round 3)
+    noraw = g.drop(columns=["raw"])
+    assert networks.network_member(noraw, "ngs_cors").isna().all()
+
+
+def test_network_member_honors_partial_check():
+    # a partial-degrade fetch records WHICH registries it consulted; a
+    # membership question about an unconsulted registry is NA, never a
+    # confident False (audit round 4)
+    g = gpd.GeoDataFrame(
+        {"raw": pd.Series([
+            json.dumps({"networks": [], "networks_checked": ["ngs_cors"]}),
+            json.dumps({"networks": ["ngs_cors"],
+                        "networks_checked": ["ngs_cors"]}),
+            json.dumps({"networks": []}),  # pre-partial-degrade product:
+        ], dtype="string")},              # fully-checked semantics kept
+        geometry=gpd.points_from_xy(range(3), [0.0] * 3), crs="EPSG:4326")
+    cors = networks.network_member(g, "ngs_cors")
+    igs = networks.network_member(g, "igs")
+    assert cors.iloc[0] == False and cors.iloc[1] == True  # noqa: E712
+    assert igs.iloc[0] is pd.NA or pd.isna(igs.iloc[0])  # unconsulted -> NA
+    assert igs.iloc[2] == False  # noqa: E712  legacy raw: checked-none
 
 
 # ---------------------------------------------------------------------------

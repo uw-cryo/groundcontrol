@@ -434,6 +434,18 @@ def test_parse_missing_evidence_fails_loud():
         ngl.parse(raw)
 
 
+def test_parse_carries_network_membership_evidence():
+    # meta["networks"] (fetch-side corroborated join) -> raw["networks"];
+    # a payload fetched without the check records null = "not checked",
+    # never a fabricated empty membership
+    raw = _raw(epoch=2017.95)
+    payload = json.loads(ngl.parse(raw).iloc[0]["raw"])
+    assert payload["networks"] is None  # fixture meta has no networks key
+    raw["stations"][0]["meta"]["networks"] = ["ngs_cors", "igs"]
+    payload = json.loads(ngl.parse(raw).iloc[0]["raw"])
+    assert payload["networks"] == ["ngs_cors", "igs"]
+
+
 # ---------------------------------------------------------------------------
 # parse() -> schema shape
 # ---------------------------------------------------------------------------

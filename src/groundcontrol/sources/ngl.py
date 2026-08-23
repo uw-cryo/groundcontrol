@@ -247,7 +247,8 @@ def _midas_velocity_map(frame: str) -> dict:
 
 
 def fetch(aoi_bounds_4326, frame: str = "IGS14", epoch=None, time_range=None,
-          max_stations: int | None = None, with_velocities: bool = True) -> dict:
+          max_stations: int | None = None, with_velocities: bool = True,
+          with_networks: bool = True) -> dict:
     """Fetch raw per-station NGL data for an AOI.
 
     Parameters
@@ -262,10 +263,16 @@ def fetch(aoi_bounds_4326, frame: str = "IGS14", epoch=None, time_range=None,
     with_velocities : attach each station's own MIDAS ENU velocity (one extra
         cached GET) to ``meta['midas']`` for :func:`parse` -> ``vel_e/n/u``.
         Default True; set False to skip the MIDAS fetch entirely.
+    with_networks : attach corroborated curated-network memberships
+        (``groundcontrol.networks``: ID join + coordinate check against each
+        registry list, one cached GET per network) to ``meta['networks']``
+        for :func:`parse` -> ``raw["networks"]``. Default True; set False to
+        skip — the raw evidence then records null (= not checked).
 
     Returns the raw payload consumed by :func:`parse` (which is pure/offline):
     ``{"frame", "epoch", "time_range", "stations": [{"meta", "tenv3"}, ...]}``
-    where each ``meta`` carries an optional ``midas`` velocity sub-dict.
+    where each ``meta`` carries an optional ``midas`` velocity sub-dict and
+    an optional ``networks`` membership list.
     """
     if frame not in FRAME_TO_EPSG:
         raise ValueError(f"unknown NGL frame {frame!r}; supported: {sorted(FRAME_TO_EPSG)}")
@@ -297,6 +304,13 @@ def fetch(aoi_bounds_4326, frame: str = "IGS14", epoch=None, time_range=None,
         vmap = _midas_velocity_map(frame)
         for s in stations:
             s["meta"]["midas"] = vmap.get(s["meta"]["sta"])  # None if absent
+    if with_networks:
+        from groundcontrol import networks  # lazy: avoid import cycles
+        tables = networks.load_networks()
+        for s in stations:
+            m = s["meta"]
+            m["networks"] = networks.membership(
+                m["sta"], m["index_lat"], m["index_lon"], tables)
     return {
         "frame": frame,
         "epoch": None if epoch is None else float(epoch),
@@ -723,6 +737,9 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
                 # point_type is re-derivable from these without a refetch
                 "span_yr": round(span_yr, 3),
                 "density": round(density, 4),
+                # corroborated curated-network memberships (networks.py):
+                # [] = checked, member of none; null = fetch did not check
+                "networks": meta.get("networks"),
                 "n_solutions_used": pos["n_solutions_used"],
                 "window": window_desc,
                 "sig_e_m": pos["sig_e_m"],

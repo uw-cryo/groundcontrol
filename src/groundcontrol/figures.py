@@ -875,16 +875,25 @@ DZ_FAMILIES = {
     # OPUS campaign marks by NGS monument-stability tier (owner taxonomy,
     # 2026-08-22; sources.ngs.opus_stability_tier — decoded from each
     # record's stabilityCode, archive-wide split ~49% A/B vs 50% C/D).
-    # Unknown gets its own panel: rows without a decodable code must stay
-    # visible, never silently fall out. Okabe-Ito blue/vermillion = a
-    # quality contrast, deliberately not the occupation-class blue ramp.
-    "opus_stability": ("OPUS CAMPAIGN MARKS (by NGS stability tier)", [
-        ("Stability A/B", lambda d: (d["source"] == "opus")
-         & (_opus_tier(d) == "A/B"), "#0072B2", "o"),
-        ("Stability C/D", lambda d: (d["source"] == "opus")
-         & (_opus_tier(d) == "C/D"), "#D55E00", "o"),
-        ("Stability unknown", lambda d: (d["source"] == "opus")
-         & _opus_tier(d).isna(), "#888888", "o"),
+    # The NGS code book is glossed in-figure (owner note 2026-08-22: bare
+    # "A/B"/"C/D" is opaque to readers): monument detail in the full-width
+    # figure title, panel labels kept short — long labels collide across
+    # adjacent panel titles (caught on the LV render). Unknown gets its
+    # own panel: rows without a decodable code must stay visible, never
+    # silently fall out. Okabe-Ito blue/vermillion = a quality contrast,
+    # deliberately not the occupation-class blue ramp.
+    "opus_stability": ("OPUS CAMPAIGN MARKS (NGS stability code: "
+                       "A/B = bedrock/deep-set, expected to hold; "
+                       "C/D = surface/shallow, may move)", [
+        ("A/B (expected to hold)",
+         lambda d: (d["source"] == "opus") & (_opus_tier(d) == "A/B"),
+         "#0072B2", "o"),
+        ("C/D (may move)",
+         lambda d: (d["source"] == "opus") & (_opus_tier(d) == "C/D"),
+         "#D55E00", "o"),
+        ("stability not coded",
+         lambda d: (d["source"] == "opus") & _opus_tier(d).isna(),
+         "#888888", "o"),
     ]),
     "ngs_best": ("NGS MONUMENTS (best)", [
         ("NGS best", None, "monument", "o"),   # mask injected from ngs_best

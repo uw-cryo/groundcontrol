@@ -1055,11 +1055,19 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                 continue
             subs = [s for s in subclasses
                     if len(s) < 5 or s[4] is None or prod in s[4]]
+            # evaluate each subclass mask ONCE and reuse it for the empty
+            # filter, the limit pool, and the map/hist render below —
+            # re-running maskfns re-parses raw JSON per call (_opus_tier;
+            # Copilot PR #28). Nullable dtypes (string == comparisons)
+            # yield Kleene-NA: NA -> False before the bool cast.
+            sub_masks = [pd.Series(s[1](sampled)).fillna(False)
+                         .to_numpy(dtype=bool) for s in subs]
             # skip empty subclasses: the class taxonomies carry many
             # mutually exclusive subclasses and an n=0 map panel is layout
             # noise (owner empty-panel note + audit round 3)
-            subs = [s for s in subs
-                    if pd.Series(s[1](sampled)).fillna(False).any()]
+            keep = [i for i, m in enumerate(sub_masks) if m.any()]
+            subs = [subs[i] for i in keep]
+            sub_masks = [sub_masks[i] for i in keep]
             if not subs:
                 continue
             # empirical, tier-snapped color/hist limits from THIS figure's
@@ -1069,9 +1077,8 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                 map_lim, hist_lim = lims[fam]
             else:
                 fig_v = np.concatenate([
-                    sampled.loc[pd.Series(s[1](sampled)).fillna(False)
-                                .to_numpy(dtype=bool), col]
-                    .to_numpy(dtype="float64") for s in subs]) if subs else []
+                    sampled.loc[m, col].to_numpy(dtype="float64")
+                    for m in sub_masks]) if subs else []
                 map_lim = snap_clim(fig_v, k=3.0)
                 hist_lim = max(snap_clim(fig_v, k=6.0), map_lim)
             n_sub = len(subs)
@@ -1089,14 +1096,12 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
             axh = axes[-1]
             hs_prod = hs_tif.get(prod) if isinstance(hs_tif, dict) else hs_tif
             sc, stats_lines, n_gap = None, [], 0
-            for axm, sub in zip(axes[:-1], subs):
-                lab, maskfn, style, mk = sub[:4]
+            for axm, sub, m in zip(axes[:-1], subs, sub_masks):
+                lab, _, style, mk = sub[:4]
                 _relief(axm, None, hs_prod, None, 0.0, None)
                 if overlays is not None:
                     overlays.boundary.plot(ax=axm, color=_INK, lw=0.9, ls="--",
                                            alpha=0.55, zorder=4)
-                # nullable dtypes (string == comparisons) yield NA: NA -> False
-                m = pd.Series(maskfn(sampled)).fillna(False).to_numpy(dtype=bool)
                 seg = sampled[m]
                 v = seg[col].to_numpy(dtype="float64")
                 fin = np.isfinite(v)

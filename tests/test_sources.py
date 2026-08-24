@@ -122,7 +122,6 @@ def test_opus_stability_tier():
     assert ngs.expand_attributes(old_style, fields=["stabilityCode"],
                                  prefix="x_")["x_stabilityCode"].isna().all()
     # rows with no parseable raw (other sources) -> NA
-    import pandas as pd
     foreign = out.copy()
     foreign["raw"] = pd.Series(["not json"] * len(out), dtype="string",
                                index=out.index)

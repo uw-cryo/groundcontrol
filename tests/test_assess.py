@@ -30,7 +30,7 @@ def _control_6319(n=4, h=400.0):
     lat = np.linspace(32.6, 32.9, n)
     return gpd.GeoDataFrame(
         {"source": ["3dep", "3dep", "opus", "ngs"][:n],
-         "point_type": ["NVA", "VVA", "gnss", "monument"][:n],
+         "point_type": ["NVA", "VVA", "gnss_campaign", "monument"][:n],
          "id": [f"P{i}" for i in range(n)],
          "height": np.full(n, h)},
         geometry=gpd.points_from_xy(lon, lat), crs="EPSG:6319")
@@ -96,7 +96,7 @@ def _landed(offsets, outside=0):
     plane = 2.0 * xs + 3.0 * ys
     return gpd.GeoDataFrame(
         {"source": (["3dep", "3dep", "opus", "ngs"] * m)[:m],
-         "point_type": (["NVA", "VVA", "gnss", "monument"] * m)[:m],
+         "point_type": (["NVA", "VVA", "gnss_campaign", "monument"] * m)[:m],
          "h_ell": plane - np.append(np.asarray(offsets, dtype="float64"),
                                     np.zeros(outside))},
         geometry=gpd.points_from_xy(xs, ys), crs=CRS)
@@ -137,7 +137,99 @@ def test_summarize_dz_segments_nodata_and_applies(tmp_path):
     assert not vva_dsm["applies"] and vva_dtm["applies"]
     nva = stats[(stats["product"] == "DSM") & (stats.segment == "3DEP NVA")].iloc[0]
     assert nva["median_m"] == pytest.approx(0.10, abs=1e-9)
-    assert set(SEGMENTS) == {"3DEP NVA", "3DEP VVA", "GNSS/OPUS", "NGS monument"}
+    assert set(SEGMENTS) == {
+        "3DEP NVA", "3DEP VVA", "GNSS continuous", "GNSS semi-continuous",
+        "GNSS campaign (OPUS)", "GNSS campaign (NGL)",
+        "GNSS campaign (other)", "GNSS (pre-split)", "NGS monument",
+        "OTHER (unsegmented)"}
+
+
+def test_gnss_taxonomy_exhaustive_and_styled():
+    # every GNSS-class row from ANY source lands in exactly one GNSS
+    # segment (incl. the "GNSS campaign (other)" backstop for future
+    # sources — audit finding: third-source campaign rows silently fell
+    # out), and every class is styled + visible in the gnss DZ family
+    # (audit finding: the family was the one consumer that dropped the
+    # legacy pre-split label)
+    import pandas as pd
+    from groundcontrol.figures import DZ_FAMILIES, POINT_STYLE
+    classes = ["gnss_cont", "gnss_semicont", "gnss_campaign", "gnss"]
+    rows = [(pt, src) for pt in classes for src in ("ngl", "opus", "newsrc")]
+    g = gpd.GeoDataFrame(
+        {"source": pd.Series([s for _, s in rows], dtype="string"),
+         "point_type": pd.Series([p for p, _ in rows], dtype="string"),
+         "dh_DSM_before": [0.0] * len(rows)},
+        geometry=gpd.points_from_xy(range(len(rows)), [0.0] * len(rows)),
+        crs="EPSG:32611")
+    gnss_segs = [fn for lbl, (fn, _, _) in SEGMENTS.items()
+                 if lbl.startswith("GNSS")]
+    counts = sum(pd.Series(fn(g)).fillna(False).to_numpy(dtype=bool).astype(int)
+                 for fn in gnss_segs)
+    assert (counts == 1).all()
+    fam_masks = [sub[1] for sub in DZ_FAMILIES["gnss"][1]]
+    for pt in classes:
+        assert pt in POINT_STYLE
+        sel = (g["point_type"] == pt).fillna(False)
+        assert any(pd.Series(m(g)).fillna(False)[sel].any()
+                   for m in fam_masks), f"{pt} invisible in gnss DZ family"
+
+
+def test_summarize_dz_gnss_routes_by_point_type():
+    # per-row taxonomy (2026-08-22): routing is by each row's OWN class
+    # (ngl.occupation_class), not its source. The legacy pre-split "gnss"
+    # label gets its own segment so old parquets stay visible in the stats
+    # table instead of silently dropping out; campaign keeps the NGL/OPUS
+    # split (ARP vs ground-mark heights are not comparable).
+    g = gpd.GeoDataFrame(
+        {"source": ["ngl", "ngl", "ngl", "opus", "ngl", "opus"],
+         "point_type": ["gnss_cont", "gnss_semicont", "gnss_campaign",
+                        "gnss_campaign", "gnss", "gnss"],
+         "dh_DSM_before": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]},
+        geometry=gpd.points_from_xy([0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+                                    [0.0] * 6),
+        crs="EPSG:32611")
+    stats = summarize_dz(g)
+    seg_n = dict(zip(stats.segment, stats.n))
+    assert seg_n["GNSS continuous"] == 1
+    assert seg_n["GNSS semi-continuous"] == 1
+    assert seg_n["GNSS campaign (NGL)"] == 1
+    # legacy pre-split OPUS rows fold into the validating campaign segment
+    # (they are the same ground marks — audit round 3: routing them to the
+    # context row flipped applies on every existing parquet)
+    assert seg_n["GNSS campaign (OPUS)"] == 2
+    assert seg_n["GNSS (pre-split)"] == 1  # the non-OPUS legacy row only
+    assert seg_n["OTHER (unsegmented)"] == 0
+    # only OPUS campaign validates (ground-mark heights); NGL-fed classes
+    # are context-only until an ant_m correction lands (audit round 2:
+    # ARP heights must not claim applies=True)
+    assert stats[stats.segment == "GNSS campaign (OPUS)"].iloc[0]["applies"]
+    for seg in ("GNSS continuous", "GNSS semi-continuous",
+                "GNSS campaign (NGL)", "GNSS (pre-split)"):
+        assert not stats[stats.segment == seg].iloc[0]["applies"]
+
+
+def test_summarize_dz_unsegmented_row_surfaces():
+    # audit round 4: an NA point_type is schema-legal, and such a row must
+    # surface in the residual segment, never silently vanish from the table
+    import pandas as pd
+    g = gpd.GeoDataFrame(
+        {"source": pd.Series(["opus", "opus"], dtype="string"),
+         "point_type": pd.Series([pd.NA, "gnss_campaign"], dtype="string"),
+         "dh_DSM_before": [0.1, 0.2]},
+        geometry=gpd.points_from_xy([0.0, 1.0], [0.0, 0.0]), crs="EPSG:32611")
+    stats = summarize_dz(g)
+    seg_n = dict(zip(stats.segment, stats.n))
+    assert seg_n["OTHER (unsegmented)"] == 1
+    assert seg_n["GNSS campaign (OPUS)"] == 1
+    total_named = sum(v for k, v in seg_n.items() if k != "ALL")
+    assert total_named == seg_n["ALL"] == 2  # nothing lost, nothing doubled
+
+
+def test_seg_style_covers_segments():
+    # the figure style map must stay in lockstep with the taxonomy — a
+    # label add/rename fails HERE, not mid-run at figure time (audit rd 4)
+    from groundcontrol.figures import _SEG_STYLE
+    assert set(_SEG_STYLE) == set(SEGMENTS)
 
 
 def test_assess_products_end_to_end_writes_artifacts(tmp_path):
@@ -205,7 +297,8 @@ def test_family_dz_figures_smoke(tmp_path):
     from groundcontrol.figures import default_ngs_best, family_dz_figures
     n = 12
     src = (["3dep"] * 4 + ["opus"] * 2 + ["ngs"] * 6)
-    ptype = (["NVA", "NVA", "VVA", "VVA"] + ["gnss"] * 2 + ["monument"] * 6)
+    ptype = (["NVA", "NVA", "VVA", "VVA"] + ["gnss_campaign"] * 2
+             + ["monument"] * 6)
     raw = [None] * 6 + [json.dumps({"posSource": "ADJUSTED", "vertSource": "GPS OBS"})] * 3 \
         + [json.dumps({"posSource": "SCALED", "vertSource": "VERTCON3"})] * 3
     g = gpd.GeoDataFrame(
@@ -234,7 +327,7 @@ def test_validation_dz_figures_accepts_path_aoi(tmp_path):
     n = 10
     g = gpd.GeoDataFrame(
         {"source": ["3dep"] * 4 + ["opus"] * 2 + ["ngs"] * 4,
-         "point_type": ["NVA", "NVA", "VVA", "VVA"] + ["gnss"] * 2
+         "point_type": ["NVA", "NVA", "VVA", "VVA"] + ["gnss_campaign"] * 2
                        + ["monument"] * 4,
          "dh_DSM_before": np.linspace(-0.1, 0.1, n),
          "dh_DTM_before": np.linspace(-0.1, 0.1, n)},

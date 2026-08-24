@@ -86,10 +86,46 @@ def test_parse_opus_sample():
     records = json.loads((DATA / "ngs_opus_sample.json").read_text())
     out = schema.normalize(ngs.parse_opus(records), source="opus")
     schema.validate(out, require_crs=False)  # un-landed
-    assert (out["point_type"] == "gnss").all()
+    assert (out["point_type"] == "gnss_campaign").all()
     assert (out["horizontal_crs"] == "EPSG:6318").all()  # OPUS is NAD_83(2011)
     assert (out["coord_epoch"] == 2010.0).all()  # refFrame NAD_83(2011), epoch 2010.0000
     assert out["measurement_datetime"].notna().all()  # obsTimeStart
+
+
+def test_opus_stability_tier():
+    # per-row taxonomy (2026-08-22): tier decoded from each record's own
+    # stabilityCode. Every branch is exercised on NON-empty selections —
+    # the recorded fixture carries a single "C" record, so mask-based
+    # .all() assertions over it were vacuous (audit finding)
+    import pandas as pd
+    base = json.loads((DATA / "ngs_opus_sample.json").read_text())[0]
+    recs = []
+    for i, code in enumerate(["A", "B", "C", "D", "X", None]):
+        r = dict(base, pid=f"AB{i:04d}")
+        if code is None:
+            r.pop("stabilityCode", None)
+        else:
+            r["stabilityCode"] = code
+        recs.append(r)
+    out = ngs.parse_opus(recs)
+    tier = ngs.opus_stability_tier(out)
+    assert list(tier.iloc[:4]) == ["A/B", "A/B", "C/D", "C/D"]
+    assert tier.iloc[4:].isna().all()  # out-of-range + missing -> NA, no guess
+    # a missing code serializes as JSON null in raw, never the string "nan"
+    assert json.loads(out.iloc[5]["raw"])["stabilityCode"] is None
+    # and pre-null-fix parquets (literal "nan" strings) bucket identically:
+    # expand_attributes normalizes "nan" to NA at the one reader
+    old_style = out.iloc[[0]].copy()
+    old_style["raw"] = pd.Series([json.dumps({"stabilityCode": "nan"})],
+                                 dtype="string", index=old_style.index)
+    assert ngs.opus_stability_tier(old_style).isna().all()
+    assert ngs.expand_attributes(old_style, fields=["stabilityCode"],
+                                 prefix="x_")["x_stabilityCode"].isna().all()
+    # rows with no parseable raw (other sources) -> NA
+    foreign = out.copy()
+    foreign["raw"] = pd.Series(["not json"] * len(out), dtype="string",
+                               index=out.index)
+    assert ngs.opus_stability_tier(foreign).isna().all()
 
 
 # ---------------------------------------------------------------------------

@@ -82,3 +82,24 @@ class TestAddScalebar:
         assert bar.fixed_units == "km"  # never "2000.0 m"
         assert bar.fixed_value in (1, 2, 2.5, 5)
         plt.close(fig)
+
+
+class TestPointStyleTaxonomy:
+    def test_gnss_split_and_legacy_keys(self):
+        # per-row taxonomy (2026-08-22): all three occupation classes styled,
+        # and the pre-split "gnss" label carried by existing on-disk products
+        # must keep rendering — control_map silently skips unstyled
+        # point_types, so dropping the legacy key would silently blank them
+        from groundcontrol.figures import LEGEND_ORDER, POINT_STYLE
+        classes = ("gnss_cont", "gnss_semicont", "gnss_campaign", "gnss")
+        assert set(classes) <= set(POINT_STYLE)
+        for key in classes:
+            assert key in LEGEND_ORDER
+        # one star family split by color (dark-to-light blue ramp + gray)
+        assert {POINT_STYLE[k][0] for k in classes} == {"*"}
+        assert len({POINT_STYLE[k][1] for k in classes}) == len(classes)
+
+    def test_legend_order_covers_point_style(self):
+        # every styled point_type must be reachable in the legend
+        from groundcontrol.figures import LEGEND_ORDER, POINT_STYLE
+        assert set(POINT_STYLE) == set(LEGEND_ORDER)

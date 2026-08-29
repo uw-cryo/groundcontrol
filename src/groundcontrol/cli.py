@@ -35,6 +35,12 @@ def fetch_control_main(argv=None) -> int:
                         "EPSG:6318 + NAVD88; passing this raises)")
     p.add_argument("--target-epoch", type=float, default=None,
                    help="target coordinate epoch, decimal year (NOT YET IMPLEMENTED)")
+    p.add_argument("--context-sheets", action="store_true",
+                   help="also write per-point context contact sheets next to --out "
+                        "(RGB web-basemap windows per fetched GNSS/FAA/3DEP point; "
+                        "no DEM needed)")
+    p.add_argument("--basemap", default="esri", choices=("esri", "google", "none"),
+                   help="web-imagery provider for --context-sheets (default: esri)")
     args = p.parse_args(argv)
 
     from groundcontrol import io
@@ -63,6 +69,12 @@ def fetch_control_main(argv=None) -> int:
     io.write(gdf, out, status=status,
              command="groundcontrol-fetch " + " ".join(argv or sys.argv[1:]))
     print(f"wrote {out} ({len(gdf)} points) + provenance sidecar", file=sys.stderr)
+    if args.context_sheets:
+        from groundcontrol.figures import context_sheets
+        for fp in context_sheets(gdf, {}, Path(out).parent, Path(out).stem,
+                                 basemap=None if args.basemap == "none"
+                                 else args.basemap):
+            print(f"wrote {fp}", file=sys.stderr)
     return 0
 
 
@@ -380,6 +392,16 @@ def assess_dem_main(argv=None) -> int:
                    help="NAME=PATH pre-rendered hillshade underlay for figures "
                         "(repeatable, product-matched; single unnamed path also "
                         "accepted). Default: a hillshade computed from each product")
+    p.add_argument("--rgb", action="append", default=None,
+                   help="RGB ortho raster for the contact sheets (repeatable: "
+                        "fallback chain; the --basemap web imagery rides behind "
+                        "them either way)")
+    p.add_argument("--intensity", default=None,
+                   help="lidar-intensity raster: grayscale contact-sheet panel")
+    p.add_argument("--basemap", default="esri", choices=("esri", "google", "none"),
+                   help="web-imagery provider for the contact sheets' RGB panel "
+                        "(fetched over the network, credited on the sheet; "
+                        "'none' for offline runs; default: esri)")
     p.add_argument("--no-figures", action="store_true", help="skip figure output")
     p.add_argument("--point-lim", type=float, default=None,
                    help="pin the validation-figure map color limit (m); default "
@@ -425,6 +447,14 @@ def assess_dem_main(argv=None) -> int:
     _preflight(_check_control_cache, cache)
     _check_sources(sources)  # also on the cache path: a typo'd name must not become a warning
     products = _check_rasters(products, "--product")
+    rgb = None
+    if args.rgb:
+        checked = _check_rasters(dict(enumerate(args.rgb)), "--rgb")
+        rgb = [checked[i] for i in range(len(args.rgb))]
+    intensity = None
+    if args.intensity is not None:
+        intensity = _check_rasters({"intensity": args.intensity},
+                                   "--intensity")["intensity"]
     if target_crs is None:
         target_crs = _embedded_target_crs(products)
     if isinstance(hs, str):
@@ -483,7 +513,9 @@ def assess_dem_main(argv=None) -> int:
     sampled, stats, artifacts = assess_products(
         control, products, target_crs,
         outdir=outdir, site_name=site_name, aoi=aoi_fig,
-        hs=hs, target_epoch=args.target_epoch, method=args.method,
+        hs=hs, rgb=rgb, intensity=intensity,
+        basemap=None if args.basemap == "none" else args.basemap,
+        target_epoch=args.target_epoch, method=args.method,
         radius=args.radius, source_crs=source_crs, figures=not args.no_figures,
         point_lim=args.point_lim, vendor_lim=args.vendor_lim,
         wide_lim=args.wide_lim,

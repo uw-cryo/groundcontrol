@@ -329,7 +329,8 @@ def summarize_dz(sampled, products=None, segments=SEGMENTS):
 
 
 def assess_products(control, products, target_crs, *, outdir, site_name,
-                    aoi=None, hs=None, target_epoch=2010.0, method="linear",
+                    aoi=None, hs=None, rgb=None, intensity=None,
+                    basemap="esri", target_epoch=2010.0, method="linear",
                     radius=None, source_crs=None, figures=True, write=True,
                     point_lim=None, vendor_lim=None, wide_lim=None,
                     command=None):
@@ -341,7 +342,13 @@ def assess_products(control, products, target_crs, *, outdir, site_name,
     hillshade path or ``{product: path}`` dict) feed the validation figures.
     With ``hs=None`` a hillshade is computed from each product raster
     (:func:`figures.hillshade_from_raster`), so a bring-your-own-DEM run
-    needs nothing but the DEM. With ``write=True`` the sampled points land in
+    needs nothing but the DEM. The figure bundle also includes per-point
+    context contact sheets for the GNSS and FAA subsets
+    (:func:`figures.context_sheets`): RGB imagery (``rgb`` ortho path(s)
+    and/or the ``basemap`` web provider — ``"esri"`` by default, fetched
+    over the network and credited on the sheet; ``None`` for offline) |
+    ``intensity`` raster when given | one shaded-relief panel per product.
+    With ``write=True`` the sampled points land in
     ``<outdir>/<site_name>_assessed.parquet`` (io.write provenance sidecar)
     and the stats table in ``<site_name>_dz_stats.csv``.
 
@@ -384,7 +391,8 @@ def assess_products(control, products, target_crs, *, outdir, site_name,
         artifacts["dz_stats_csv"] = sp
 
     if figures:
-        from groundcontrol.figures import hillshade_from_raster, validation_dz_figures
+        from groundcontrol.figures import (context_sheets, hillshade_from_raster,
+                                           validation_dz_figures)
         aoi_gdf = None
         if aoi is not None:
             if isinstance(aoi, (str, Path)):
@@ -402,4 +410,10 @@ def assess_products(control, products, target_crs, *, outdir, site_name,
             sampled, aoi_gdf, outdir, site_name,
             products=list(products), hs_tif=hs,
             point_lim=point_lim, vendor_lim=vendor_lim, wide_lim=wide_lim)
+        # standard contact sheets for the sparse photo-identifiable subsets
+        # (GNSS occupation classes, FAA runway control; owner 2026-08-29)
+        sheets = context_sheets(sampled, products, outdir, site_name,
+                                rgb=rgb, intensity=intensity, basemap=basemap)
+        if sheets:
+            artifacts["context_sheets"] = sheets
     return sampled, stats, artifacts

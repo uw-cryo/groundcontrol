@@ -128,6 +128,7 @@ Everything lands in `--outdir`, prefixed by the site name:
 | `<site>_assessed.parquet` + `.provenance.json` | control landed in the product frame (`h_ell`, per-point `xform_acc_m` transform budget) with `h_<NAME>` and `dh_<NAME>_before` (product − control) per product; unsampled points (nodata / mosaic gaps) stay as NaN, never dropped |
 | `<site>_dz_stats.csv` | one row per product × control segment (3DEP NVA/VVA, GNSS occupation classes, NGS monuments, ...): `n`, `n_valid`, `n_out`, robust `median_m`/`nmad_m`, parametric `mean_m`/`std_m`/`rmse_m`/`le90_m`/`le95_m` after a 3·NMAD gate, `xform_acc_m`, and `applies` (whether that segment validates that product class) |
 | `<site>_validation_dz_<NAME>.png` | per product: dz map over the hillshade + dual-track histograms for the survey-grade segments and the NGS monuments ([example](docs/gallery.md#2b-the-clis-own-output-bring-your-own-dem)) |
+| `<site>_<subset>_gallery_<tier>[_pN].png` | per-point context contact sheets, broken out by what came back — `cors`, `opus`, `gnss_other`, `faa_runway`, `3dep_nva`, `3dep_vva` — at the two standard tiers (120 m context, 30 m native-pixel). Panels adapt to the available layers: RGB imagery (your `--rgb` ortho and/or `--basemap` web tiles, Esri by default, credited on the sheet; `--basemap none` for offline) \| `--intensity` grayscale when given \| shaded relief per product ([example](docs/gallery.md#7-per-point-context-contact-sheets)). `groundcontrol-fetch --context-sheets` writes the same sheets for an AOI-only fetch (RGB panels only — no DEM required) |
 
 The CLI also prints the per-source row counts, the selected transform with its stated
 accuracy, and the stats table to stderr.
@@ -164,6 +165,9 @@ What the standard outputs look like on a real site: **[docs/gallery.md](docs/gal
   leg; accumulating the per-realization landing legs is next.
 - **`epoch_acc_m`** — velocity-uncertainty propagation through the stage-2 tiers.
 - **ICESat-2 as a global dense-control source** — planned (see the sources survey).
+  Frame note for anyone joining it by hand meanwhile: v007 products are **ITRF2020**
+  (reference epoch 2015.0), not ITRF2014 (releases ≤006 are ITRF2014) — verify per
+  granule release.
 
 ## Install
 

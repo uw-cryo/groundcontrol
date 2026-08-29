@@ -177,11 +177,19 @@ CLI: `groundcontrol-assess --product DSM=dsm.tif --product DTM=dtm.tif
 --target-crs dsm_frame.wkt --outdir out/` (AOI = product footprints, site name = file
 stem, hillshade computed).
 
-## 6. Per-point context contact sheets (opt-in QA)
+## 6. Per-point context contact sheets
 
 One strip of image windows per control point — RGB ortho or web basemap, lidar
 intensity, color shaded relief — so the physical setting of every point (threshold
-paint, roof mount, bare ground) is reviewable at a glance. Layers are
+paint, roof mount, bare ground) is reviewable at a glance. `assess_products` writes
+these automatically (`figures.context_sheets`), broken out by what came back — CORS /
+OPUS / other GNSS / FAA runway / 3DEP NVA / 3DEP VVA — at two tiers (120 m context +
+30 m native-pixel). Panels adapt to the available layers: RGB imagery — an `rgb=`
+ortho and/or the `basemap=` web provider (Esri default, network, credited on the
+sheet; `None` offline) — then `intensity=` grayscale when given, then one
+shaded-relief panel per product. An AOI-only fetch gets RGB-only sheets
+(`groundcontrol-fetch --context-sheets`). Call `point_context_gallery` directly for
+custom layer stacks or other subsets. Layers are
 `(tag, path, kind)` with `kind` in `"rgb"` / `"gray"` / `"relief"`; a DEM alone gives a
 relief-only sheet, and an `"rgb"` path may be a list (fallback chain, e.g. ortho then a
 web basemap). Sheets paginate at `max_rows`.

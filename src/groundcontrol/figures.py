@@ -161,6 +161,204 @@ def _point_azimuth(r) -> float:
         return float("nan")
 
 
+#: XYZ tile providers for the contact-sheet RGB basemap (promoted from the
+#: sandbox station-gallery driver, 2026-08-29). Tiles carry the provider's
+#: ToS/attribution terms; the provider is credited in the sheet title.
+#: Google reaches higher native zoom at polar latitudes (MDV recon
+#: 2026-08-11: real content to z16 vs ESRI z13).
+WEB_BASEMAP_PROVIDERS = {
+    "esri": ("(c) Esri World Imagery",
+             "https://server.arcgisonline.com/ArcGIS/rest/services/"
+             "World_Imagery/MapServer/tile/${z}/${y}/${x}"),
+    "google": ("(c) Google Satellite",
+               "https://mt1.google.com/vt/lyrs=s&amp;x=${x}&amp;y=${y}&amp;z=${z}"),
+}
+
+_WMS_XML = """<GDAL_WMS>
+  <Service name="TMS"><ServerUrl>{url}</ServerUrl></Service>
+  <UserAgent>groundcontrol contact sheets (GDAL)</UserAgent>
+  <ZeroBlockHttpCodes>204,400,403,404,500,503</ZeroBlockHttpCodes>
+  <ZeroBlockOnServerException>true</ZeroBlockOnServerException>
+  <DataWindow>
+    <UpperLeftX>-20037508.34</UpperLeftX><UpperLeftY>20037508.34</UpperLeftY>
+    <LowerRightX>20037508.34</LowerRightX><LowerRightY>-20037508.34</LowerRightY>
+    <TileLevel>{z}</TileLevel><TileCountX>1</TileCountX><TileCountY>1</TileCountY>
+    <YOrigin>top</YOrigin>
+  </DataWindow>
+  <Projection>EPSG:3857</Projection>
+  <BlockSizeX>256</BlockSizeX><BlockSizeY>256</BlockSizeY>
+  <BandsCount>3</BandsCount><DataType>Byte</DataType>
+  <MaxConnections>4</MaxConnections><Timeout>15</Timeout><Cache/>
+</GDAL_WMS>
+"""
+
+
+def open_web_basemap(dst_crs, bounds, *, provider="esri", tile_level=19,
+                     margin_m=500.0):
+    """Tiled web imagery as an OPEN dataset warped into ``dst_crs`` over
+    ``bounds`` (+margin) — the contact sheets' default RGB panel. Windowed
+    reads fetch only the tiles they touch; an in-memory ``WarpedVRT`` (no
+    gdalwarp subprocess) serves true ground meters at any latitude, with
+    the pixel size matched to ``tile_level``'s native resolution at the
+    site latitude. Returns ``(base_dataset, warped_vrt)`` — the CALLER
+    closes both (vrt first) — or ``None`` with a warning when the WMS
+    driver, the network, or the CRS math is unavailable (the sheets then
+    simply lack the RGB panel; auxiliary imagery is not worth failing an
+    assessment over).
+    """
+    import math
+
+    import pyproj
+    import rasterio
+    from rasterio.transform import from_origin
+    from rasterio.vrt import WarpedVRT
+
+    label, url = WEB_BASEMAP_PROVIDERS[provider]
+    try:
+        crs = pyproj.CRS.from_user_input(dst_crs)
+        minx, miny, maxx, maxy = (float(v) for v in bounds)
+        to4326 = pyproj.Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+        lat = to4326.transform((minx + maxx) / 2, (miny + maxy) / 2)[1]
+        res = 156543.03392 * math.cos(math.radians(lat)) / 2 ** tile_level
+        m = margin_m
+        if crs.is_geographic:
+            res, m = res / 111320.0, margin_m / 111320.0
+        minx, miny, maxx, maxy = minx - m, miny - m, maxx + m, maxy + m
+        w = max(1, int(math.ceil((maxx - minx) / res)))
+        h = max(1, int(math.ceil((maxy - miny) / res)))
+        base = rasterio.open(_WMS_XML.format(url=url, z=tile_level))
+        try:
+            vrt = WarpedVRT(base, crs=crs.to_wkt(),
+                            transform=from_origin(minx, maxy, res, res),
+                            width=w, height=h)
+        except Exception:
+            base.close()
+            raise
+    except Exception as e:
+        logger.warning("web basemap (%s) unavailable, RGB panel skipped: %s",
+                       provider, e)
+        return None
+    logger.info("web basemap %s: z%d, %.2f units/px, %dx%d over %s",
+                provider, tile_level, res, w, h, [round(b) for b in bounds])
+    return base, vrt
+
+
+#: standard contact-sheet zoom tiers: (half-window m, tag, interpolation,
+#: scalebar m) — 120 m context + native-pixel 30 m (owner 2026-08-11: "see
+#: the 0.5 m pixels, maybe the antenna"; sandbox site_station_gallery TIERS)
+SHEET_TIERS = ((60.0, "120m", "antialiased", 25), (15.0, "30m", "nearest", 10))
+
+
+def _sheet_subsets(sampled):
+    """Contact-sheet subsets broken out by source/class — only what came back
+    for the AOI/DEM renders (owner 2026-08-29): CORS (continuous GNSS), OPUS
+    campaign, other GNSS, FAA runway control, 3DEP NVA, 3DEP VVA. Dense NGS
+    monuments never get sheets. Returns {tag: (points, class_col, colors)}."""
+    subsets = {}
+    pt = sampled.get("point_type")
+    src = sampled.get("source")
+    if pt is None:
+        return subsets
+    pt = pt.astype("string")
+
+    def _add(tag, mask, cls=None, colors=None):
+        sub = sampled[mask.fillna(False)]
+        if len(sub):
+            subsets[tag] = (sub, cls, colors)
+
+    gnss_style = {c: POINT_STYLE[c][1] for c in
+                  ("gnss_cont", "gnss_semicont", "gnss_campaign", "gnss")}
+    _add("cors", pt == "gnss_cont", "point_type", gnss_style)
+    _add("opus", (src == "opus") & pt.str.startswith("gnss")
+         if src is not None else pt == "__never__", "point_type", gnss_style)
+    _add("gnss_other", pt.str.startswith("gnss") & (pt != "gnss_cont")
+         & ((src != "opus") if src is not None else True),
+         "point_type", gnss_style)
+    if src is not None:
+        faa = sampled[(src == "faa").fillna(False)]
+        if len(faa):
+            cls = colors = None
+            if "raw" in faa.columns:
+                faa = faa.assign(pos_class=_raw_field(faa["raw"], "pos_class"))
+                if faa["pos_class"].notna().any():
+                    cls = "pos_class"
+                    colors = {"surveyed": "crimson", "estimated": "darkorange"}
+            subsets["faa_runway"] = (faa, cls, colors)
+    _add("3dep_nva", pt == "NVA")
+    _add("3dep_vva", pt == "VVA")
+    return subsets
+
+
+def context_sheets(sampled, products, outdir, site_name, *, rgb=None,
+                   intensity=None, basemap="esri", tiers=SHEET_TIERS, dpi=150):
+    """STANDARD per-point context contact sheets, per subset and zoom tier.
+
+    For every subset :func:`_sheet_subsets` finds (CORS / OPUS / other GNSS /
+    FAA runway / 3DEP NVA / 3DEP VVA — whatever came back for the AOI or
+    input DEM) and every tier in ``tiers`` (default 120 m antialiased + 30 m
+    native-pixel), one :func:`point_context_gallery` page set. The layer
+    stack adapts to what exists (owner 2026-08-29: relief alone is not
+    enough, and neither intensity nor a DEM can be assumed):
+
+    - RGB imagery — ``rgb`` ortho path(s) and/or the ``basemap`` web
+      provider (:data:`WEB_BASEMAP_PROVIDERS` key, default ``"esri"``:
+      network tiles, credited in the title; ``None`` for offline) as the
+      nodata-fallback chain;
+    - ``intensity`` grayscale, when given;
+    - one color shaded relief per path-backed product, when any.
+
+    An AOI-only fetch (no products, no intensity) gets RGB-only sheets;
+    with no renderable layer at all, no sheets. Control in a geographic CRS
+    (the fetch landing) gets its web basemap built in the AOI's estimated
+    UTM. Returns the written pages
+    (``<site>_<subset>_gallery_<tier>[_pN].png``).
+    """
+    from contextlib import ExitStack
+
+    relief = [(f"{name} relief", p, "relief") for name, p in (products or {}).items()
+              if isinstance(p, (str, Path))]
+    subsets = _sheet_subsets(sampled)
+    if not subsets:
+        return []
+    out = []
+    with ExitStack() as stack:
+        chain, tag = list(rgb) if isinstance(rgb, (list, tuple)) else \
+            ([rgb] if rgb else []), "RGB ortho"
+        if basemap is not None:
+            all_pts = pd.concat([p for p, _, _ in subsets.values()])
+            map_crs = sampled.crs
+            if map_crs is not None and map_crs.is_geographic:
+                map_crs = all_pts.estimate_utm_crs()   # meter windows need a grid
+                all_pts = all_pts.to_crs(map_crs)
+            web = open_web_basemap(map_crs, all_pts.total_bounds,
+                                   provider=basemap)
+            if web is not None:
+                base, vrt = web
+                stack.callback(base.close)
+                stack.callback(vrt.close)
+                chain.append(vrt)  # pre-opened: gallery reads, we close
+                label = WEB_BASEMAP_PROVIDERS[basemap][0]
+                tag = f"RGB ortho ({label} fallback)" if rgb else label
+        layers = ([(tag, chain if len(chain) > 1 else chain[0], "rgb")]
+                  if chain else [])
+        if intensity is not None:
+            layers.append(("intensity", intensity, "gray"))
+        layers += relief
+        if not layers:
+            logger.info("context sheets skipped: no RGB/intensity/product layer")
+            return []
+        for stag, (pts, cls, colors) in subsets.items():
+            if "id" not in pts.columns:  # synthetic frames; schema always has id
+                pts = pts.assign(id=pts.index.astype(str))
+            for half_m, ttag, interp, slen in tiers:
+                out += point_context_gallery(
+                    pts, layers, outdir, site_name, half_m=half_m,
+                    tier_tag=ttag, interp=interp, scale_len=slen,
+                    class_col=cls, class_colors=colors, subset_tag=stag,
+                    dpi=dpi)
+    return out
+
+
 def point_context_gallery(points, layers, outdir, site_name, *,
                           half_m=60.0, tier_tag=None, interp="antialiased",
                           scale_len=25, id_col="id", class_col=None,
@@ -168,11 +366,13 @@ def point_context_gallery(points, layers, outdir, site_name, *,
                           ncell=None, max_rows=12, sort=True, dpi=200):
     """Per-point context contact sheet: one row-cell of image panels per point.
 
-    OPT-IN QA/QC figure (not part of the default reels): for each point, a
-    horizontal strip of windows from ``layers`` — e.g. TrueOrtho RGB | lidar
-    intensity | DSM color shaded relief — so the physical setting of every
-    control point (roof mount, mast, pier, bare ground) is reviewable at a
-    glance. Grew out of the MDV monument work and the Casa Grande cal-range
+    For each point, a horizontal strip of windows from ``layers`` — e.g.
+    TrueOrtho RGB | lidar intensity | DSM color shaded relief — so the
+    physical setting of every control point (roof mount, mast, pier, bare
+    ground) is reviewable at a glance. STANDARD for the GNSS/FAA subsets
+    via :func:`context_sheets` in ``assess_products`` (owner 2026-08-29;
+    formerly opt-in); call directly for custom layer stacks or subsets.
+    Grew out of the MDV monument work and the Casa Grande cal-range
     contact sheets (sandbox drivers, 2026-07/08).
 
     Parameters
@@ -189,6 +389,9 @@ def point_context_gallery(points, layers, outdir, site_name, *,
         holds >1% valid pixels renders (e.g. ``[ortho, web_basemap]`` so an
         ortho nodata hole falls back to fetched imagery); if every source
         is empty the last renders as-is (an honest blank, never invented).
+        A chain entry may also be an already-OPEN rasterio dataset (e.g. a
+        ``WarpedVRT`` from :func:`open_web_basemap`): it is read in place
+        and NOT closed — the caller owns it.
     half_m : half-window in meters (60 -> 120 m context; ~15 with
         ``interp="nearest"`` for a native-pixel tier).
     tier_tag : filename tag; defaults to ``f"{2*half_m:g}m"``.
@@ -227,10 +430,24 @@ def point_context_gallery(points, layers, outdir, site_name, *,
         halfx = max(4, int(round(half_m / px)))
         halfy = max(4, int(round(half_m / py)))
         row, col = src.index(x, y)
-        arr = src.read(window=Window(col - halfx, row - halfy, 2 * halfx,
-                                     2 * halfy), boundless=True,
-                       fill_value=src.nodata if src.nodata is not None else 0
-                       ).astype("float64")
+        win = Window(col - halfx, row - halfy, 2 * halfx, 2 * halfy)
+        try:
+            arr = src.read(window=win, boundless=True,
+                           fill_value=src.nodata if src.nodata is not None
+                           else 0).astype("float64")
+        except Exception:
+            # WarpedVRT (the web-basemap panel) refuses boundless reads:
+            # read the in-bounds overlap and pad the rest with NaN
+            arr = np.full((src.count, 2 * halfy, 2 * halfx), np.nan)
+            r0 = max(0, row - halfy)
+            r1 = min(src.height, row + halfy)
+            c0 = max(0, col - halfx)
+            c1 = min(src.width, col + halfx)
+            if r1 > r0 and c1 > c0:
+                sub = src.read(window=Window(c0, r0, c1 - c0, r1 - r0)
+                               ).astype("float64")
+                arr[:, r0 - (row - halfy):r1 - (row - halfy),
+                    c0 - (col - halfx):c1 - (col - halfx)] = sub
         if src.nodata is not None:
             arr[arr == src.nodata] = np.nan
         return arr, [x - halfx * px, x + halfx * px,
@@ -254,11 +471,17 @@ def point_context_gallery(points, layers, outdir, site_name, *,
                 xs, ys = _rio_transform(points.crs, src.crs, [x], [y])
                 x, y = xs[0], ys[0]
             arr, ext, (px, py) = _window(src, x, y)
-            if _valid_frac(arr, src, kind) > 0.01 or i == len(dss) - 1:
+            frac = _valid_frac(arr, src, kind)
+            if frac > 0.01 or i == len(dss) - 1:
                 if i:
                     logger.info("fallback source %d used at (%.0f, %.0f)",
                                 i, x0, y0)
                 break
+        if frac == 0.0:
+            # honest blank, labeled (owner 2026-08-29: bare white panels
+            # read as a bug) — the point is outside every source's data
+            ax.text(0.5, 0.12, "outside data extent", transform=ax.transAxes,
+                    ha="center", fontsize=6.5, color="#888888")
         if kind == "rgb":
             img = arr[:3]
             lo = np.nanpercentile(img, 0.5, axis=(1, 2))[:, None, None]
@@ -292,19 +515,20 @@ def point_context_gallery(points, layers, outdir, site_name, *,
     outdir.mkdir(parents=True, exist_ok=True)
     tier = tier_tag or f"{2 * half_m:g}m"
     srcs = []  # built inside the try: a failed open must not leak the others
+    owned = []  # datasets THIS call opened (pre-opened entries stay the caller's)
     try:
         for tag, p, kind in layers:
             chain = p if isinstance(p, (list, tuple)) else [p]
             # open sequentially: a comprehension that raises mid-chain
             # leaks the already-opened members (Copilot review, PR #25)
             opened = []
-            try:
-                for q in chain:
-                    opened.append(rasterio.open(q))
-            except Exception:
-                for src in opened:
-                    src.close()
-                raise
+            for q in chain:
+                if hasattr(q, "read"):  # already-open dataset (caller-owned)
+                    opened.append(q)
+                else:
+                    ds = rasterio.open(q)
+                    owned.append(ds)
+                    opened.append(ds)
             srcs.append((tag, opened, kind))
         from matplotlib.markers import MarkerStyle
         from matplotlib.transforms import Affine2D
@@ -415,9 +639,8 @@ def point_context_gallery(points, layers, outdir, site_name, *,
             plt.close(fig)
             out_paths.append(fp)
     finally:
-        for _, chain, _ in srcs:
-            for src in chain:
-                src.close()
+        for src in owned:
+            src.close()
     logger.info("wrote %d page(s), %d points: %s", len(out_paths), n,
                 [p.name for p in out_paths])
     return out_paths

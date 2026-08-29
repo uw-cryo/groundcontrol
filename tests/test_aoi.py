@@ -6,6 +6,7 @@ Offline; every raster is synthetic.
 
 import numpy as np
 import geopandas as gpd
+import pandas as pd
 import pytest
 import rasterio
 from rasterio.transform import from_origin
@@ -582,3 +583,156 @@ def test_hillshade_from_raster_declines_rotated_grid(tmp_path, caplog):
     with caplog.at_level("WARNING", logger="groundcontrol.figures"):
         assert hillshade_from_raster(p) is None
     assert "rotated" in caplog.text
+
+
+# --------------------------------------------- standard GNSS/FAA contact sheets
+
+def test_assess_writes_context_sheets_for_gnss_and_faa(tmp_path):
+    """assess_products' figure bundle includes contact sheets for the GNSS
+    and FAA subsets (owner 2026-08-29: standard, not opt-in); none for a
+    3DEP/NGS-only control set."""
+    import json
+    from groundcontrol.assess import assess_products
+    dem = _dem(tmp_path / "dsm.tif", hole=False)
+    pts = _control_on(dem)                                   # has one gnss_campaign
+    faa_row = pts.iloc[[0]].copy()
+    faa_row["source"] = "faa"
+    faa_row["point_type"] = "runway_end"
+    faa_row["raw"] = json.dumps({"pos_class": "surveyed"})
+    pts = gpd.GeoDataFrame(pd.concat([pts, faa_row], ignore_index=True), crs=CRS)
+    pts["id"] = [f"P{i}" for i in range(len(pts))]
+    _, _, art = assess_products(pts, {"DSM": dem}, CRS, source_crs=CRS,
+                                outdir=tmp_path / "out", site_name="s",
+                                basemap=None)      # offline test: no tile fetch
+    names = sorted(p.name for p in art["context_sheets"])
+    # per-source subsets x the two standard tiers (recovered spec 2026-08-29)
+    assert names == [f"s_{sub}_gallery_{tier}.png"
+                     for sub in ("3dep_nva", "3dep_vva", "faa_runway", "opus")
+                     for tier in ("120m", "30m")]
+    assert all((tmp_path / "out" / n).exists() for n in names)
+
+    dense = pts[pts["point_type"] == "monument"]   # NGS monuments: never sheeted
+    _, _, art2 = assess_products(dense, {"DSM": dem}, CRS, source_crs=CRS,
+                                 outdir=tmp_path / "out2", site_name="d",
+                                 basemap=None)
+    assert "context_sheets" not in art2
+    assert not list((tmp_path / "out2").glob("*gallery*"))
+
+
+def test_context_sheets_layer_stack_order(tmp_path, monkeypatch):
+    """Owner 2026-08-29: relief alone is not enough — the standard stack is
+    RGB | intensity (when given) | one relief per product, in that order."""
+    from groundcontrol import figures
+    dem = _dem(tmp_path / "dsm.tif", hole=False)
+    dtm = _dem(tmp_path / "dtm.tif", hole=False)
+    ortho = _dem(tmp_path / "ortho.tif", hole=False)
+    inten = _dem(tmp_path / "intensity.tif", hole=False)
+    pts = _control_on(dem)
+    pts["id"] = [f"P{i}" for i in range(len(pts))]
+    seen = {}
+
+    def spy(points, layers, *a, **k):
+        seen["layers"] = layers
+        return []
+
+    monkeypatch.setattr(figures, "point_context_gallery", spy)
+    figures.context_sheets(pts, {"DSM": dem, "DTM": dtm}, tmp_path, "s",
+                           rgb=ortho, intensity=inten, basemap=None)
+    assert [(t, k) for t, _, k in seen["layers"]] == [
+        ("RGB ortho", "rgb"), ("intensity", "gray"),
+        ("DSM relief", "relief"), ("DTM relief", "relief")]
+    assert seen["layers"][0][1] == ortho          # single path, no chain
+    figures.context_sheets(pts, {"DSM": dem}, tmp_path, "s", basemap=None)
+    assert [(t, k) for t, _, k in seen["layers"]] == [("DSM relief", "relief")]
+
+
+def test_point_context_gallery_leaves_preopen_datasets_open(tmp_path):
+    """A chain entry that is an already-open dataset (the web-basemap
+    WarpedVRT pattern) is read in place and NOT closed by the gallery."""
+    import rasterio
+    from groundcontrol.figures import point_context_gallery
+    dem = _dem(tmp_path / "dsm.tif", hole=False)
+    pts = _control_on(dem).iloc[:2]
+    pts["id"] = ["A", "B"]
+    with rasterio.open(dem) as pre:
+        pages = point_context_gallery(
+            pts, [("rgb-ish", [str(tmp_path / "dsm.tif"), pre], "gray"),
+                  ("relief", dem, "relief")],
+            tmp_path, "s", subset_tag="pre")
+        assert pages and pages[0].exists()
+        assert not pre.closed                     # caller still owns it
+        pre.read(1)                               # and it still reads
+
+
+@pytest.mark.network
+def test_open_web_basemap_reads_real_tiles():
+    """Esri World Imagery through GDAL_WMS + WarpedVRT: nonzero pixels in
+    the product frame at the native z19 ground resolution."""
+    from groundcontrol.figures import open_web_basemap
+    got = open_web_basemap("EPSG:32612", (423000, 3628800, 423400, 3629200),
+                           margin_m=50)
+    assert got is not None
+    base, vrt = got
+    try:
+        arr = vrt.read(window=((0, 200), (0, 200)))
+        assert arr.shape[0] == 3 and (arr != 0).mean() > 0.5
+    finally:
+        vrt.close()
+        base.close()
+
+
+def test_gallery_reads_warpedvrt_layers(tmp_path, caplog):
+    """WarpedVRT (the web-basemap panel) refuses boundless reads; the window
+    reader must fall back to a clamped read instead of an 'unavailable'
+    panel — including for a point near the dataset edge."""
+    import rasterio
+    from rasterio.vrt import WarpedVRT
+    from groundcontrol.figures import point_context_gallery
+    dem = _dem(tmp_path / "dsm.tif", hole=False)
+    with rasterio.open(dem) as base:
+        b = base.bounds
+    pts = gpd.GeoDataFrame(
+        {"id": ["mid", "edge"]},
+        geometry=gpd.points_from_xy([(b.left + b.right) / 2, b.left + 40.0],
+                                    [(b.bottom + b.top) / 2, b.top - 40.0]), crs=CRS)
+    with rasterio.open(dem) as base, WarpedVRT(base, crs=CRS) as vrt:
+        with caplog.at_level("WARNING", logger="groundcontrol.figures"):
+            pages = point_context_gallery(pts, [("web", vrt, "gray")],
+                                          tmp_path, "s", subset_tag="w")
+    assert pages and pages[0].exists()
+    assert "panel failed" not in caplog.text
+
+
+def test_fetch_context_sheets_from_aoi_only(tmp_path, monkeypatch):
+    """AOI-only workflow (no DEM, no intensity, geographic landing): the
+    fetch CLI's --context-sheets renders RGB-basemap-only sheets, with the
+    basemap built in the estimated UTM (owner 2026-08-29)."""
+    import rasterio
+    from rasterio.vrt import WarpedVRT
+    from groundcontrol import figures
+    from groundcontrol.cli import fetch_control_main
+    dem = _dem(tmp_path / "fakeweb.tif", hole=False)
+    pts = _control_on(dem).to_crs("EPSG:6318")     # the fetch landing (geographic)
+    pts["id"] = [f"P{i}" for i in range(len(pts))]
+    monkeypatch.setattr("groundcontrol.sources.fetch_control",
+                        lambda aoi, sources=(), **k:
+                        (pts, {s: {"n_rows": len(pts), "error": None} for s in sources}))
+    seen = {}
+
+    def fake_web(crs, bounds, **kw):
+        import pyproj
+        seen["crs"] = pyproj.CRS.from_user_input(crs)
+        base = rasterio.open(dem)
+        return base, WarpedVRT(base, crs=crs if hasattr(crs, "to_wkt")
+                               and crs.is_projected else "EPSG:32612")
+
+    monkeypatch.setattr(figures, "open_web_basemap", fake_web)
+    rc = fetch_control_main(["--aoi=-112,32.6,-111.5,33.0", "--sources", "ngs",
+                             "--out", str(tmp_path / "ctl.parquet"),
+                             "--context-sheets"])
+    assert rc == 0
+    assert seen["crs"].is_projected                # UTM, not the 6318 landing
+    pages = sorted(p.name for p in tmp_path.glob("ctl_*_gallery_*.png"))
+    assert pages == sorted(f"ctl_{sub}_gallery_{tier}.png"
+                           for sub in ("3dep_nva", "3dep_vva", "opus")
+                           for tier in ("120m", "30m"))

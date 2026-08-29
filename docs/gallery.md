@@ -87,8 +87,9 @@ the NAD83(2011)+NAVD88 → ellipsoidal-UTM landing is printed on the histogram.
 
 ## 7. Per-point context contact sheets
 
-`point_context_gallery`, the opt-in QA figure: for every control point a
-strip of image windows — here 120 m windows of 3DEP lidar intensity and the
+`point_context_gallery` — standard in the `assess_products` bundle for the
+GNSS and FAA subsets (`figures.context_sheets`), opt-in for custom layer
+stacks like this one: for every control point a strip of image windows — here 120 m windows of 3DEP lidar intensity and the
 3DEP DSM as color shaded relief — with the point's own marker (runway-end
 chevrons rotate to the published runway heading). Threshold paint and runway
 numbers are bright in intensity, so the surveyed FAA positions can be checked

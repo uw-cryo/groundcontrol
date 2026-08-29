@@ -44,19 +44,12 @@ _INTERIM_LANDING_CRS = "EPSG:6318"
 
 
 def _aoi_bounds_and_poly(aoi):
-    """Accept (minx, miny, maxx, maxy) EPSG:4326, a GeoDataFrame, or a vector-file path.
-
-    Returns ``(bounds_4326, polygon_or_None)`` — sources fetch by bbox; the
-    dispatcher clips the combined result to the polygon when one was given.
-    """
-    if isinstance(aoi, (tuple, list)) and len(aoi) == 4:
-        return tuple(float(v) for v in aoi), None
-    if isinstance(aoi, (str, bytes)) or hasattr(aoi, "__fspath__"):
-        aoi = gpd.read_file(aoi)
-    if isinstance(aoi, gpd.GeoDataFrame):
-        aoi4326 = aoi.to_crs(4326)
-        return tuple(aoi4326.total_bounds), aoi4326.union_all()
-    raise TypeError(f"unsupported AOI type: {type(aoi)!r}")
+    """Any AOI form -> ``(bounds_4326, polygon_or_None)``; see
+    :func:`groundcontrol.aoi.resolve_aoi` (bbox, vector file, raster
+    footprint, GeoDataFrame). Sources fetch by bbox; the dispatcher clips
+    the combined result to the polygon when one was given."""
+    from groundcontrol.aoi import resolve_aoi
+    return resolve_aoi(aoi)
 
 
 def fetch_control(aoi, sources=("3dep", "ngs", "opus"), target_crs=None, target_epoch=None):

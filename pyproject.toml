@@ -31,6 +31,7 @@ dependencies = [
     "shapely>=2.0",
     "rasterio",
     "rioxarray",
+    "xarray",          # imported directly by sample.py (rioxarray brings it; declared anyway)
     "scipy",           # xarray .interp(method="linear") — sample.py's default method
     "requests",
     "matplotlib",

@@ -1,12 +1,14 @@
 # Gallery — standard outputs on a real site
 
 Everything below is produced by the standard library figure functions
-(`figures.standard_control_figures`, `figures.family_dz_figures`,
+(`figures.standard_control_figures`, `figures.validation_dz_figures`,
+`figures.family_dz_figures`, `figures.point_context_gallery`,
 `plot.plot_velocity_vectors`) run over **public data only**: USGS 3DEP lidar
-products and checkpoints, NGS datasheets and OPUS shared solutions, and
-Nevada Geodetic Lab GNSS series. Site: Casa Grande, AZ — a subsiding basin
-containing an NGS calibration range, which makes it a demanding test of the
-datum/epoch machinery (control spans 1940s leveling to 2020s GNSS).
+products (DSM/DTM/intensity) and checkpoints, NGS datasheets and OPUS shared
+solutions, Nevada Geodetic Lab GNSS series, and FAA NASR runway control.
+Site: Casa Grande, AZ — a subsiding basin containing an NGS calibration
+range, which makes it a demanding test of the datum/epoch machinery (control
+spans 1940s leveling to 2020s GNSS).
 
 ## 1. Multi-source control fetch
 
@@ -29,6 +31,20 @@ the title, never silently dropped; the stated 3D transform budget for the
 control landing is printed on every histogram.
 
 ![3DEP checkpoint dz](img/casagrande_large_dz_3dep_DTM.png)
+
+## 2b. The CLI's own output: bring-your-own-DEM
+
+`groundcontrol-assess --product DSM=<1 m 3DEP DSM mosaic> --control <cache>
+--target-crs <3D UTM .wkt> --outdir out/ --site-name casagrande` — nothing else.
+The AOI is the mosaic's valid-data footprint, the underlay is a hillshade
+computed from the product, and the figure is `validation_dz_figures`: every
+control segment on one map plus the survey-grade histograms (3DEP NVA
+checkpoints, OPUS campaign GNSS) and the NGS-monument histogram after a
+3·NMAD gate. Here 1,550 sampled points over the 60 km mosaic, NVA median
+−0.040 m / NMAD 0.042 m. Run on this mosaic: 69 s end to end, of which the
+footprint and the hillshade take ~3 s.
+
+![CLI validation figure](img/casagrande_validation_dz_DSM.png)
 
 ## 3. Historic-control quality tiers
 
@@ -55,3 +71,30 @@ NGS monuments faceted by the datasheet fields (`posSource` / `vertSource` /
 basis for the empirical quality tiers above.
 
 ![monument types](img/casagrande_large_monument_types.png)
+
+## 6. FAA NASR runway control
+
+The `faa` source: runway ends, displaced thresholds and helipads from the
+public-domain NASR subscription, split by the published coordinate
+provenance. `family_dz_figures` family `faa` — the surveyed class (3RD PARTY
+SURVEY / NGS / MILITARY / ARPTS CONTRACTOR, AC 150/5300-18C survey-grade)
+against the 3DEP DSM sits at +0.02 m median; the estimated class (OWNER /
+FAA-EST IMAGERY / ADO) is what its name says, and stays visible as context
+rather than being filtered away upstream. The stated 3D transform budget for
+the NAD83(2011)+NAVD88 → ellipsoidal-UTM landing is printed on the histogram.
+
+![FAA runway control dz](img/casagrande_dz_faa_DSM.png)
+
+## 7. Per-point context contact sheets
+
+`point_context_gallery`, the opt-in QA figure: for every control point a
+strip of image windows — here 120 m windows of 3DEP lidar intensity and the
+3DEP DSM as color shaded relief — with the point's own marker (runway-end
+chevrons rotate to the published runway heading). Threshold paint and runway
+numbers are bright in intensity, so the surveyed FAA positions can be checked
+against the pavement features by eye; the same sheet takes an RGB ortho or a
+web basemap as the first panel (`kind="rgb"`, with a fallback chain for
+ortho nodata holes). Sheets paginate, and surveyed / estimated classes never
+share a page.
+
+![FAA runway context sheet](img/casagrande_faa_runway_gallery_120m.png)

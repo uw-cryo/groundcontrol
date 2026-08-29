@@ -15,7 +15,7 @@ Fetch ground control points for an arbitrary AOI and assess DEM accuracy — wit
 ## Status
 
 **v0.1.2 — pre-alpha, quiet release.** The fetch → transform → sample → statistics →
-figures pipeline works end to end (CLI + Python API) and is covered by **282 offline
+figures pipeline works end to end (CLI + Python API) and is covered by **427 offline
 tests** run in CI on Python 3.10/3.12, with the geodesy core additionally adversarially
 audited (independent review agents; math cross-checked against external oracles). The API
 may still move between minor versions — pin the tag if you build on it, and expect sharp
@@ -60,42 +60,98 @@ per-source status report:
   epoch-pinned PROJ pipelines, vertical-transform preflight (missing geoid grids raise,
   never silently zero).
 - **Figures** (`figures.py`, `plot.py`) — standard per-site control bundle, per-family
-  dz maps + dual-track histograms, MIDAS velocity maps ([gallery](docs/gallery.md)).
+  dz maps + dual-track histograms over a hillshade (pre-rendered, or computed from the
+  assessed product), MIDAS velocity maps, and opt-in per-point context contact sheets
+  (RGB ortho / lidar intensity / color shaded relief windows around every control point)
+  ([gallery](docs/gallery.md)).
 - **I/O + provenance** (`io.py`) — GeoParquet / CSV export with an embedded, replayable
   transform-provenance sidecar; `read_provenance`.
 
-## Example
+## Usage
 
-Fetch control for an AOI, then assess DEM products against it:
+Two entry points, one input contract.
+
+**AOI** (`--aoi`, `fetch_control(aoi)`) — any of:
+
+| Form | Example | Notes |
+|------|---------|-------|
+| bbox string | `--aoi=-115.3,36.0,-114.9,36.3` | `minx,miny,maxx,maxy` in EPSG:4326 lon/lat; use the `=` form for negative longitudes |
+| vector file | `--aoi site.geojson` | GeoJSON preferred; any OGR-readable format (GPKG, Shapefile, KML, FlatGeobuf, ...) and GeoParquet; any CRS; multiple features dissolve into one AOI |
+| elevation raster | `--aoi dsm.tif` | DEM / DSM / DTM in any GDAL format (GeoTIFF, COG, VRT, ...): the AOI is the raster's **valid-data footprint** (band 1's nodata/alpha mask, read at ≤1024 px so edge membership is approximate; untagged NaN counts as valid — set the nodata tag), reprojected from the raster CRS |
+| in memory (Python) | `fetch_control(gdf, ...)` | GeoDataFrame / GeoSeries / shapely geometry |
+
+**Products** (`--product NAME=PATH`, repeatable) — gridded elevation rasters to assess, in
+any GDAL format. A `NAME` containing `DTM` is assessed under the bare-earth rules (VVA
+checkpoints validate it); any other name (`DSM`, `DEM`, ...) under the surface rules.
+The assessment needs the product's **3D CRS** — horizontal *and* height datum
+(`--target-crs`): an EPSG compound like `EPSG:6341+5703` (NAD83(2011) / UTM 12N +
+NAVD88), inline WKT, or a `.wkt`/`.prj` file. A product whose embedded CRS already
+declares its vertical datum (compound or 3D) needs nothing; a 2D raster CRS is refused,
+never guessed — a wrong or assumed vertical datum shows up as a geoid-sized bias (about
+−30 m at Casa Grande), which is the error class this library exists to prevent.
+
+### Fetch control for an AOI
 
 ```bash
-# bbox is minx,miny,maxx,maxy in EPSG:4326 (lon/lat); use --aoi=... for negative longitudes
+# runs as-is: Las Vegas bbox, live 3DEP/NGS/OPUS fetch
 groundcontrol-fetch --aoi=-115.3,36.0,-114.9,36.3 --sources 3dep,ngs,opus --out control.parquet
-
-groundcontrol-assess --aoi site_aoi.geojson --product DTM=dtm.vrt --product DSM=dsm.vrt \
-    --target-crs dem_frame.wkt --outdir out/ --site-name mysite
+# the same for a polygon, or for wherever a DEM has data (+ FAA runway control)
+groundcontrol-fetch --aoi site.geojson --out control.parquet
+groundcontrol-fetch --aoi dsm.tif --sources 3dep,ngs,opus,faa --out control.parquet
 ```
 
-From Python (see [`docs/quickstart.md`](docs/quickstart.md) for the full pattern):
+### Assess your own DEM
+
+Bring-your-own-DEM is the main use case: the product is the only required input
+besides its frame. The AOI defaults to the product's footprint, the site name to the
+file stem, and the figure hillshade is computed from the product itself.
+
+```bash
+groundcontrol-assess --product DSM=dsm.tif --target-crs dsm_frame.wkt --outdir out/
+```
+
+`dsm.tif` and `dsm_frame.wkt` are placeholders for your product and its 3D CRS (for
+ellipsoidal heights on a UTM grid, `groundcontrol.geodesy.build_utm_nad83_2011_3d(32612)`
++ `write_crs_file` produce the WKT). Optional: several `--product` entries (a DSM/DTM
+pair), `--aoi` to restrict or outline the area, `--sources` (default `3dep,ngs,opus`;
+add `ngl`, `faa`), `--control` to reuse a fetched cache, `--hs NAME=PATH` for a
+pre-rendered hillshade on very large mosaics, `--site-name`, `--target-epoch`, and
+sampling `--method`/`--radius`.
+
+### What you get back
+
+Everything lands in `--outdir`, prefixed by the site name:
+
+| File | Contents |
+|------|----------|
+| `<site>_control.parquet` + `.provenance.json` | fetched control in the normalized schema (`schema.py`), EPSG:6318 + NAVD88 landing, per-source status; reused on the next run |
+| `<site>_assessed.parquet` + `.provenance.json` | control landed in the product frame (`h_ell`, per-point `xform_acc_m` transform budget) with `h_<NAME>` and `dh_<NAME>_before` (product − control) per product; unsampled points (nodata / mosaic gaps) stay as NaN, never dropped |
+| `<site>_dz_stats.csv` | one row per product × control segment (3DEP NVA/VVA, GNSS occupation classes, NGS monuments, ...): `n`, `n_valid`, `n_out`, robust `median_m`/`nmad_m`, parametric `mean_m`/`std_m`/`rmse_m`/`le90_m`/`le95_m` after a 3·NMAD gate, `xform_acc_m`, and `applies` (whether that segment validates that product class) |
+| `<site>_validation_dz_<NAME>.png` | per product: dz map over the hillshade + dual-track histograms for the survey-grade segments and the NGS monuments ([example](docs/gallery.md#2b-the-clis-own-output-bring-your-own-dem)) |
+
+The CLI also prints the per-source row counts, the selected transform with its stated
+accuracy, and the stats table to stderr.
+
+From Python (see [`docs/quickstart.md`](docs/quickstart.md) for the full pattern,
+including the per-point context contact sheets):
 
 ```python
-from pathlib import Path
-
 from groundcontrol.sources import fetch_control
 from groundcontrol.assess import assess_products
 from groundcontrol import io
 
-control, status = fetch_control("aoi.geojson", sources=("3dep", "ngs", "opus"))
+control, status = fetch_control("dsm.tif", sources=("3dep", "ngs", "opus", "faa"))
 io.write(control, "control.parquet", status=status)
-target_crs = Path("dem_frame.wkt").read_text()
 sampled, stats, artifacts = assess_products(
-    control, {"DTM": "dtm.vrt"}, target_crs=target_crs,
+    control, {"DSM": "dsm.tif"}, target_crs=open("dsm_frame.wkt").read(),
     outdir="out", site_name="mysite")
 ```
 
 What the standard outputs look like on a real site: **[docs/gallery.md](docs/gallery.md)**.
 
 ![3DEP checkpoint dz](docs/img/casagrande_large_dz_3dep_DTM.png)
+
+![FAA runway control context](docs/img/casagrande_faa_runway_gallery_120m.png)
 
 ## Not yet implemented
 
@@ -124,9 +180,20 @@ like `ground-control` as too similar).
 pip install git+https://github.com/uw-cryo/groundcontrol.git@v0.1.2
 ```
 
-Into an env that already satisfies the geo stack (geopandas>=1.0, pyproj>=3.6, rasterio,
-rioxarray), add `--no-deps` so pip leaves the solved environment alone. See
-[`docs/quickstart.md`](docs/quickstart.md) for the downstream-consumer recipe.
+Into an env that already satisfies every entry in `[project] dependencies` of
+`pyproject.toml`, add `--no-deps` so pip leaves the solved environment alone — then
+verify, because `--no-deps` skips exactly that check. `pyarrow` is the known trap:
+conda-forge's minimal `pyarrow-core` owns the `pyarrow` metadata (pip reports the
+requirement satisfied) but lacks the `libparquet` shared library that `pyarrow._parquet`
+links against, so `import pyarrow.parquet` fails and with it every parquet path here (the
+3DEP source, control export and cache, `read_provenance`); install the full `pyarrow`
+package. This line imports every runtime dependency:
+
+```bash
+python -c "import groundcontrol.assess, groundcontrol.sample, groundcontrol.sources, groundcontrol.figures, pyarrow.parquet, scipy.interpolate, matplotlib_scalebar.scalebar"
+```
+
+See [`docs/quickstart.md`](docs/quickstart.md) for the downstream-consumer recipe.
 
 For development:
 
@@ -144,14 +211,15 @@ src/groundcontrol/
   crs.py           CRS/datum/epoch transforms, landing, stage-2 epoch propagation, PMM
   geodesy.py       CRS construction, epoch-pinned pipelines, vertical preflight
   velocity.py      MIDAS velocity interpolation / fill
+  aoi.py           AOI contract: bbox / vector file / raster footprint / GeoDataFrame
   assess.py        transform -> sample -> stats assessment pipeline
   sample.py        raster sampling (windowed / in-memory / radius)
   accuracy.py      dual-track residual statistics (robust + ASPRS/LBS parametric)
   io.py            GeoParquet/CSV export + transform provenance
-  figures.py       standard per-site control + validation figure bundles
+  figures.py       standard per-site control + validation figure bundles, contact sheets
   plot.py          map/velocity/hillshade plotting primitives
   cli.py           console entry points (groundcontrol-fetch, groundcontrol-assess)
-  sources/         3dep, ngs/opus, ngl providers + fetch_control dispatcher
+  sources/         3dep, ngs/opus, ngl, faa providers + fetch_control dispatcher
   data/            bundled ITRF2020 PMM poles + PB2002 plate boundaries (ODC-By 1.0)
 ```
 

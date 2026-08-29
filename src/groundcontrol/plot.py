@@ -62,8 +62,13 @@ def hillshade(z, dx: float = 1.0, dy: float = 1.0,
     gdaldem -multidirectional's four lamps; ``azdeg`` is then ignored.
     """
     if multidirectional:
-        return np.nanmean([hillshade(z, dx, dy, azdeg=a, altdeg=altdeg)
-                           for a in MULTIDIR_AZIMUTHS], axis=0)
+        import warnings
+        with warnings.catch_warnings():
+            # nodata pixels are NaN under every lamp: the all-NaN mean IS the
+            # intended transparent hole, not a numerical surprise
+            warnings.filterwarnings("ignore", "Mean of empty slice", RuntimeWarning)
+            return np.nanmean([hillshade(z, dx, dy, azdeg=a, altdeg=altdeg)
+                               for a in MULTIDIR_AZIMUTHS], axis=0)
     z = np.asarray(z, dtype="float64")
     g_south, g_east = np.gradient(z, dy, dx)  # d z / d row (southward), d z / d col
     slope = np.arctan(np.hypot(g_east, g_south))

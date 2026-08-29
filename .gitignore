@@ -22,3 +22,7 @@ venv/
 # Local scratch
 *.log
 sandbox/
+
+# Review staging (workspace convention): collector-managed copies + quarantine
+review/
+review_superseded/

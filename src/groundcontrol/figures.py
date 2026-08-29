@@ -471,10 +471,62 @@ def _raw_field(series, key):
     return series.apply(get)
 
 
+#: auto-hillshade decimation: longest DEM side read at most this many px
+HILLSHADE_MAX_PX = 2048
+
+
+def hillshade_from_raster(path, *, max_px: int = HILLSHADE_MAX_PX):
+    """``(hillshade01, extent)`` computed from an elevation raster — the
+    figure underlay when no pre-rendered hillshade is supplied.
+
+    Band 1 is read decimated to at most ``max_px`` on the longest side
+    (overviews are used when the raster has them; a huge raster without
+    overviews is read once at full resolution, so pass a pre-rendered
+    ``gdaldem hillshade`` for repeated runs on big mosaics), nodata -> NaN
+    so holes stay transparent, then :func:`groundcontrol.plot.hillshade`
+    (multidirectional, house style). The tuple is accepted wherever the
+    figure helpers take an ``hs_tif`` path (:func:`_relief`). Returns
+    ``None`` (no underlay) for a rotated or south-up grid.
+    """
+    import math
+
+    import rasterio
+    from rasterio.enums import Resampling
+
+    from .plot import hillshade
+
+    with rasterio.open(path) as src:
+        t = src.transform
+        if t.b or t.d or t.e >= 0:
+            # imshow(extent=) draws an axis-aligned north-up box: a rotated
+            # or south-up grid would render misplaced relief under correctly
+            # placed points. Plain map instead (pass a pre-rendered --hs).
+            logger.warning("hillshade from %s skipped: transform is rotated/"
+                           "south-up (%s); pass a pre-rendered hillshade", path, t)
+            return None
+        f = max(1, math.ceil(max(src.width, src.height) / max_px))
+        h, w = math.ceil(src.height / f), math.ceil(src.width / f)
+        z = src.read(1, out_shape=(h, w), masked=True,
+                     resampling=Resampling.average).astype("float64").filled(np.nan)
+        b = src.bounds
+    dx = (b.right - b.left) / w
+    dy = (b.top - b.bottom) / h
+    logger.info("hillshade from %s: %dx%d px (1/%d)", path, w, h, f)
+    return hillshade(z, dx=dx, dy=dy, multidirectional=True), \
+        [b.left, b.right, b.bottom, b.top]
+
+
 def _relief(ax, dem_tif, hs_tif, cmap, dem_alpha, fig):
+    """Grayscale hillshade underlay from ``hs_tif`` — a pre-rendered Byte
+    hillshade path (gdaldem 1..255) or a ``(array01, extent)`` tuple from
+    :func:`hillshade_from_raster` — plus an optional colored ``dem_tif``."""
     import rasterio
     ext = None
-    if hs_tif is not None:
+    if isinstance(hs_tif, tuple):
+        hs, ext = hs_tif
+        ax.imshow(hs, cmap="gray", vmin=0.0, vmax=1.0, extent=ext,
+                  interpolation="antialiased", interpolation_stage="rgba")
+    elif hs_tif is not None:
         with rasterio.open(hs_tif) as src:
             hs = src.read(1, masked=True).astype("f4").filled(np.nan)
             bb = src.bounds
@@ -498,10 +550,13 @@ def _relief(ax, dem_tif, hs_tif, cmap, dem_alpha, fig):
     return ext
 
 
-def _finish_map(ax, aoi_gdf, clip_to_aoi=True):
+def _finish_map(ax, aoi_gdf, clip_to_aoi=True, points=None):
     """Ticks off + scalebar. With ``clip_to_aoi`` the axes are limited to the
     AOI bounds and the dashed outline is dropped (redundant when the map IS
-    the AOI); pass False to keep the outline on un-clipped maps."""
+    the AOI); pass False to keep the outline on un-clipped maps. With no AOI
+    the axes are limited to ``points`` (a GeoDataFrame) plus a margin, so a
+    full-mosaic hillshade underlay cannot zoom the map out to the product
+    (review round 1: the auto hillshade made bbox-AOI maps specks)."""
     from .plot import add_scalebar
     if aoi_gdf is not None:
         if clip_to_aoi:
@@ -510,6 +565,14 @@ def _finish_map(ax, aoi_gdf, clip_to_aoi=True):
             ax.set_ylim(b[1], b[3])
         else:
             aoi_gdf.boundary.plot(ax=ax, color=_INK, lw=1.0, ls="--", alpha=0.45)
+    elif points is not None and len(points):
+        b = points.total_bounds
+        if np.isfinite(b).all():
+            # zero span (one point): a fixed margin in the frame's units
+            unit = 1e-3 if (points.crs is not None and points.crs.is_geographic) else 1.0
+            m = 0.05 * max(b[2] - b[0], b[3] - b[1]) or unit
+            ax.set_xlim(b[0] - m, b[2] + m)
+            ax.set_ylim(b[1] - m, b[3] + m)
     ax.set_xticks([])
     ax.set_yticks([])
     # equal aspect is the map contract (env figures.md) and silences the
@@ -545,7 +608,6 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
     end labels would be unreadable). Dense classes (3DEP checkpoints, NGS
     monuments) are never labeled.
     """
-    import geopandas as gpd
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -554,7 +616,8 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     out = []
-    aoi_gdf = gpd.read_file(aoi) if isinstance(aoi, (str, Path)) else aoi
+    from .aoi import read_aoi
+    aoi_gdf = read_aoi(aoi) if isinstance(aoi, (str, Path)) else aoi
 
     # figure CRS: the DEM's if given, else the AOI's UTM estimate
     import rasterio
@@ -733,7 +796,9 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
                           hs_tif=None, point_lim=None, vendor_lim=None, wide_lim=None,
                           ngs_nmad_gate=3.0, dpi=200):
     # hs_tif: a single path, or a {product: path} dict for PRODUCT-MATCHED
-    # backgrounds (DTM diffs belong on the DTM hillshade — David, 2026-07-15).
+    # backgrounds (DTM diffs belong on the DTM hillshade — David, 2026-07-15);
+    # each value a pre-rendered hillshade path or a hillshade_from_raster()
+    # tuple (assess_products derives one per product when none is given).
     """Product-vs-control vertical-offset validation figures (standard bundle
     item 5; requested by David 2026-07-15 after the SF run).
 
@@ -763,9 +828,9 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
     # accept a path or a GeoDataFrame aoi (siblings do the same) and reproject
     # to the sampled frame, so the map clip + aspect use the plotted CRS
     if aoi is not None:
-        import geopandas as gpd
         if isinstance(aoi, (str, Path)):
-            aoi = gpd.read_file(aoi)
+            from .aoi import read_aoi
+            aoi = read_aoi(aoi)
         aoi = aoi.to_crs(sampled.crs)
     # ONE taxonomy: masks and DSM/DTM applicability come from assess.SEGMENTS
     # (audit round 2: this dict was a hand-copied twin and had already
@@ -801,7 +866,7 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         cb = fig.colorbar(sc, ax=axes[0], shrink=0.75, pad=0.02, extend="both")
         cb.set_label(f"dz = {prod} − control (m)", fontsize=9, color=_INK)
         cb.ax.tick_params(labelsize=8, colors=_MUT)
-        _finish_map(axes[0], aoi)
+        _finish_map(axes[0], aoi, points=use)
         axes[0].set_title(f"{site_name} {prod} − control  (n={len(use)})",
                           fontsize=11, color=_INK)
 
@@ -845,18 +910,21 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
                 ax.hist(np.clip(v, -lim, lim), bins=41, range=(-lim, lim),
                         histtype="stepfilled", alpha=0.45, color=color,
                         edgecolor=color, label=lab)
-                txt.append(f"{lab}: med {np.median(v):+.3f}, "
-                           f"NMAD {_nmad(v):.3f}, n={len(v)}")
+                txt.append((f"{lab}: med {np.median(v):+.3f}, "
+                            f"NMAD {_nmad(v):.3f}, n={len(v)}", color))
             ax.axvline(0, color=_INK, lw=0.8)
             ax.set_xlim(-lim, lim)
             ax.set_xlabel(f"dz = {prod} − control (m)", fontsize=9, color=_INK)
-            if txt:  # legend/stats only when something plotted (#23: an
-                # NGS-only site rendered a bare axes + empty legend box)
-                ax.legend(fontsize=8, loc="upper right")
-                ax.text(0.02, 0.98, "\n".join(txt), transform=ax.transAxes,
-                        fontsize=8, va="top", color=_INK,
-                        bbox=dict(boxstyle="round,pad=0.3", fc="white",
-                                  alpha=0.85))
+            if txt:  # stats only when something plotted (#23: an NGS-only
+                # site rendered a bare axes + empty legend box). Segment-
+                # colored lines double as the legend (family_dz_figures
+                # convention): a separate legend box collided with them
+                # on long labels (docs refresh 2026-08-27).
+                for i, (line, color) in enumerate(txt):
+                    ax.text(0.02, 0.98 - 0.055 * i, line, transform=ax.transAxes,
+                            fontsize=8, va="top", color=color, fontweight="bold",
+                            bbox=dict(boxstyle="round,pad=0.2", fc="white",
+                                      ec="none", alpha=0.85))
             else:
                 ax.text(0.5, 0.5, "no matching checkpoints in AOI",
                         transform=ax.transAxes, ha="center", va="center",
@@ -1009,14 +1077,17 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
     ``overlays``: GeoDataFrame (any CRS) drawn as dashed outlines on every
     map — e.g. per-lidar-project footprints so seams are attributable.
     """
-    import geopandas as gpd
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    aoi_gdf = gpd.read_file(aoi) if isinstance(aoi, (str, Path)) else aoi
+    if isinstance(aoi, (str, Path)):
+        from .aoi import read_aoi
+        aoi_gdf = read_aoi(aoi)
+    else:
+        aoi_gdf = aoi
     if aoi_gdf is not None:
         aoi_gdf = aoi_gdf.to_crs(sampled.crs)
     if overlays is not None:
@@ -1095,6 +1166,13 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                 gridspec_kw=dict(width_ratios=[mcol] * n_sub + [hist_w]))
             axh = axes[-1]
             hs_prod = hs_tif.get(prod) if isinstance(hs_tif, dict) else hs_tif
+            # ONE frame for every panel of this figure (all plotted points):
+            # per-panel framing rendered side-by-side maps at different
+            # scales, and an all-gap panel fell back to the full product
+            # (review round 2)
+            fig_pts = sampled[np.logical_or.reduce([np.asarray(m, dtype=bool)
+                                                     for m in sub_masks])
+                              & np.isfinite(sampled[col].to_numpy(dtype="float64"))]
             sc, stats_lines, n_gap = None, [], 0
             for axm, sub, m in zip(axes[:-1], subs, sub_masks):
                 lab, _, style, mk = sub[:4]
@@ -1113,7 +1191,7 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                                  c=v[fin], cmap=DZ_CMAP, vmin=-map_lim,
                                  vmax=map_lim, s=52, marker=mk,
                                  edgecolors="#404040", linewidths=0.8, zorder=5)
-                _finish_map(axm, aoi_gdf)
+                _finish_map(axm, aoi_gdf, points=fig_pts)
                 axm.set_title(f"{lab} (n={int(fin.sum())})", fontsize=10.5,
                               color=_INK)
                 if fin.any():
@@ -1152,8 +1230,10 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                          "normal",
                          bbox=dict(boxstyle="round,pad=0.2", fc="white",
                                    ec="none", alpha=0.8))
-            if "xform_acc_m" in sampled.columns:
-                b = np.nanmedian(sampled["xform_acc_m"].to_numpy(dtype="float64"))
+            xa = (sampled["xform_acc_m"].to_numpy(dtype="float64")
+                  if "xform_acc_m" in sampled.columns else np.array([np.nan]))
+            if np.isfinite(xa).any():
+                b = np.nanmedian(xa)
                 if np.isfinite(b):
                     axh.text(0.02, 0.02, f"stated 3D transform budget ±{b:g} m",
                              transform=axh.transAxes, fontsize=8, color=_MUT,

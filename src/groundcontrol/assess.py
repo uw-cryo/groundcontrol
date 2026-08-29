@@ -95,6 +95,26 @@ def is_dtm_product(name: str) -> bool:
     return "DTM" in name.upper()
 
 
+def has_vertical_axis(crs) -> bool:
+    """True when ``crs`` is a full 3D frame: a horizontal pair PLUS a
+    gravity-related or ellipsoidal height axis (compound with a vertical
+    member, or a 3D geographic/projected CRS). A 2D CRS, a geocentric XYZ
+    CRS, a horizontal+temporal compound, or a vertical CRS ALONE do not:
+    heights (or the horizontal) would ride through a transform to them
+    untransformed. The one rule behind both the ``transform_control`` guard
+    and the CLI's embedded-CRS acceptance (review rounds 1-2, 2026-08-27:
+    round 2 caught a bare EPSG:5703 target passing an up-axis-only rule).
+    """
+    import pyproj
+
+    crs = pyproj.CRS.from_user_input(crs)
+    dirs = [a.direction.lower() for a in crs.axis_info]
+    vertical = [d for d in dirs if d in ("up", "down")]
+    horizontal = [d for d in dirs if d not in ("up", "down", "future", "past")
+                  and not d.startswith("geocentric")]
+    return bool(vertical) and len(horizontal) >= 2
+
+
 def transform_control(control, target_crs, *, target_epoch=2010.0,
                       source_crs=None, aoi_bounds_4326=None):
     """Land control points into the assessed product's 3D frame.
@@ -150,20 +170,24 @@ def transform_control(control, target_crs, *, target_epoch=2010.0,
     # lands in every dz as bias (Atlanta swept -31 m with a normal-looking
     # NMAD). The ONLY height-inert 2D case is source == target (identity;
     # the end-to-end tests use it deliberately) — anything else must carry
-    # 3-axis or compound height semantics.
+    # 3-axis or compound height semantics — with an actual height AXIS: a
+    # geocentric XYZ or horizontal+temporal compound is 3-axis/compound and
+    # still carries no height datum (review round 1).
     tgt = pyproj.CRS(target_crs)
-    if not tgt.is_compound and len(tgt.axis_info) < 3:
+    if not has_vertical_axis(tgt):
         src_obj = pyproj.CRS(src)
         same = src_obj.equals(tgt) or (src_obj.to_epsg() is not None
                                        and src_obj.to_epsg() == tgt.to_epsg())
         if not same:
             raise ValueError(
-                f"target_crs {tgt.name!r} is 2D (non-compound): heights would "
+                f"target_crs {tgt.name!r} has no horizontal+height axis pair (2D, "
+                f"geocentric, or height-less compound; axes: "
+                f"{[a.direction for a in tgt.axis_info]}): heights would "
                 "pass through UNTRANSFORMED while the horizontal moves — the "
                 "geoid undulation would land in every dz as bias. Pass the "
                 "product's 3D CRS (e.g. pyproj.CRS('EPSG:32616').to_3d()) or "
                 "a compound 'horizontal+vertical' CRS ('EPSG:32616+5703'); a "
-                "2D target is only valid when source_crs equals it exactly "
+                "height-less target is only valid when source_crs equals it exactly "
                 "(same-frame identity).")
     if aoi_bounds_4326 is None:
         aoi_bounds_4326 = tuple(control.to_crs("EPSG:4326").total_bounds)
@@ -276,8 +300,11 @@ def summarize_dz(sampled, products=None, segments=SEGMENTS):
     if products is None:
         products = [c[len("dh_"):-len("_before")] for c in sampled.columns
                     if c.startswith("dh_") and c.endswith("_before")]
-    budget = (float(np.nanmedian(sampled["xform_acc_m"]))
-              if "xform_acc_m" in sampled.columns else float("nan"))
+    budget = float("nan")
+    if "xform_acc_m" in sampled.columns:
+        xa = sampled["xform_acc_m"].to_numpy(dtype="float64")
+        if np.isfinite(xa).any():  # all-NaN (PROJ sentinel budget) stays NaN, quietly
+            budget = float(np.nanmedian(xa))
     rows = []
     for prod in products:
         col = f"dh_{prod}_before"
@@ -308,20 +335,35 @@ def assess_products(control, products, target_crs, *, outdir, site_name,
                     command=None):
     """Fetch-free assessment: transform -> sample -> stats (+ figures, files).
 
-    Parameters mirror the component functions; ``aoi`` (path or GeoDataFrame,
-    any CRS) and ``hs`` (hillshade path or ``{product: path}`` dict) feed the
-    validation figures. With ``write=True`` the sampled points land in
+    Parameters mirror the component functions; ``aoi`` (bbox-less: a
+    vector/raster path or GeoDataFrame, any CRS — clips and outlines the
+    figure maps; ``None`` leaves them unclipped) and ``hs`` (pre-rendered
+    hillshade path or ``{product: path}`` dict) feed the validation figures.
+    With ``hs=None`` a hillshade is computed from each product raster
+    (:func:`figures.hillshade_from_raster`), so a bring-your-own-DEM run
+    needs nothing but the DEM. With ``write=True`` the sampled points land in
     ``<outdir>/<site_name>_assessed.parquet`` (io.write provenance sidecar)
     and the stats table in ``<site_name>_dz_stats.csv``.
 
     Returns ``(sampled, stats, artifacts)`` where ``artifacts`` is a dict of
     written paths plus the ``transform`` info block.
-    """
-    import geopandas as gpd
 
+    The two data exports are preflighted (:func:`io.check_export_support`)
+    before any transform/sample work. Figures are deliberately not: they
+    land in the same, already-verified directory, ``savefig`` does not
+    truncate a read-only file, and their names are derived deep in
+    ``figures.py`` -- enumerating them here would duplicate that logic.
+    """
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     artifacts = {}
+    if write:
+        # Fail before transform/sample if the assessed export cannot be
+        # written (missing parquet engine, unwritable dir): same guard the
+        # CLIs apply before the fetch, for library callers.
+        from groundcontrol import io
+        io.check_export_support(outdir / f"{site_name}_assessed.parquet")
+        io.check_export_support(outdir / f"{site_name}_dz_stats.csv", sidecar=False)
 
     landed, tinfo = transform_control(control, target_crs,
                                       target_epoch=target_epoch,
@@ -331,7 +373,6 @@ def assess_products(control, products, target_crs, *, outdir, site_name,
     stats = summarize_dz(sampled, products=list(products))
 
     if write:
-        from groundcontrol import io
         p = outdir / f"{site_name}_assessed.parquet"
         io.write(sampled, p, status={"assess": {"n_rows": len(sampled),
                                                 "error": None,
@@ -343,11 +384,20 @@ def assess_products(control, products, target_crs, *, outdir, site_name,
         artifacts["dz_stats_csv"] = sp
 
     if figures:
-        from groundcontrol.figures import validation_dz_figures
+        from groundcontrol.figures import hillshade_from_raster, validation_dz_figures
         aoi_gdf = None
         if aoi is not None:
-            aoi_gdf = gpd.read_file(aoi) if isinstance(aoi, (str, Path)) else aoi
+            if isinstance(aoi, (str, Path)):
+                from groundcontrol.aoi import read_aoi
+                aoi_gdf = read_aoi(aoi)  # vector features or raster footprint
+            else:
+                aoi_gdf = aoi
             aoi_gdf = aoi_gdf.to_crs(sampled.crs)
+        if hs is None:
+            # product-matched underlays from the products themselves; an
+            # in-memory DataArray product has no path -> plain map
+            hs = {name: h for name, p in products.items() if isinstance(p, (str, Path))
+                  and (h := hillshade_from_raster(p)) is not None}
         artifacts["figures"] = validation_dz_figures(
             sampled, aoi_gdf, outdir, site_name,
             products=list(products), hs_tif=hs,

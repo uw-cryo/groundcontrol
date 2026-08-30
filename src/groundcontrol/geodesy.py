@@ -235,6 +235,55 @@ OUTPUT_DATUM_BUILDERS = {
 }
 
 
+def with_vdatum(horizontal, vdatum: str) -> CRS:
+    """Attach a vertical datum to a 2D horizontal CRS -> a full 3D target.
+
+    The CLI's ``--vdatum`` resolver (owner 2026-08-31): most products ship
+    a bare 2D projected CRS (``EPSG:32610``, "NAD83(2011) / UTM zone 10N")
+    and the height datum lives only in the product report — this builds the
+    unambiguous 3D frame from the two pieces instead of making the user
+    hand-write compound strings or WKT.
+
+    ``horizontal``: any pyproj-resolvable strictly-2D geographic/projected
+    CRS. A 3D, compound, vertical-only, or geocentric input is refused —
+    it already declares (or cannot take) a height axis.
+    ``vdatum``: the literal ``"ellipsoid"`` -> the horizontal datum's own
+    ellipsoidal height (``CRS.to_3d()``); anything else must resolve to a
+    pyproj VERTICAL CRS (``"EPSG:5703"``, ``"NAVD88 height"``,
+    ``"EPSG:3855"`` EGM2008, ...) -> the compound horizontal + vertical.
+    Anything else raises — never a guess. A geoid MODEL name ("GEOID18",
+    "G1764") is not a CRS; pass the vertical CRS it realizes.
+    """
+    h = CRS.from_user_input(horizontal)
+    dirs = [a.direction.lower() for a in h.axis_info]
+    strictly_2d = (not h.is_compound and not h.is_vertical
+                   and not h.is_geocentric and len(dirs) == 2
+                   and not any(d in ("up", "down") for d in dirs))
+    if not strictly_2d:
+        raise ValueError(
+            f"with_vdatum: horizontal CRS '{h.name}' is not a plain 2D "
+            "horizontal CRS — it already declares (or cannot take) a "
+            "height axis; pass the full 3D frame as target_crs instead")
+    if vdatum.strip().lower() == "ellipsoid":
+        return h.to_3d()
+    try:
+        v = CRS.from_user_input(vdatum)
+    except Exception as e:
+        raise ValueError(
+            f"with_vdatum: {vdatum!r} is not 'ellipsoid' and does not "
+            f"resolve as a CRS ({e}). Pass a VERTICAL CRS (e.g. EPSG:5703 "
+            "for NAVD88, EPSG:3855 for EGM2008); a geoid model name is "
+            "not a CRS") from e
+    if not v.is_vertical:
+        raise ValueError(
+            f"with_vdatum: {vdatum!r} resolves to '{v.name}', which is not "
+            "a vertical CRS — heights need a gravity-related or "
+            "ellipsoidal vertical member (e.g. EPSG:5703, EPSG:3855, or "
+            "the literal 'ellipsoid')")
+    from pyproj.crs import CompoundCRS
+    return CompoundCRS(name=f"{h.name} + {v.name}", components=[h, v])
+
+
 def build_utm_target(utm_epsg: int, output_datum: str = "wgs84_g2139") -> tuple[CRS, str]:
     """Auto-target 3D UTM CRS and its canonical WKT basename for a UTM zone
     and a selectable output datum realization.

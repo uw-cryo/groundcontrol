@@ -98,8 +98,13 @@ def fetch_control_main(argv=None) -> int:
         # the labeled all-sources control map that locates each sheet cell,
         # plus the MIDAS velocity + NGL time-series figures (owner
         # 2026-08-30: the AOI-only path gets the full standard set too)
+        aoi_fig = aoi
+        if isinstance(aoi, tuple):   # bbox: the box IS the AOI for figures
+            import geopandas as gpd
+            from shapely.geometry import box
+            aoi_fig = gpd.GeoDataFrame(geometry=[box(*aoi)], crs=4326)
         for fp in standard_control_figures(
-                gdf, aoi if not isinstance(aoi, tuple) else None,
+                gdf, aoi_fig,
                 Path(out).parent, Path(out).stem, midas_velocities=True,
                 map_basemap=None if args.basemap == "none" else "esri_hillshade"):
             print(f"wrote {fp}", file=sys.stderr)
@@ -222,6 +227,65 @@ def _default_site_name(products):
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("_.") or "site"
 
 
+def _classify_input(path):
+    """'raster' | 'vector' for a positional INPUT path (fail-loud else)."""
+    from groundcontrol.io import expand_user_path
+    fp = path
+    if not _is_remote(str(path)):
+        fp = str(expand_user_path(Path(path)))
+        if not Path(fp).exists():
+            raise ValueError(f"input {path}: file not found")
+    import rasterio
+    try:
+        with rasterio.open(fp):
+            return "raster"
+    except Exception:
+        pass
+    try:
+        import pyogrio
+        pyogrio.read_info(fp)
+        return "vector"
+    except Exception as e:
+        raise ValueError(
+            f"input {path}: not a readable raster or vector ({e})") from e
+
+
+def _vdatum_target_crs(products, vdatum):
+    """--vdatum resolver: each product's embedded 2D horizontal CRS + the
+    stated vertical datum -> ONE full 3D target (geodesy.with_vdatum);
+    every product must agree on the horizontal. The 3D/compound-embedded
+    case is refused — the product already declares its heights."""
+    import pyproj
+    import rasterio
+
+    from groundcontrol.assess import has_vertical_axis
+    from groundcontrol.geodesy import with_vdatum
+    seen = {}
+    for name, path in products.items():
+        with rasterio.open(path) as src:
+            crs = src.crs
+        if crs is None:
+            raise ValueError(f"--vdatum: product {name}={path} has no CRS "
+                             "to attach the vertical datum to; pass the "
+                             "full 3D frame via --target-crs")
+        crs = pyproj.CRS.from_user_input(crs)
+        if has_vertical_axis(crs):
+            raise ValueError(f"--vdatum: product {name}={path} already "
+                             f"declares its heights ({crs.name}); drop "
+                             "--vdatum, or override with --target-crs")
+        seen[name] = crs
+    first = next(iter(seen.values()))
+    for name, crs in seen.items():
+        if not crs.equals(first):
+            names = {n: c.name for n, c in seen.items()}
+            raise ValueError("--vdatum: products declare different "
+                             f"horizontal CRSs {names}; pass --target-crs")
+    out = with_vdatum(first, vdatum)
+    print(f"target CRS: {out.name} (product horizontal + --vdatum "
+          f"{vdatum})", file=sys.stderr)
+    return out.to_wkt()
+
+
 def _embedded_target_crs(products):
     """--target-crs default: the products' own CRS, accepted ONLY when it
     declares the height datum (compound or 3D) and every product agrees;
@@ -240,14 +304,21 @@ def _embedded_target_crs(products):
         crs = pyproj.CRS.from_user_input(crs)
         from groundcontrol.assess import has_vertical_axis
         if not has_vertical_axis(crs):
+            code = crs.to_epsg()
+            hz = f"EPSG:{code}" if code else "<horizontal EPSG>"
             raise SystemExit(
-                f"error: --target-crs is required: product {name}={path} declares a CRS "
-                f"without a height axis ({crs.name}), which says nothing about its height "
-                "datum. Pass the "
-                "product's 3D CRS, e.g. '<horizontal EPSG>+5703' for NAVD88 heights on "
-                "that horizontal (EPSG:6341+5703 = NAD83(2011) UTM 12N + NAVD88), or a "
-                ".wkt file with a vertical member (groundcontrol.geodesy.build_utm_* "
-                "constructs ellipsoidal-height UTM frames)")
+                f"error: --target-crs or --vdatum is required: product {name}={path} "
+                f"declares a CRS without a height axis ({crs.name}"
+                + (f", {hz}" if code else "") + "), which says nothing "
+                "about its height datum — that lives in the product report, "
+                "never guessed here. Common choices for this horizontal:\n"
+                f"  --vdatum ellipsoid       heights on the {crs.name.split(' / ')[0]} "
+                "ellipsoid\n"
+                "  --vdatum EPSG:5703       NAVD88 orthometric (CONUS lidar/3DEP)\n"
+                "  --vdatum EPSG:3855       EGM2008 orthometric\n"
+                f"  --target-crs {hz}+5703   the equivalent compound form\n"
+                "(a .wkt file with a vertical member also works; "
+                "groundcontrol.geodesy.with_vdatum/build_utm_* construct these)")
         seen[name] = crs
     first = next(iter(seen.values()))
     for name, crs in seen.items():
@@ -379,12 +450,21 @@ def assess_dem_main(argv=None) -> int:
                     "transform control into the product frame, sample, and write "
                     "dz stats + standard validation figures.",
     )
-    p.add_argument("--product", action="append", required=True,
+    p.add_argument("inputs", nargs="*", metavar="INPUT",
+                   help="positional inputs: raster product(s) and/or ONE vector "
+                        "AOI file. A raster whose filename contains 'DTM' is "
+                        "assessed under the bare-earth rules, any other under "
+                        "the surface rules (name products explicitly with "
+                        "--product to override). With only a vector AOI, runs "
+                        "the AOI-only fetch + standard figures "
+                        "(= groundcontrol-fetch)")
+    p.add_argument("--product", action="append", default=None,
                    help="NAME=PATH gridded elevation raster to assess (repeatable; "
                         "any GDAL format: GeoTIFF/COG/VRT/...). A NAME containing "
                         "'DTM' is assessed under the bare-earth rules (VVA "
                         "checkpoints apply); any other name (DSM, DEM, ...) under "
-                        "the surface rules")
+                        "the surface rules. Optional when rasters are given "
+                        "positionally")
     p.add_argument("--aoi", default=None,
                    help="AOI: 'minx,miny,maxx,maxy' bbox (EPSG:4326 lon/lat), a vector "
                         "file (GeoJSON preferred; any OGR format), or a raster whose "
@@ -394,7 +474,16 @@ def assess_dem_main(argv=None) -> int:
                    help="product 3D CRS: EPSG/authority string ('EPSG:6341+5703'), WKT, "
                         "or a .wkt file. Default: the product's own embedded CRS, "
                         "accepted only when it is compound/3D (declares the height "
-                        "datum); a 2D raster CRS is refused, never guessed")
+                        "datum); a 2D raster CRS is refused, never guessed — "
+                        "pair it with --vdatum instead")
+    p.add_argument("--vdatum", default=None,
+                   help="vertical datum of the product heights, combined with the "
+                        "product's own 2D horizontal CRS into the full 3D target: "
+                        "'ellipsoid' (heights on the horizontal datum's ellipsoid) "
+                        "or any vertical CRS ('EPSG:5703' NAVD88, 'EPSG:3855' "
+                        "EGM2008, 'NAVD88 height', ...). Mutually exclusive with "
+                        "--target-crs; a geoid model name (GEOID18) is not a CRS — "
+                        "pass the vertical CRS it realizes")
     p.add_argument("--target-epoch", type=float, default=2010.0,
                    help="transform-time epoch tt, decimal year (default 2010.0; "
                         "inert for static-frame targets)")
@@ -407,7 +496,9 @@ def assess_dem_main(argv=None) -> int:
                         "from --sources and written here (default: <outdir>/<site-name>_control.parquet)")
     p.add_argument("--sources", default="3dep,ngs,opus,ngl,faa",
                    help="comma-separated fetch sources (default: every provider)")
-    p.add_argument("--outdir", required=True, help="output directory")
+    p.add_argument("--outdir", default=None,
+                   help="output directory (default: <input stem>_groundcontrol/ "
+                        "next to the first input)")
     p.add_argument("--site-name", default=None,
                    help="prefix for output artifacts (default: the first product's "
                         "file stem)")
@@ -442,6 +533,9 @@ def assess_dem_main(argv=None) -> int:
     if args.radius is not None and args.method != p.get_default("method"):
         p.error("--radius and --method are mutually exclusive (radius mode "
                 "computes a neighborhood median)")
+    if args.vdatum is not None and args.target_crs is not None:
+        p.error("--vdatum and --target-crs are mutually exclusive: --target-crs "
+                "already declares the vertical datum")
 
     from groundcontrol import io
 
@@ -450,8 +544,62 @@ def assess_dem_main(argv=None) -> int:
     # cache, then the rasters (may touch the network for remote ones), then
     # the output directory -- so a typo fails here, not after the points
     # are fetched.
-    aoi = _parse_aoi(args.aoi) if args.aoi is not None else None
     products = _parse_kv(args.product, "--product")
+    pos_vector = None
+    for item in args.inputs:
+        kind = _preflight(_classify_input, item)
+        if kind == "raster":
+            name = "DTM" if "dtm" in Path(item).stem.lower() else "DSM"
+            if name in products:   # second surface raster etc.: stem names
+                name = Path(item).stem
+            if name in products:
+                raise SystemExit(f"error: positional product name {name!r} "
+                                 f"({item}) collides; use --product NAME=PATH")
+            products[name] = item
+        else:
+            if pos_vector is not None:
+                raise SystemExit("error: more than one vector input "
+                                 f"({pos_vector!r}, {item!r}); pass extra "
+                                 "vectors via --aoi or as --product rasters")
+            if args.aoi is not None:
+                raise SystemExit(f"error: vector input {item!r} conflicts "
+                                 "with --aoi")
+            pos_vector = item
+    if not products and pos_vector is None:
+        p.error("no inputs: pass raster product(s) and/or a vector AOI "
+                "(positionally, or via --product/--aoi)")
+    first_input = (args.inputs[0] if args.inputs
+                   else next(iter(products.values())))
+    if args.outdir is None:
+        args.outdir = str(Path(first_input).parent
+                          / (Path(first_input).stem + "_groundcontrol"))
+        print(f"outdir (default): {args.outdir}", file=sys.stderr)
+    if not products:
+        # AOI-only: the standard fetch path IS this run (owner 2026-08-31:
+        # `groundcontrol-assess aoi.geojson` should just work)
+        for flag, val in (("--target-crs", args.target_crs),
+                          ("--vdatum", args.vdatum),
+                          ("--source-crs", args.source_crs),
+                          ("--hs", args.hs), ("--rgb", args.rgb),
+                          ("--intensity", args.intensity)):
+            if val:
+                raise SystemExit(f"error: {flag} needs a raster product; "
+                                 "an AOI-only run has none")
+        site = args.site_name or Path(pos_vector).stem
+        out = Path(args.outdir)
+        _preflight(_make_outdir, out)
+        print("no raster product: running the AOI-only fetch "
+              "(groundcontrol-fetch) with the standard figure set",
+              file=sys.stderr)
+        argv2 = ["--aoi", pos_vector, "--sources", args.sources,
+                 "--out", str(out / f"{site}_control.parquet"),
+                 "--basemap", args.basemap]
+        if args.no_figures:
+            argv2.append("--no-figures")
+        return fetch_control_main(argv2)
+    if pos_vector is not None:
+        args.aoi = pos_vector
+    aoi = _parse_aoi(args.aoi) if args.aoi is not None else None
     hs = None
     if args.hs:
         if len(args.hs) == 1 and "=" not in args.hs[0]:
@@ -483,6 +631,8 @@ def assess_dem_main(argv=None) -> int:
     if args.intensity is not None:
         intensity = _check_rasters({"intensity": args.intensity},
                                    "--intensity")["intensity"]
+    if args.vdatum is not None:
+        target_crs = _preflight(_vdatum_target_crs, products, args.vdatum)
     if target_crs is None:
         target_crs = _embedded_target_crs(products)
     if isinstance(hs, str):

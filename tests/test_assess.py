@@ -581,7 +581,7 @@ def test_assess_bundle_includes_labeled_control_map(tmp_path):
     pts = _landed([0.1, -0.1, 0.2, 0.0]).rename(columns={"h_ell": "height"})
     _, _, art = assess_products(pts, {"DSM": dsm}, CRS, source_crs=CRS,
                                 outdir=tmp_path / "out", site_name="cm",
-                                basemap=None)
+                                basemap=None, midas_velocities=False)
     names = [p.name for p in art["control_figures"]]
     assert "cm_control_map.png" in names
     assert (tmp_path / "out" / "cm_control_map.png").exists()

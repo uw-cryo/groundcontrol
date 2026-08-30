@@ -185,7 +185,10 @@ def test_assess_refuses_2d_embedded_crs_without_target_crs(tmp_path, monkeypatch
     dem = _dem(tmp_path / "dsm.tif")  # plain EPSG:32612, 2D
     monkeypatch.setattr("groundcontrol.sources.fetch_control",
                         lambda *a, **k: pytest.fail("fetch must not run"))
-    with pytest.raises(SystemExit, match=r"--target-crs is required.*without a height axis"):
+    with pytest.raises(SystemExit,
+                       match=r"--target-crs or --vdatum is required"
+                             r"[\s\S]*without a height axis"
+                             r"[\s\S]*--vdatum ellipsoid"):
         assess_dem_main(["--product", f"DSM={dem}", "--outdir", str(tmp_path / "out")])
     assert not (tmp_path / "out").exists()
 
@@ -266,7 +269,8 @@ def test_validation_figure_accepts_hillshade_tuple(tmp_path):
     pts = _control_on(dem)
     sampled, stats, art = assess_products(
         pts, {"DSM": dem}, CRS, source_crs=CRS, outdir=tmp_path / "out",
-        site_name="s", aoi=None, hs=None)          # hs derived from the product
+        site_name="s", aoi=None, hs=None,          # hs derived from the product
+        midas_velocities=False)                    # offline test: no network
     assert [p.name for p in art["figures"]] == ["s_validation_dz_DSM.png"]
 
 
@@ -456,7 +460,9 @@ def test_figure_helpers_accept_raster_aoi_path(tmp_path):
                             families=("3dep",))
     assert out and out[0].exists()
     pts["raw"] = "{}"                                 # datasheet facets read raw
-    out = standard_control_figures(pts, dem, tmp_path / "c", "s")
+    out = standard_control_figures(pts, dem, tmp_path / "c", "s",
+                                   midas_velocities=False,  # offline test
+                                   map_basemap=None)
     assert out and all(p.exists() for p in out)
 
 
@@ -620,7 +626,8 @@ def test_assess_writes_context_sheets_for_gnss_and_faa(tmp_path):
     pts["id"] = [f"P{i}" for i in range(len(pts))]
     _, _, art = assess_products(pts, {"DSM": dem}, CRS, source_crs=CRS,
                                 outdir=tmp_path / "out", site_name="s",
-                                basemap=None)      # offline test: no tile fetch
+                                basemap=None,      # offline test: no tile fetch
+                                midas_velocities=False)
     names = sorted(p.name for p in art["context_sheets"])
     # per-source subsets x the two standard tiers (recovered spec 2026-08-29)
     assert names == [f"s_{sub}_gallery_{tier}.png"
@@ -634,7 +641,7 @@ def test_assess_writes_context_sheets_for_gnss_and_faa(tmp_path):
     dense = pts[pts["point_type"] == "monument"]   # NGS monuments: never sheeted
     _, _, art2 = assess_products(dense, {"DSM": dem}, CRS, source_crs=CRS,
                                  outdir=tmp_path / "out2", site_name="d",
-                                 basemap=None)
+                                 basemap=None, midas_velocities=False)
     assert "context_sheets" not in art2
     assert not list((tmp_path / "out2").glob("*gallery*"))
 
@@ -747,6 +754,10 @@ def test_fetch_context_sheets_from_aoi_only(tmp_path, monkeypatch):
                                and crs.is_projected else "EPSG:32612")
 
     monkeypatch.setattr(figures, "open_web_basemap", fake_web)
+
+    def _no_net(*a, **k):   # offline test: the MIDAS block takes its skip path
+        raise OSError("offline test")
+    monkeypatch.setattr("groundcontrol.sources.ngl.read_midas", _no_net)
     rc = fetch_control_main(["--aoi=-112,32.6,-111.5,33.0", "--sources", "ngs",
                              "--out", str(tmp_path / "ctl.parquet"),
                              "--context-sheets"])
@@ -832,3 +843,35 @@ def test_gnss_timeseries_figures_from_fixture(tmp_path, monkeypatch):
     # no NGL rows -> None, no file
     assert gnss_timeseries(st[st.source == "ngs"], tmp_path, "t") is None
     assert gnss_station_series(st[st.source == "ngs"], tmp_path, "t") is None
+
+
+def test_raster_footprint_caps_fragmented_mosaics(tmp_path, monkeypatch, caplog):
+    """A strip/tile mosaic that polygonizes into thousands of pieces falls
+    back to the valid-data bounds box with a warning (rasuwa corridor
+    finding 2026-08-31) instead of an unbounded unary_union."""
+    import rasterio
+    from affine import Affine
+
+    from groundcontrol import aoi as A
+    arr = np.zeros((16, 16), dtype="float32")
+    arr[::2, ::2] = 1.0                       # 64 disjoint single-pixel patches
+    path = tmp_path / "checker.tif"
+    with rasterio.open(path, "w", driver="GTiff", height=16, width=16, count=1,
+                       dtype="float32", crs="EPSG:32612", nodata=0.0,
+                       transform=Affine(1.0, 0.0, 500000, 0.0, -1.0, 3800016)) as dst:
+        dst.write(arr, 1)
+    monkeypatch.setattr(A, "FOOTPRINT_MAX_PIECES", 8)
+    with caplog.at_level("WARNING", logger="groundcontrol.aoi"):
+        gdf = A.raster_footprint(path)
+    assert "simplified to the valid-data bounds box" in caplog.text
+    geom = gdf.to_crs("EPSG:32612").geometry.iloc[0]
+    # one simple box spanning the valid block (rows/cols 0..14 inclusive)
+    assert geom.geom_type == "Polygon"
+    np.testing.assert_allclose(geom.bounds,                # 4326 round-trip
+                               (500000.0, 3800001.0, 500015.0, 3800016.0),
+                               atol=1e-4)
+    # under the cap the exact multipart footprint is kept
+    monkeypatch.setattr(A, "FOOTPRINT_MAX_PIECES", 2000)
+    exact = A.raster_footprint(path).to_crs("EPSG:32612").geometry.iloc[0]
+    assert exact.geom_type == "MultiPolygon"
+    assert len(exact.geoms) == 64

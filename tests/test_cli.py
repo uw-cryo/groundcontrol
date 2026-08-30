@@ -646,3 +646,93 @@ def test_assess_source_crs_accepts_wkt_file_like_target_crs(tmp_path, monkeypatc
     rc = _assess(_base(tmp_path, dsm, target_crs=str(wkt))
                  + ["--source-crs", str(wkt), "--control", str(cache)])
     assert rc == 0
+
+
+# ------------------------------------- positional inputs, --vdatum (2026-08-31)
+
+def test_vdatum_target_crs_helper(tmp_path):
+    """--vdatum resolver: product 2D horizontal + vertical spec -> 3D target."""
+    import pyproj
+
+    from groundcontrol.cli import _vdatum_target_crs
+    dsm = _plane_tif(tmp_path)
+    c = pyproj.CRS(_vdatum_target_crs({"DSM": dsm}, "ellipsoid"))
+    assert len(c.axis_info) == 3
+    assert [a.direction for a in c.axis_info] == ["east", "north", "up"]
+    c2 = pyproj.CRS(_vdatum_target_crs({"DSM": dsm}, "EPSG:5703"))
+    assert c2.equals(pyproj.CRS("EPSG:32611+5703"))
+    with pytest.raises(ValueError, match="not a vertical CRS"):
+        _vdatum_target_crs({"DSM": dsm}, "EPSG:4326")
+    with pytest.raises(ValueError, match="does not\nresolve as a CRS|does not "):
+        _vdatum_target_crs({"DSM": dsm}, "GEOID18")
+
+
+def test_assess_vdatum_excludes_target_crs(tmp_path, monkeypatch, capsys):
+    _forbid_fetch(monkeypatch)
+    dsm = _plane_tif(tmp_path)
+    with pytest.raises(SystemExit):        # argparse p.error -> exit 2 + stderr
+        _assess(_base(tmp_path, dsm) + ["--vdatum", "ellipsoid"])
+    assert "mutually exclusive" in capsys.readouterr().err
+
+
+def test_assess_2d_refusal_suggests_vdatum_choices(tmp_path, monkeypatch):
+    """The 2D-CRS refusal names concrete completions with the product's own
+    EPSG (owner 2026-08-31: give people the common choices)."""
+    _forbid_fetch(monkeypatch)
+    dsm = _plane_tif(tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        _assess([BBOX, "--product", f"DSM={dsm}",
+                 "--outdir", str(tmp_path / "out"), "--no-figures"])
+    msg = str(exc.value)
+    assert "--vdatum ellipsoid" in msg
+    assert "--vdatum EPSG:5703" in msg
+    assert "EPSG:32611+5703" in msg
+
+
+def test_assess_positional_raster_names_and_default_outdir(tmp_path, monkeypatch, capsys):
+    """`groundcontrol-assess dem.tif`: stem-classified product name and the
+    <stem>_groundcontrol default outdir, then the normal 2D-CRS refusal."""
+    _forbid_fetch(monkeypatch)
+    dsm = _plane_tif(tmp_path)                      # stem 'plane' -> DSM
+    with pytest.raises(SystemExit, match="product DSM="):
+        _assess([dsm])
+    assert (f"outdir (default): {tmp_path / 'plane_groundcontrol'}"
+            in capsys.readouterr().err)
+    dtm = _plane_tif(tmp_path, name="site_dtm.tif")  # 'dtm' in stem -> DTM
+    with pytest.raises(SystemExit, match="product DTM="):
+        _assess([dtm])
+
+
+def test_assess_positional_vector_dispatches_to_fetch(tmp_path, monkeypatch):
+    """`groundcontrol-assess aoi.geojson` (no raster) runs the AOI-only
+    fetch path — proven by the forbidden fetch_control being reached."""
+    _forbid_fetch(monkeypatch)
+    aoi = tmp_path / "site_aoi.geojson"
+    _points().to_crs("EPSG:4326")[["geometry"]].to_file(aoi, driver="GeoJSON")
+    with pytest.raises(AssertionError, match="fetch_control called"):
+        _assess([str(aoi)])
+    # the default outdir was derived next to the AOI
+    assert (tmp_path / "site_aoi_groundcontrol").is_dir()
+
+
+def test_assess_positional_rejections(tmp_path, monkeypatch, capsys):
+    _forbid_fetch(monkeypatch)
+    aoi = tmp_path / "a.geojson"
+    _points().to_crs("EPSG:4326")[["geometry"]].to_file(aoi, driver="GeoJSON")
+    aoi2 = tmp_path / "b.geojson"
+    _points().to_crs("EPSG:4326")[["geometry"]].to_file(aoi2, driver="GeoJSON")
+    with pytest.raises(SystemExit, match="more than one vector"):
+        _assess([str(aoi), str(aoi2)])
+    with pytest.raises(SystemExit, match="conflicts\n.*--aoi|conflicts "):
+        _assess([str(aoi), "--aoi", str(aoi2)])
+    with pytest.raises(SystemExit):        # argparse p.error -> exit 2 + stderr
+        _assess(["--outdir", str(tmp_path / "out")])
+    with pytest.raises(SystemExit, match="file not found"):
+        _assess([str(tmp_path / "missing.tif")])
+    assert "no inputs" in capsys.readouterr().err
+    junk = tmp_path / "notes.txt"
+    junk.write_text("not geodata")
+    with pytest.raises(SystemExit, match="not a readable raster or vector"):
+        _assess([str(junk)])
+    with pytest.raises(SystemExit, match="--vdatum needs a raster"):
+        _assess([str(aoi), "--vdatum", "ellipsoid"])

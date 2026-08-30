@@ -335,9 +335,18 @@ def _vdatum_target_crs(products, vdatum):
                              "full 3D frame via --target-crs")
         crs = pyproj.CRS.from_user_input(crs)
         if has_vertical_axis(crs):
-            raise ValueError(f"--vdatum: product {name}={path} already "
-                             f"declares its heights ({crs.name}); drop "
-                             "--vdatum, or override with --target-crs")
+            from groundcontrol.geodesy import is_wgs84_ensemble
+            if not is_wgs84_ensemble(crs):
+                raise ValueError(f"--vdatum: product {name}={path} already "
+                                 f"declares its heights ({crs.name}); drop "
+                                 "--vdatum, or override with --target-crs")
+            # 3D on the ENSEMBLE is a declaration in name only (~2 m of
+            # ambiguity) — --vdatum is exactly the disambiguation the
+            # embedded-CRS refusal asks for (owner catch-22 report,
+            # 2026-09-01): proceed from the demoted horizontal
+            if crs.is_compound:
+                crs = pyproj.CRS(crs.sub_crs_list[0])
+            crs = crs.to_2d()
         seen[name] = crs
     first = next(iter(seen.values()))
     for name, crs in seen.items():

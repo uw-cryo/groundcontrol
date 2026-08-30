@@ -893,7 +893,9 @@ def _finish_map(ax, aoi_gdf, clip_to_aoi=True, points=None):
     # equal aspect is the map contract (env figures.md) and silences the
     # matplotlib-scalebar unequal-aspect warning (#23)
     ax.set_aspect("equal")
-    add_scalebar(ax)
+    crs = (aoi_gdf.crs if aoi_gdf is not None
+           else points.crs if points is not None else None)
+    add_scalebar(ax, crs=crs)
 
 
 def _aspect_panel_w(aoi_gdf, map_h, lo=0.5, hi=1.5):

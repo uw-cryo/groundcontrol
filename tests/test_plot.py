@@ -157,3 +157,20 @@ def test_add_scalebar_artist_added():
     assert bar in ax.artists
     fig.canvas.draw()  # renders without error
     plt.close(fig)
+
+
+def test_scalebar_feet_grid_labels_meters():
+    """A ftUS state-plane grid gets a correct metric bar (owner 2026-09-01:
+    Alaska SPCS lidar tile) — dx carries the unit factor."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from groundcontrol.plot import add_scalebar
+    _, ax = plt.subplots()
+    ax.plot([0, 32808], [0, 32808])          # ~10 km span in US feet
+    ax.set_xlim(0, 32808)
+    bar = add_scalebar(ax, crs="EPSG:2225")  # NAD83 / California 1 (ftUS)
+    assert bar.fixed_units == "km"           # ~10 km span -> km bar
+    assert abs(bar.dx - 0.3048006) < 1e-4    # ftUS in meters
+    plt.close("all")

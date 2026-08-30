@@ -542,8 +542,13 @@ def _scalebar_auto_loc(ax) -> str:
 
 
 def add_scalebar(ax, length: float | None = None, label: str | None = None,
-                 loc: str = "auto", color: str = "k"):
-    """Add a scalebar in data units (meters for projected CRSs).
+                 loc: str = "auto", color: str = "k", crs=None):
+    """Add a scalebar labeled in meters/km, whatever the grid unit.
+
+    ``crs`` (optional): the axes' projected CRS — its axis unit sets the
+    data-unit-to-meter factor, so a ftUS state-plane grid (owner 2026-09-01,
+    Alaska SPCS lidar tile) gets a correct metric bar instead of one
+    mislabeled by 3.28x. Without it the grid is assumed metric.
 
     Intended companion to :func:`plot_dh_map` when axis tick labels are
     dropped for map-style panels. Uses ``matplotlib-scalebar`` (house rule,
@@ -559,15 +564,21 @@ def add_scalebar(ax, length: float | None = None, label: str | None = None,
 
     if loc == "auto":
         loc = _scalebar_auto_loc(ax)
+    factor = 1.0   # meters per data unit
+    if crs is not None:
+        import pyproj
+        c = pyproj.CRS.from_user_input(crs)
+        if c.is_projected:
+            factor = float(c.axis_info[0].unit_conversion_factor)
     if length is None:
         x0, x1 = ax.get_xlim()
-        length = nice_scale_length(abs(x1 - x0))
+        length = nice_scale_length(abs(x1 - x0) * factor)   # meters
     # promote to km above 1000 m (ScaleBar renders fixed_units literally)
     value, unit = (length / 1000.0, "km") if length >= 1000 else (length, "m")
     kwargs = {}
     if label is not None:
         kwargs["scale_formatter"] = lambda v, u: label
-    bar = ScaleBar(1.0, units="m", location=loc,
+    bar = ScaleBar(factor, units="m", location=loc,
                    fixed_value=value, fixed_units=unit,
                    color=color, box_alpha=0.7, frameon=True, **kwargs)
     ax.add_artist(bar)

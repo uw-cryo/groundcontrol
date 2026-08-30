@@ -379,6 +379,15 @@ def fetch(aoi_bounds_4326, frame: str = "IGS14", epoch=None, time_range=None,
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         results = list(ex.map(_get, (row for _, row in sel.iterrows())))
     stations = [s for s in results if s is not None]
+    if not stations:
+        # nothing to enrich: skip the MIDAS/network/steps catalog fetches
+        # entirely (owner 2026-09-01: a 0-candidate Alaska tile hung for
+        # minutes downloading the full steps catalog for an empty list)
+        return {"frame": frame,
+                "epoch": None if epoch is None else float(epoch),
+                "time_range": None if time_range is None
+                else tuple(time_range),
+                "stations": []}
     if with_velocities:
         vmap = _midas_velocity_map(frame)
         for s in stations:

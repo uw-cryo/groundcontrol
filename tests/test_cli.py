@@ -893,3 +893,34 @@ def test_vdatum_rebase_samples_under_declared_frame(tmp_path, monkeypatch):
     from groundcontrol.sample import _grid_signature
     assert _grid_signature("EPSG:32610") == _grid_signature(tgt)
     assert _grid_signature("EPSG:32611") != _grid_signature(tgt)
+
+
+def test_vdatum_disambiguates_3d_ensemble_product(tmp_path):
+    """A product declaring 3D heights on the WGS84 ENSEMBLE is ambiguity
+    in name only: the embedded-CRS refusal tells the user to pass
+    --vdatum ellipsoid:<realization>, so the vdatum path must accept it
+    (owner catch-22 report 2026-09-01). A REALIZED 3D declaration is
+    still respected/refused."""
+    import pyproj
+
+    from groundcontrol.cli import _vdatum_target_crs
+    from groundcontrol.geodesy import build_utm_itrf2014_3d
+    dsm = _plane_tif_wgs84(tmp_path)
+    with rasterio.open(dsm, "r+") as dst:
+        dst.crs = rasterio.crs.CRS.from_wkt(
+            pyproj.CRS.from_epsg(32610).to_3d().to_wkt())
+    with rasterio.open(dsm) as src:
+        from groundcontrol.assess import has_vertical_axis
+        if not has_vertical_axis(pyproj.CRS.from_user_input(src.crs)):
+            pytest.skip("GDAL build flattens 3D GeoTIFF CRS")
+    wkt = _vdatum_target_crs({"DSM": dsm}, "ellipsoid:itrf2014")
+    assert pyproj.CRS(wkt).equals(build_utm_itrf2014_3d(32610))
+    # realized 3D declaration: still refused
+    n83 = _plane_tif_nad83(tmp_path, name="n83_3d.tif")
+    with rasterio.open(n83, "r+") as dst:
+        dst.crs = rasterio.crs.CRS.from_wkt(
+            pyproj.CRS.from_epsg(6339).to_3d().to_wkt())
+    with rasterio.open(n83) as src:
+        if has_vertical_axis(pyproj.CRS.from_user_input(src.crs)):
+            with pytest.raises(ValueError, match="already declares"):
+                _vdatum_target_crs({"DSM": n83}, "ellipsoid")

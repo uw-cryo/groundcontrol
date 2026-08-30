@@ -167,14 +167,35 @@ def fetch_control(aoi, sources=("3dep", "ngs", "opus", "ngl", "faa"),
     bounds, poly = _aoi_bounds_and_poly(aoi)
     frames: list[gpd.GeoDataFrame] = []
     status: dict[str, dict] = {}
+    # network fetches run CONCURRENTLY (owner 2026-09-01: five serial
+    # providers were pure wall-clock; the slow parts are downloads).
+    # Parse + landing stay SERIAL in this thread: the landing path shares
+    # cached pyproj transformers, and provider fetches are the only part
+    # that is trivially independent.
+    from concurrent.futures import ThreadPoolExecutor
+    known = [n for n in sources if n in PROVIDERS]
+    raw: dict = {}
+    fetch_err: dict = {}
+    if known:
+        with ThreadPoolExecutor(max_workers=len(known)) as pool:
+            futs = {}
+            for name in known:
+                logger.info("querying %s ...", name)
+                futs[name] = pool.submit(PROVIDERS[name][0], bounds)
+            for name in known:
+                try:
+                    raw[name] = futs[name].result()
+                except Exception as e:  # logged once, in the main handler
+                    fetch_err[name] = e
     for name in sources:
         if name not in PROVIDERS:
             status[name] = {"n_rows": 0, "error": f"unknown source {name!r}"}
             continue
-        fetch, parse = PROVIDERS[name]
-        logger.info("querying %s ...", name)
+        _, parse = PROVIDERS[name]
         try:
-            gdf = parse(fetch(bounds))
+            if name in fetch_err:
+                raise fetch_err[name]
+            gdf = parse(raw[name])
             # per-row quarantine report (e.g. #21 unmapped NGS realizations)
             # — read BEFORE landing/normalize (pandas ops may drop .attrs)
             skipped = dict(getattr(gdf, "attrs", {}).get("skipped") or {})

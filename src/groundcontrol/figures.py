@@ -75,14 +75,14 @@ def _heliport_marker():
 #: Values: (marker, color, size, zorder, label).
 POINT_STYLE = {
     "monument": ("+", "#111111", 30, 4, "NGS monument"),
-    # occupation-class ramp dark blue / light blue / WHITE (owner
-    # 2026-08-30: the three blues were too close). White is a MAP FILL
-    # only — it gets a dark edge on maps (see _edge_for) and a legible
-    # ink for text/histograms (class_ink); one source of truth, two
-    # renderings.
-    "gnss_cont": ("*", "#0033A0", 90, 5, "GNSS continuous"),
-    "gnss_semicont": ("*", "#56B4E9", 90, 5, "GNSS semi-continuous"),
-    "gnss_campaign": ("*", "white", 90, 5, "GNSS campaign"),
+    # occupation-class ramp: three lightness steps of one blue family
+    # (owner iterations 2026-08-30: three close blues failed, then white
+    # failed on white backgrounds) — near-black navy / mid blue / light
+    # blue; the light fill takes a dark edge on maps (_edge_for) and a
+    # slightly darkened ink for text/histograms (class_ink).
+    "gnss_cont": ("*", "#08306B", 90, 5, "GNSS continuous"),
+    "gnss_semicont": ("*", "#3E8EC4", 90, 5, "GNSS semi-continuous"),
+    "gnss_campaign": ("*", "#A6CEE3", 90, 5, "GNSS campaign"),
     "gnss": ("*", "#888888", 90, 5, "GNSS (pre-split)"),
     "VVA": ("s", "#E69F00", 45, 6, "3DEP VVA"),
     "NVA": ("o", "#C00000", 55, 7, "3DEP NVA"),
@@ -714,9 +714,9 @@ def point_context_gallery(points, layers, outdir, site_name, *,
             page_note = (f"{page_cls} — page {pg}/{len(pages)}"
                          if len(pages) > 1 else page_cls)
             fig.suptitle(
-                f"{site_name} {subset_tag} points — {tags} ({2*half_m:.0f} m "
+                f"{subset_tag} points — {tags} ({2*half_m:.0f} m "
                 f"windows{', native pixels' if interp == 'nearest' else ''})"
-                f"{page_note}",
+                f"{page_note}: {site_name}",
                 fontsize=12, y=1.0 - 0.12 / fig_h)
             fig.subplots_adjust(left=0.01, right=0.995,
                                 top=1.0 - 0.52 / fig_h, bottom=0.18 / fig_h)
@@ -915,13 +915,13 @@ def _aspect_panel_w(aoi_gdf, map_h, lo=0.5, hi=1.5):
 #: too-pale-for-white-background fills -> the legible ink used for
 #: histogram fills/edges and stats text (class_ink); the GNSS-family hue
 #: keeps the campaign class visually in the family
-_PALE_INK = {"white": "#4477AA"}
+_PALE_INK = {"white": "#4477AA", "#A6CEE3": "#6FA3D0"}
 
 
 def class_ink(style_key_or_color):
     """Text/histogram color for a POINT_STYLE key or raw color — the pale
-    map fills (white campaign stars) fall back to :data:`_PALE_INK` so
-    every white-background consumer agrees (owner 2026-08-30)."""
+    map fills (light-blue campaign stars) fall back to :data:`_PALE_INK`
+    so every white-background consumer agrees (owner 2026-08-30)."""
     col = (POINT_STYLE[style_key_or_color][1]
            if style_key_or_color in POINT_STYLE else style_key_or_color)
     return _PALE_INK.get(col, col)
@@ -931,7 +931,7 @@ def _edge_for(mk, col):
     """Map-marker edge: white halo normally; pale fills flip to the dark
     family edge so a white star stays visible on the hillshade."""
     if col in _PALE_INK:
-        return "#0033A0"
+        return "#08306B"
     return "white" if mk != "+" else col
 
 
@@ -1081,7 +1081,7 @@ def control_map_figure(ctl, aoi_p, outdir, site_name, *, dem_tif=None,
                               label="AOI"))
     ax.legend(handles=handles, loc="lower left", fontsize=9, framealpha=0.92)
     _finish_map(ax, aoi_p, clip_to_aoi, points=ctl)
-    ax.set_title(title or f"{site_name} — control points (n={len(ctl)})",
+    ax.set_title(title or f"Control points (n={len(ctl)}): {site_name}",
                  fontsize=11, color=_INK)
     fig.tight_layout()
     fp = outdir / (fname or f"{site_name}_control_map.png")
@@ -1148,11 +1148,21 @@ def gnss_timeseries(control, outdir, site_name, *, frame="IGS14",
         steps_all.update(_row_steps(r.get("raw"), "eq_steps"))
     if not series:
         return None
+    import matplotlib.patheffects as pe
+
     fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+
+    def _lim(vals):
+        v = pd.to_numeric(vals, errors="coerce") * 1000.0
+        return max(float(np.nanpercentile(np.abs(v), 98))
+                   if np.isfinite(v).any() else 1.0, 0.5)
+
+    # dE and dN share ONE color scale (owner 2026-08-31) so horizontal
+    # rates are comparable across the two panels; dU keeps its own.
+    lim_h = _lim(pd.concat([pd.to_numeric(st.get("vel_e"), errors="coerce"),
+                            pd.to_numeric(st.get("vel_n"), errors="coerce")]))
     for ax, (lab, vcol, ci) in zip(axes, comps):
-        rates = pd.to_numeric(st.get(vcol), errors="coerce") * 1000.0
-        lim = max(float(np.nanpercentile(np.abs(rates), 98))
-                  if np.isfinite(rates).any() else 1.0, 0.5)
+        lim = lim_h if vcol in ("vel_e", "vel_n") else _lim(st.get(vcol))
         cmap = plt.get_cmap("RdYlBu")
         norm = plt.Normalize(-lim, lim)
         for (_, r) in st.iterrows():
@@ -1166,9 +1176,13 @@ def gnss_timeseries(control, outdir, site_name, *, frame="IGS14",
                                  errors="coerce").iloc[0]
             col = cmap(norm(rate * 1000.0)) if np.isfinite(rate) else "0.5"
             ax.plot(bt, bv, ".-", ms=2.2, lw=0.7, color=col, alpha=0.85)
+            # thin dark halo (owner 2026-08-31): light ramp colors made
+            # the station names unreadable on white
             ax.annotate(sid, (bt[-1], bv[-1]), xytext=(4, 0),
                         textcoords="offset points", fontsize=6.5, color=col,
-                        fontweight="bold")
+                        fontweight="bold",
+                        path_effects=[pe.withStroke(linewidth=1.1,
+                                                    foreground="0.25")])
         for s_ in sorted(steps_all):
             ax.axvline(s_, color="0.4", lw=0.9, ls="--", zorder=1)
         ax.axhline(0, color=_INK, lw=0.6, alpha=0.5)
@@ -1176,11 +1190,14 @@ def gnss_timeseries(control, outdir, site_name, *, frame="IGS14",
         ax.grid(alpha=0.25, lw=0.5)
         sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
         cb = fig.colorbar(sm, ax=ax, pad=0.01)
-        cb.set_label(f"MIDAS {vcol} (mm/yr)", fontsize=8)
+        cb.set_label(f"MIDAS {vcol} (mm/yr"
+                     + (", shared E/N scale)" if vcol != "vel_u" else ")"),
+                     fontsize=8)
         cb.ax.tick_params(labelsize=7)
     axes[-1].set_xlabel("year")
-    axes[0].set_title(f"{site_name} — n={len(series)} NGL stations, E/N/U series "
-                      f"({bin_yr:g}-yr bin medians); dashed = earthquake steps",
+    axes[0].set_title(f"NGL E/N/U component series ({bin_yr:g}-yr bin "
+                      f"medians; dashed = earthquake steps), "
+                      f"n={len(series)} stations: {site_name}",
                       fontsize=11, color=_INK)
     fp = outdir / f"{site_name}_gnss_timeseries.png"
     fig.savefig(fp, dpi=dpi, bbox_inches="tight")
@@ -1188,15 +1205,132 @@ def gnss_timeseries(control, outdir, site_name, *, frame="IGS14",
     return fp
 
 
+def step_aware_fit(dy, U, step_dates_dy, min_span=2.0, min_n=300,
+                   nmad_mult=3.0, offset_min_m=0.003, offset_sig=3.0,
+                   win_yr=0.75):
+    """Step-offset rate fit over the FULL series, keeping only REAL steps.
+
+    The owner-approved fit (graduated verbatim from the sandbox Las Vegas
+    analysis, 2026-08-31). NGL steps.txt lists *candidate* events (any
+    equipment change incl. receiver/firmware swaps, plus nearby
+    earthquakes) — most produce NO height offset (owner: UNR1 is a single
+    continuous series despite logged events). So:
+
+    1. fit common slope + per-candidate-segment intercepts (robust, full
+       series);
+    2. test each candidate's offset locally (medians of slope-detrended
+       data in windows beside the step, clipped at neighboring
+       candidates): keep only ``|offset| > max(offset_sig * SE,
+       offset_min_m)``;
+    3. refit with the KEPT steps only.
+
+    Candidates logged close together (antenna + radome entries are often
+    days apart) are clustered within 0.25 yr and tested as ONE composite
+    step — clipping test windows at each other starved the test and
+    silently rejected real steps (e.g. NVCA). Short records (span <
+    ``min_span`` yr or n < ``min_n``) get no rate (checkpoints).
+
+    Returns dict: class, rate_mm_yr, t0, t1, n_used, used, outliers,
+    offsets [(step_dy, offset_m) kept], steps_rejected [step_dy...],
+    model {slope_m_yr, intercepts, steps} for drawing fit lines.
+    """
+    dy = np.asarray(dy, dtype="float64")
+    U = np.asarray(U, dtype="float64")
+    t0, t1 = float(dy.min()), float(dy.max())
+    if (t1 - t0) < min_span or len(dy) < min_n:
+        return {"class": "short", "rate_mm_yr": None, "t0": t0, "t1": t1,
+                "n_used": len(dy), "used": np.ones(len(dy), bool),
+                "outliers": np.zeros(len(dy), bool), "offsets": [],
+                "steps_rejected": [], "model": None}
+    cand = np.sort(np.asarray(step_dates_dy, dtype="float64"))
+    cand = cand[(cand > t0) & (cand < t1)]
+
+    def robust_fit(steps):
+        seg = np.searchsorted(steps, dy, side="right")
+        nseg = len(steps) + 1
+
+        def _lsq(mask):
+            X = np.zeros((int(mask.sum()), 1 + nseg))
+            X[:, 0] = dy[mask]
+            X[np.arange(int(mask.sum())), 1 + seg[mask]] = 1.0
+            coef, *_ = np.linalg.lstsq(X, U[mask], rcond=None)
+            return coef
+
+        inl = np.ones(len(dy), bool)
+        coef = _lsq(inl)
+        resid = U - (coef[0] * dy + coef[1 + seg])
+        med = np.median(resid[inl])
+        nmad = 1.4826 * np.median(np.abs(resid[inl] - med))
+        out = (np.abs(resid - med) > nmad_mult * nmad) if nmad > 0 \
+            else np.zeros(len(dy), bool)
+        if out.any():
+            inl = ~out
+            coef = _lsq(inl)
+        return coef, seg, inl, out
+
+    # cluster candidates logged close together; test each cluster as ONE
+    # composite step at its first date
+    reps = []
+    for c in cand:
+        if reps and (c - reps[-1][-1]) <= 0.25:
+            reps[-1].append(float(c))
+        else:
+            reps.append([float(c)])
+    rep_dates = np.array([r[0] for r in reps])
+
+    # pass 1: all cluster representatives -> initial common slope
+    coef, seg, inl, out = robust_fit(rep_dates)
+    detr = U - coef[0] * dy
+    kept, rejected = [], []
+    edges = np.concatenate([[t0], rep_dates, [t1]])
+    for k, c in enumerate(rep_dates):
+        c_end = reps[k][-1]                      # cluster spans first..last entry
+        for widen in (win_yr, 10.0):             # local window, then widen fully
+            lo = max(c - widen, edges[k])        # clip at neighboring CLUSTERS
+            hi = min(c_end + widen, edges[k + 2])
+            b = inl & (dy >= lo) & (dy < c)
+            a = inl & (dy >= c_end) & (dy < hi)
+            if b.sum() >= 20 and a.sum() >= 20:
+                break
+        if b.sum() < 20 or a.sum() < 20:         # record-edge cluster: an offset
+            rejected.append(float(c))            # there cannot corrupt the slope
+            continue
+        mb = np.median(detr[b])
+        ma = np.median(detr[a])
+        nb = 1.4826 * np.median(np.abs(detr[b] - mb))
+        na = 1.4826 * np.median(np.abs(detr[a] - ma))
+        se = np.hypot(nb / np.sqrt(b.sum()), na / np.sqrt(a.sum()))
+        if abs(ma - mb) > max(offset_sig * se, offset_min_m):
+            kept.append(float(c))
+        else:
+            rejected.append(float(c))
+    # pass 2: kept steps only
+    kept_arr = np.asarray(kept, dtype="float64")
+    coef, seg, inl, out = robust_fit(kept_arr)
+    seg_counts = np.bincount(seg[inl], minlength=len(kept) + 1)
+    offsets = [(c, float(coef[2 + k] - coef[1 + k]))
+               for k, c in enumerate(kept)
+               if seg_counts[k] > 0 and seg_counts[k + 1] > 0]
+    return {"class": "rate", "rate_mm_yr": float(coef[0] * 1000.0),
+            "t0": t0, "t1": t1, "n_used": int(inl.sum()),
+            "used": inl, "outliers": out, "offsets": offsets,
+            "steps_rejected": rejected,
+            "model": {"slope_m_yr": float(coef[0]),
+                      "intercepts": [float(v) for v in coef[1:]],
+                      "steps": kept}}
+
+
 def gnss_station_series(control, outdir, site_name, *, frame="IGS14",
-                        bin_yr=0.05, ncols=3, dpi=200):
-    """TOP-LEVEL standard per-station vertical small multiples (owner
-    2026-08-30, the sandbox per-station figure formally included): one
-    panel per NGL station — vertical series (``bin_yr`` bin medians,
-    median-removed), the MIDAS rate line as the fit, earthquake steps
-    (red dashed) and antenna/equipment changes (gray dotted) marked from
-    the station's own steps.txt evidence. Titles carry n first, then the
-    MIDAS vertical rate. Returns the path or None (no NGL rows)."""
+                        dpi=200):
+    """Per-station NGL daily vertical small multiples — the sandbox
+    ``run_site_gnss.timeseries_figure`` layout adopted verbatim (owner
+    2026-08-31: "find those and use, don't create something new"): daily
+    U − station median (BLUE = used, GRAY = outliers, rasterized), ORANGE
+    :func:`step_aware_fit` segments (common slope + per-segment
+    intercepts), RED = kept (significant) steps, dotted GRAY = rejected
+    candidates. Candidate steps come from the row's own steps.txt
+    evidence (``raw`` eq_steps + equip_steps). Short records get no rate
+    (checkpoint only). Returns the path or None (no NGL rows)."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -1216,44 +1350,63 @@ def gnss_station_series(control, outdir, site_name, *, frame="IGS14",
         except Exception as exc:
             logger.warning("tenv3 for %s unavailable (%s); skipped", sid, exc)
             continue
-        rows.append((sid, t, u, r))
+        cand = sorted(set(_row_steps(r.get("raw"), "eq_steps")
+                          + _row_steps(r.get("raw"), "equip_steps")))
+        rows.append((sid, t, u, step_aware_fit(t, u, np.asarray(cand))))
     if not rows:
         return None
-    nrow = int(np.ceil(len(rows) / ncols))
-    fig, axes = plt.subplots(nrow, ncols, figsize=(4.2 * ncols, 2.4 * nrow),
+    rows.sort(key=lambda x: x[0])
+    n = len(rows)
+    ncols = min(5, max(2, n))
+    nrow = int(np.ceil(n / ncols))
+    fig_h = 1.9 * nrow + 0.75          # +title band (inches, nrow-proof)
+    fig, axes = plt.subplots(nrow, ncols, figsize=(3.1 * ncols, fig_h),
                              sharex=True, squeeze=False)
-    for k, (sid, t, u, r) in enumerate(rows):
+    for k, (sid, dy_s, u, fit) in enumerate(rows):
         ax = axes[k // ncols][k % ncols]
-        v = (u - np.nanmedian(u)) * 1000.0
-        bt, bv = _bin_medians(t, v, bin_yr)
-        ax.plot(bt, bv, ".", ms=2.0, color="#4477AA", alpha=0.8)
-        vu = pd.to_numeric(pd.Series([r.get("vel_u")]), errors="coerce").iloc[0]
-        if np.isfinite(vu):
-            tm = float(np.nanmedian(bt))
-            ax.plot([bt[0], bt[-1]],
-                    [vu * 1000.0 * (bt[0] - tm), vu * 1000.0 * (bt[-1] - tm)],
-                    color="#C00000", lw=1.3,
-                    label=f"MIDAS {vu * 1000.0:+.1f} mm/yr")
-        for s_ in _row_steps(r.get("raw"), "eq_steps"):
-            ax.axvline(s_, color="#C00000", lw=0.9, ls="--", alpha=0.8)
-        for s_ in _row_steps(r.get("raw"), "equip_steps"):
-            ax.axvline(s_, color="0.45", lw=0.9, ls=":", alpha=0.9)
-        ax.set_title(f"{sid} · n={len(t)} · MIDAS vel_u "
-                     f"{'nan' if not np.isfinite(vu) else f'{vu * 1000:+.1f}'} mm/yr",
-                     fontsize=8.5, loc="left")
-        ax.grid(alpha=0.25, lw=0.5)
+        u_med = float(np.median(u))
+        urel = u - u_med
+        if fit["class"] == "rate":
+            used = fit["used"]  # step OFFSETS are in-model; gray = outliers only
+            ax.plot(dy_s[~used], urel[~used], ".", ms=1.5, color="0.55",
+                    alpha=0.45, rasterized=True)
+            ax.plot(dy_s[used], urel[used], ".", ms=1.0, color="tab:blue",
+                    rasterized=True)
+            mdl = fit["model"]
+            seg_edges = np.concatenate([[dy_s.min()], mdl["steps"],
+                                        [dy_s.max()]])
+            for j in range(len(seg_edges) - 1):
+                xx = np.array([seg_edges[j], seg_edges[j + 1]])
+                yy = mdl["slope_m_yr"] * xx + mdl["intercepts"][j] - u_med
+                ax.plot(xx, yy, "-", color="tab:orange", lw=1.2, zorder=5)
+            for sdy in mdl["steps"]:              # KEPT (significant) steps
+                ax.axvline(sdy, color="tab:red", lw=0.7, alpha=0.8)
+            for sdy in fit["steps_rejected"]:     # candidates tested, no offset
+                ax.axvline(sdy, color="0.6", lw=0.5, ls=":", alpha=0.6)
+            nk = len(mdl["steps"])
+            ttl = (f"{sid}  {fit['rate_mm_yr']:+.1f} mm/yr "
+                   f"({nk} STEP{'S' if nk != 1 else ''})")
+        else:
+            ax.plot(dy_s, urel, ".", ms=1.0, color="0.55", alpha=0.45,
+                    rasterized=True)
+            ttl = f"{sid}  SHORT OCCUPATION (CHECKPOINT ONLY)"
+        ax.axhline(0, color="0.5", lw=0.4)
+        ax.set_title(ttl, fontsize=8)
         ax.tick_params(labelsize=7)
-    for k in range(len(rows), nrow * ncols):
-        axes[k // ncols][k % ncols].set_axis_off()
-    for ax in axes[-1]:
-        ax.set_xlabel("year", fontsize=8)
-    for rrow in axes:
-        rrow[0].set_ylabel("dU (mm)", fontsize=8)
-    fig.suptitle(f"{site_name} — n={len(rows)} NGL stations, vertical series "
-                 "(red dashed = earthquake, gray dotted = antenna/equipment "
-                 "change; line = MIDAS rate)", fontsize=11, color=_INK,
-                 y=1.0)
-    fig.tight_layout()
+    for k in range(n, nrow * ncols):
+        axes[k // ncols][k % ncols].set_visible(False)
+    fig.supylabel("U - STATION MEDIAN (m)",
+                  fontsize=min(10, 4 + 2 * nrow))  # short figs: don't clip
+    fig.supxlabel("DECIMAL YEAR", fontsize=10, y=0.02)
+    fig.suptitle(f"NGL daily vertical series, step-aware fits ({frame}), "
+                 f"n={n} stations: {site_name}", fontsize=11, color=_INK,
+                 y=1.0 - 0.10 / fig_h, va="top")
+    fig.text(0.5, 1.0 - 0.38 / fig_h,
+             "ORANGE = STEP-AWARE FIT (COMMON SLOPE + SEGMENT INTERCEPTS)"
+             " \u00b7 RED = KEPT STEPS, DOTTED GRAY = REJECTED CANDIDATES"
+             " \u00b7 BLUE = USED, GRAY = OUTLIERS/UNRATED",
+             ha="center", va="top", fontsize=7.2, color="0.35")
+    fig.tight_layout(rect=(0, 0.02, 1, 1.0 - 0.62 / fig_h))
     fp = outdir / f"{site_name}_gnss_station_series.png"
     fig.savefig(fp, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
@@ -1329,7 +1482,7 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
             hs_tif=hs_tif, cmap=cmap, dem_alpha=dem_alpha,
             clip_to_aoi=clip_to_aoi, label_points=label_points,
             label_gnss_ids=True, fname=f"{site_name}_{dname}_map.png",
-            title=f"{site_name} — {dname} control points (n={len(sub)})",
+            title=f"{dname} control points (n={len(sub)}): {site_name}",
             basemap=map_basemap, dpi=dpi))
 
     # ---- 2. NGS monument-type facets (ngs/ subdir: source-specific) --------
@@ -1354,7 +1507,7 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
             _finish_map(ax, aoi_p, clip_to_aoi)
             ax.legend(loc="lower left", fontsize=7.5, framealpha=0.9)
             ax.set_title(f"NGS monuments by {key}", fontsize=10, color=_INK)
-        fig.suptitle(f"{site_name} — NGS monument datasheet attributes "
+        fig.suptitle(f"NGS monument datasheet attributes: {site_name} "
                      f"(n={len(mon)})", fontsize=11.5, color=_INK)
         fig.tight_layout(rect=[0, 0, 1, 0.94])
         fp = outdir / "ngs" / f"{site_name}_monument_types.png"
@@ -1380,34 +1533,40 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
         # The vertical panel drops the ref key and the interp annotation —
         # horizontal numbers live on the horizontal panel, whose interp
         # label now carries both H and U with their 1-sigma spreads.
+        ngl_dir = outdir / "ngl"   # owner 2026-08-31: MIDAS + NGL series
+        ngl_dir.mkdir(parents=True, exist_ok=True)   # live in ngl/
         fig2 = plt.figure(figsize=(18.6, 9))
         gs2 = fig2.add_gridspec(1, 3, width_ratios=[1.0, 1.0, 0.03],
                                 wspace=0.14)
         axh_ = fig2.add_subplot(gs2[0, 0])
-        axv_ = fig2.add_subplot(gs2[0, 1])
+        axv_ = fig2.add_subplot(gs2[0, 1], sharey=axh_)  # shared latitude
         cax_ = fig2.add_subplot(gs2[0, 2])
         hs_path = hs_tif if isinstance(hs_tif, (str, Path)) else None
+        vel_bmap = map_basemap if (dem_tif is None and hs_path is None) \
+            else None
         plot_velocity_vectors(
             st, aoi=aoi_gdf, buffer_km=buffer_km, ax=axh_,
             color_by_vertical=False, hs_tif=hs_path, dem_tif=dem_tif,
-            title="horizontal")
+            basemap=vel_bmap, title="Horizontal motion (mm/yr)")
         plot_velocity_vectors(
             st, aoi=aoi_gdf, buffer_km=buffer_km, ax=axv_,
             color_by_vertical=True, hs_tif=hs_path, dem_tif=dem_tif,
-            cbar_ax=cax_, show_ref=False,
-            title="vertical-colored")
-        fig2.suptitle(f"{site_name} — MIDAS ({midas_frame}) velocity field",
-                      fontsize=13, color=_INK)
-        fp = outdir / f"{site_name}_midas_velocity.png"
+            basemap=vel_bmap, cbar_ax=cax_, show_ref=False,
+            title="Vertical motion (mm/yr)")
+        plt.setp(axv_.get_yticklabels(), visible=False)
+        axv_.set_ylabel("")
+        fig2.suptitle("GNSS velocities \u2014 MIDAS (Median Interannual "
+                      f"Difference Adjusted for Skewness), {midas_frame}: "
+                      f"{site_name}", fontsize=13, color=_INK)
+        fp = ngl_dir / f"{site_name}_midas_velocity.png"
         fig2.savefig(fp, dpi=dpi, bbox_inches="tight")
         plt.close(fig2)
         out.append(fp)
-        # ---- 5+6. NGL time series, TOP LEVEL beside their complementary
-        # MIDAS maps (owner 2026-08-30): E/N/U common series + per-station
-        # vertical small multiples with the MIDAS-rate fit and steps marked
+        # ---- 5+6. NGL series beside their complementary MIDAS maps:
+        # E/N/U common series + per-station step-aware small multiples
         for fn in (gnss_timeseries, gnss_station_series):
             try:
-                fp_ts = fn(control, outdir, site_name, frame=midas_frame,
+                fp_ts = fn(control, ngl_dir, site_name, frame=midas_frame,
                            dpi=dpi)
                 if fp_ts is not None:
                     out.append(fp_ts)
@@ -1466,7 +1625,7 @@ _SEG_STYLE = {
     "GNSS continuous": "gnss_cont",
     "GNSS semi-continuous": "gnss_semicont",
     "GNSS campaign (OPUS)": "gnss_campaign",
-    "GNSS campaign (NGL)": "#7BA3CF",
+    "GNSS campaign (NGL)": "#005F73",
     "GNSS campaign (other)": "#B07AA1",
     "GNSS (pre-split)": "gnss",
     "NGS monument": "monument",
@@ -1593,7 +1752,7 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         cb.set_label(f"dz = {prod} − control (m)", fontsize=9, color=_INK)
         cb.ax.tick_params(labelsize=8, colors=_MUT)
         _finish_map(axes[0], aoi, points=use)
-        axes[0].set_title(f"{site_name} {prod} − control  (n={len(use)})",
+        axes[0].set_title(f"{prod} − control (n={len(use)}): {site_name}",
                           fontsize=11, color=_INK)
 
         is_dtm = is_dtm_product(prod)  # the ONE DSM/DTM classifier (round 4)
@@ -1707,12 +1866,14 @@ def _opus_tier(d):
 #: figure (owner 2026-07-15) rather than shown as a huge tail.
 DZ_FAMILIES = {
     "3dep": ("3DEP CHECKPOINTS", [
-        ("NVA", lambda d: (d["source"] == "3dep") & (d["point_type"] == "NVA"),
+        ("Non-Vegetated Vertical Accuracy (NVA)",
+         lambda d: (d["source"] == "3dep") & (d["point_type"] == "NVA"),
          "NVA", "o"),
         # no products restriction (owner 2026-08-30): VVA renders on the DSM
         # figure too — the canopy bias is informative, and `applies` in the
         # stats CSV still says it does not validate a DSM
-        ("VVA", lambda d: (d["source"] == "3dep") & (d["point_type"] == "VVA"),
+        ("Vegetated Vertical Accuracy (VVA)",
+         lambda d: (d["source"] == "3dep") & (d["point_type"] == "VVA"),
          "VVA", "s"),
     ]),
     # GNSS by PER-ROW occupation class (owner taxonomy, 2026-08-22): each
@@ -2007,8 +2168,8 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
             axh.tick_params(labelsize=8, colors=_MUT)
             axh.grid(alpha=0.25, lw=0.5)
             gap = f"; {n_gap} unsampled (nodata/gap)" if n_gap else ""
-            fig.suptitle(f"{site_name} {prod} \u2212 control \u2014 {title}{gap}",
-                         fontsize=11.5, color=_INK)
+            fig.suptitle(f"{prod} \u2212 control \u2014 {title}{gap}: "
+                         f"{site_name}", fontsize=11.5, color=_INK)
             fp = outdir / f"{site_name}_dz_{fam}_{prod}.png"
             fig.savefig(fp, dpi=dpi, bbox_inches="tight")
             plt.close(fig)

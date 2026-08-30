@@ -162,7 +162,8 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
                           n_labels: int = 5, vel_to_mm: float = 1000.0,
                           overlay_interp: bool = True, ref_frac: float = 0.12,
                           hs_tif=None, dem_tif=None, cbar_ax=None,
-                          show_ref: bool = True, annotate_interp: bool = True):
+                          show_ref: bool = True, annotate_interp: bool = True,
+                          basemap=None):
     """Horizontal velocity-vector (quiver) map for a GNSS station network.
 
     The horizontal companion to the sandbox NGL vertical-*rate* maps
@@ -291,6 +292,19 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
                   extent=[hb.left, hb.right, hb.bottom, hb.top], zorder=0,
                   interpolation="antialiased", interpolation_stage="rgba")
 
+    if hs_tif is None and dem_tif is None and basemap is not None:
+        # AOI-only path: no DEM anywhere, so pull the web hillshade layer
+        # (owner 2026-08-31 — the velocity field should still read against
+        # terrain); auxiliary imagery is never worth failing a figure over
+        try:
+            from .figures import _web_map_underlay
+            _web_map_underlay(ax, "EPSG:4326", (bx0, by0, bx1, by1),
+                              provider=basemap)
+        except Exception as exc:
+            import warnings
+            warnings.warn(f"velocity-map basemap skipped: {exc}",
+                          stacklevel=2)
+
     if poly is not None:
         import geopandas as gpd
         gpd.GeoSeries([poly], crs=4326).boundary.plot(
@@ -347,6 +361,7 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
     # combined AOI-centroid VERTICAL on the vertical panel (owner
     # 2026-08-30): green star + U ± spread, no arrow, no horizontal numbers
     if poly is not None and overlay_interp and annotate_interp and color_by_vertical:
+        from groundcontrol.velocity import DEFAULT_RADIUS_KM as _RKM
         from groundcontrol.velocity import interpolate_velocity
         res = interpolate_velocity(clon, clat, stations, lon_col=lon_col,
                                    lat_col=lat_col, vel_cols=vel_cols).iloc[0]
@@ -356,7 +371,12 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
                        edgecolors="k", linewidths=0.6, zorder=7)
             su = res.get("vel_spread_u", np.nan)
             su_s = "nan" if not np.isfinite(su) else f"{su * vel_to_mm:.1f}"
-            ann = (f"AOI interp: n={int(res['n_stations_used'])}\n"
+            # it IS an interpolation: median/IDW at the AOI centroid over
+            # stations within radius_km — n here counts THOSE, not the
+            # n-inside-AOI in the subtitle (owner question 2026-08-31)
+            ann = (f"interpolated @ AOI centroid\n"
+                   f"n={int(res['n_stations_used'])} stations "
+                   f"\u2264 {_RKM:g} km\n"
                    f"U {vui * vel_to_mm:+.1f} ± {su_s} mm/yr")
             if res["quality"] not in ("ok", None):
                 ann += f"\n[{res['quality']}]"
@@ -368,6 +388,7 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
     # interpolated AOI-centroid horizontal velocity (a distinct heavy arrow)
     if (poly is not None and overlay_interp and annotate_interp
             and not color_by_vertical):
+        from groundcontrol.velocity import DEFAULT_RADIUS_KM as _RKM
         from groundcontrol.velocity import interpolate_velocity
         res = interpolate_velocity(clon, clat, stations, lon_col=lon_col,
                                    lat_col=lat_col, vel_cols=vel_cols).iloc[0]
@@ -392,7 +413,9 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
             def _pm(v):
                 v = v * vel_to_mm if np.isfinite(v) else np.nan
                 return "nan" if not np.isfinite(v) else f"{v:+.1f}"
-            ann = (f"AOI interp: n={int(res['n_stations_used'])}\n"
+            ann = (f"interpolated @ AOI centroid\n"
+                   f"n={int(res['n_stations_used'])} stations "
+                   f"\u2264 {_RKM:g} km\n"
                    f"E {_pm(res.get('vel_e', np.nan))} ± "
                    f"{_mm(res.get('vel_spread_e', np.nan))}, "
                    f"N {_pm(res.get('vel_n', np.nan))} ± "
@@ -428,7 +451,7 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
                    Line2D([0], [0], color="0.55", lw=2, label=f"within {buffer_km:g} km")]
         if overlay_interp:
             handles.append(Line2D([0], [0], color="tab:green", lw=2.5,
-                                  label="AOI interp (centroid)"))
+                                  label="interpolated @ AOI centroid"))
         ax.legend(handles=handles, fontsize=7.5, loc="upper left", framealpha=0.85)
 
     n_in = int(inside.sum())

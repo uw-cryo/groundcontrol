@@ -532,9 +532,11 @@ def assess_dem_main(argv=None) -> int:
                         "AOI file. A raster whose filename contains 'DTM' is "
                         "assessed under the bare-earth rules, any other under "
                         "the surface rules (name products explicitly with "
-                        "--product to override). With only a vector AOI, runs "
-                        "the AOI-only fetch + standard figures "
-                        "(= groundcontrol-fetch)")
+                        "--product to override). ONE site's product family "
+                        "per run: at most one surface + one bare-earth "
+                        "product; independent acquisitions are separate "
+                        "runs. With only a vector AOI, runs the AOI-only "
+                        "fetch + standard figures (= groundcontrol-fetch)")
     p.add_argument("--product", action="append", default=None,
                    help="NAME=PATH gridded elevation raster to assess (repeatable; "
                         "any GDAL format: GeoTIFF/COG/VRT/...). A NAME containing "
@@ -633,11 +635,8 @@ def assess_dem_main(argv=None) -> int:
         kind = _preflight(_classify_input, item)
         if kind == "raster":
             name = "DTM" if "dtm" in Path(item).stem.lower() else "DSM"
-            if name in products:   # second surface raster etc.: stem names
+            if name in products:   # second same-class raster: refused below
                 name = Path(item).stem
-            if name in products:
-                raise SystemExit(f"error: positional product name {name!r} "
-                                 f"({item}) collides; use --product NAME=PATH")
             products[name] = item
         else:
             if pos_vector is not None:
@@ -651,6 +650,9 @@ def assess_dem_main(argv=None) -> int:
     if not products and pos_vector is None:
         p.error("no inputs: pass raster product(s) and/or a vector AOI "
                 "(positionally, or via --product/--aoi)")
+    if products:
+        from groundcontrol.assess import check_product_family
+        _preflight(check_product_family, products)
     first_input = (args.inputs[0] if args.inputs
                    else next(iter(products.values())))
     if args.outdir is None:
@@ -718,6 +720,20 @@ def assess_dem_main(argv=None) -> int:
         target_crs = _preflight(_vdatum_target_crs, products, args.vdatum)
     if target_crs is None:
         target_crs = _embedded_target_crs(products)
+    if len(products) == 2 and args.aoi is None:
+        # DSM/DTM pair sanity (owner 2026-09-01): a product family shares
+        # ground — disjoint bounds mean independent acquisitions, which
+        # are separate runs. An explicit --aoi is the deliberate override.
+        import rasterio
+        from shapely.geometry import box
+        (na, pa), (nb, pb) = products.items()
+        with rasterio.open(pa) as a, rasterio.open(pb) as b:
+            if not box(*a.bounds).intersects(box(*b.bounds)):
+                raise SystemExit(
+                    f"error: products {na} and {nb} have disjoint extents "
+                    "— a DSM/DTM family shares ground. Independent "
+                    "acquisitions are separate runs (or pass --aoi to "
+                    "override deliberately)")
     if isinstance(hs, str):
         hs = _check_rasters({"hillshade": hs}, "--hs")["hillshade"]
     elif hs:

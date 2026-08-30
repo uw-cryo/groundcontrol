@@ -823,3 +823,37 @@ def test_assess_ensemble_refusal_names_pgc_presets(tmp_path, monkeypatch):
         _assess([ens, "--outdir", str(tmp_path / "out")])
     assert "--vdatum earthdem" in str(exc.value)
     assert "docs/vdatum.md" in str(exc.value)
+
+
+def test_one_product_family_per_run(tmp_path, monkeypatch):
+    """Owner ruling 2026-09-01: at most one surface + one bare-earth
+    product per run; independent acquisitions are separate runs."""
+    from groundcontrol.assess import check_product_family
+    check_product_family({"DSM": "a.tif", "DTM": "b.tif"})   # the pair: fine
+    check_product_family({"DSM": "a.tif"})
+    with pytest.raises(ValueError, match="2 surface.*separate runs"):
+        check_product_family({"DSM": "a.tif", "strip2": "b.tif"})
+    with pytest.raises(ValueError, match="bare-earth"):
+        check_product_family({"DTM_2020": "a.tif", "DTM_2021": "b.tif"})
+    # CLI: two positional surface rasters refuse BEFORE any fetch
+    _forbid_fetch(monkeypatch)
+    a = _plane_tif(tmp_path, name="strip_a.tif")
+    b = _plane_tif(tmp_path, name="strip_b.tif")
+    with pytest.raises(SystemExit, match="separate runs"):
+        _assess([a, b, "--outdir", str(tmp_path / "out")])
+
+
+def test_disjoint_pair_bounds_refused(tmp_path, monkeypatch):
+    """A DSM/DTM pair with disjoint extents is not a family."""
+    import shutil
+
+    from affine import Affine
+    _forbid_fetch(monkeypatch)
+    dsm = _plane_tif_nad83(tmp_path, name="site_dsm.tif")
+    far = tmp_path / "far_dtm.tif"
+    shutil.copy(dsm, far)
+    with rasterio.open(far, "r+") as dst:
+        dst.transform = Affine(1.0, 0.0, 900000, 0.0, -1.0, 100000)
+    with pytest.raises(SystemExit, match="disjoint extents"):
+        _assess([str(dsm), str(far), "--vdatum", "ellipsoid",
+                 "--outdir", str(tmp_path / "out")])

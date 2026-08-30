@@ -397,19 +397,32 @@ def with_vdatum(horizontal, vdatum: str) -> CRS:
                 "the frame deliberately")
         base_epsg, base_name = ELLIPSOID_REALIZATIONS[token]
         return rebase_projection_3d(h, base_epsg, base_name)
-    if is_wgs84_ensemble(h):
-        raise ValueError(
-            f"with_vdatum: '{h.name}' sits on the WGS 84 ENSEMBLE — "
-            "~2 m of deliberate ambiguity, not a realization; a bare "
-            f"'{vdatum}' would silently accept a meter-class member-"
-            "agnostic transform chain. State the realization the heights "
-            "are actually on: 'ellipsoid:itrf2014' (SETSM EarthDEM/"
-            "ArcticDEM/REMA and most modern satellite photogrammetry), "
-            "'ellipsoid:itrf2020', 'ellipsoid:g2139', ..., an orthometric "
-            "'<vertical>:<realization>' ('EPSG:3855:itrf2014', Copernicus "
-            "GLO-30) — or pass the full 3D frame as target_crs")
     if spec == "ellipsoid":
+        if is_wgs84_ensemble(h):
+            raise ValueError(
+                f"with_vdatum: '{h.name}' sits on the WGS 84 ENSEMBLE — "
+                "~2 m of deliberate ambiguity, not a realization, and for "
+                "ELLIPSOIDAL heights the realization IS the height datum; "
+                "a bare 'ellipsoid' would silently accept a meter-class "
+                "member-agnostic transform chain. State the realization "
+                "the heights are actually on: 'ellipsoid:itrf2014' (SETSM "
+                "EarthDEM/ArcticDEM/REMA and most modern satellite "
+                "photogrammetry), 'ellipsoid:itrf2020', 'ellipsoid:g2139' "
+                "— or pass the full 3D frame as target_crs")
         return h.to_3d()
+    if is_wgs84_ensemble(h):
+        # an ORTHOMETRIC vertical on an ensemble grid (owner 2026-09-01,
+        # EGM2008 COP30 derivative): the heights are datum-defined by the
+        # vertical whichever WGS84 member the grid sits on — the
+        # realization only cleans OUR horizontal transform legs, which is
+        # not information the user has. Pick the modern realization,
+        # loudly, instead of refusing.
+        logger.warning(
+            "with_vdatum: horizontal '%s' is the WGS 84 ensemble; using "
+            "ITRF2014 for the transform legs ('%s:itrf2014') — heights "
+            "are %s regardless of the WGS84 member", h.name, vdatum,
+            vdatum)
+        return with_vdatum(h, f"{vdatum.strip()}:itrf2014")
     try:
         v = CRS.from_user_input(vdatum)
     except Exception as e:

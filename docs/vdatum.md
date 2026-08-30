@@ -2,11 +2,16 @@
 
 `groundcontrol-assess --vdatum` joins a stated vertical datum to a product's
 own 2D horizontal CRS to build the unambiguous 3D target frame. A 2D CRS is
-never trusted for heights (it says nothing about them), and the **WGS 84
-ensemble** (`EPSG:326xx`/`327xx`, `EPSG:4326`) is refused outright: it is
-~2 m of deliberate ambiguity spanning realizations from Transit to G2296,
-and PROJ's best transform chains to it are meter-class and member-agnostic.
-State what the heights are actually on. This page records what that is for
+never trusted for heights (it says nothing about them), and for ELLIPSOIDAL
+heights the **WGS 84 ensemble** (`EPSG:326xx`/`327xx`, `EPSG:4326`) is
+refused outright: it is ~2 m of deliberate ambiguity spanning realizations
+from Transit to G2296, PROJ's best transform chains to it are meter-class
+and member-agnostic — and for ellipsoidal heights the realization IS the
+height datum, so state what the heights are actually on. An ORTHOMETRIC
+vertical on an ensemble grid (`--vdatum EPSG:3855` on a COP30 derivative)
+is different: the vertical defines the heights whichever member the grid
+sits on, so the horizontal is rebased to ITRF2014 automatically, with a
+logged note. This page records what that is for
 common products, with the evidence.
 
 ## Presets

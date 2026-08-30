@@ -774,8 +774,12 @@ def test_vdatum_refuses_wgs84_ensemble_and_offers_realizations(tmp_path, monkeyp
     ens = _plane_tif_wgs84(tmp_path)
     with pytest.raises(ValueError, match="ENSEMBLE.*realization"):
         _vdatum_target_crs({"DSM": ens}, "ellipsoid")
-    with pytest.raises(ValueError, match="ENSEMBLE"):
-        _vdatum_target_crs({"DSM": ens}, "EPSG:5703")
+    # an ORTHOMETRIC vertical on an ensemble grid auto-rebases the
+    # horizontal to ITRF2014 with a loud warning (owner 2026-09-01,
+    # EGM2008 COP30 case) — the vertical defines the heights either way
+    wkt5703 = _vdatum_target_crs({"DSM": ens}, "EPSG:5703")
+    assert pyproj.CRS(wkt5703).equals(
+        pyproj.CRS(_vdatum_target_crs({"DSM": ens}, "EPSG:5703:itrf2014")))
     wkt = _vdatum_target_crs({"DSM": ens}, "ellipsoid:itrf2014")
     assert pyproj.CRS(wkt).equals(build_utm_itrf2014_3d(32610))
 

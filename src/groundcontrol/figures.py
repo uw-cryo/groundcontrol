@@ -553,9 +553,12 @@ def point_context_gallery(points, layers, outdir, site_name, *,
                 break
         if frac == 0.0:
             # honest blank, labeled (owner 2026-08-29: bare white panels
-            # read as a bug) — the point is outside every source's data
+            # read as a bug) — the point is outside every source's data.
+            # RETURN here: stretching an all-NaN window is pure
+            # RuntimeWarning noise (owner 2026-09-01 report)
             ax.text(0.5, 0.12, "outside data extent", transform=ax.transAxes,
                     ha="center", fontsize=6.5, color="#888888")
+            return x, y, ext
         if kind == "rgb":
             img = arr[:3]
             lo = np.nanpercentile(img, 0.5, axis=(1, 2))[:, None, None]
@@ -854,9 +857,14 @@ def _relief(ax, dem_tif, hs_tif, cmap, dem_alpha, fig):
             bb = src.bounds
             dem_crs = src.crs
         ext = [bb.left, bb.right, bb.bottom, bb.top]
+        zf = z[np.isfinite(z)]
+        if not zf.size:   # empty/all-nodata DEM: no tint, no colorbar
+            return
         im = ax.imshow(z, cmap=cmap, alpha=dem_alpha, extent=ext,
-                       vmin=np.nanpercentile(z, 2),
-                       vmax=np.nanpercentile(z, 98), interpolation="antialiased", interpolation_stage="rgba")
+                       vmin=np.percentile(zf, 2),
+                       vmax=np.percentile(zf, 98),
+                       interpolation="antialiased",
+                       interpolation_stage="rgba")
         if fig is not None:
             cb = fig.colorbar(im, ax=ax, shrink=0.6, pad=0.02)
             cb.set_label(f"Elevation (m, {_datum_tag(dem_crs)})",
@@ -1141,7 +1149,9 @@ def _ngl_series(sid, frame):
 def _bin_medians(t, v, bin_yr):
     bins = np.round(t / bin_yr) * bin_yr
     bt = np.unique(bins)
-    bv = np.array([float(np.nanmedian(v[bins == b])) for b in bt])
+    bv = np.array([float(np.nanmedian(vb))
+                   if np.isfinite(vb := v[bins == b]).any() else np.nan
+                   for b in bt])
     return bt, bv
 
 

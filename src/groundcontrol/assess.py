@@ -67,16 +67,25 @@ SEGMENTS = {
     "GNSS (pre-split)": (lambda d: (d["point_type"] == "gnss")
                          & (d["source"] != "opus"), False, False),
     "NGS monument": (lambda d: d["source"] == "ngs", True, True),
-    # FAA NASR runway control by published coordinate provenance (raw
-    # pos_class, sources/faa.py): the surveyed class is AC 150/5300-18C
-    # survey-grade (~2 cm NMAD vertical, LV A/B 2026-08-13) and validates
-    # both product classes; estimated (OWNER/FAA-EST/ADO) is context-only.
-    # Added 2026-08-30 (owner figure review): FAA rows previously fell to
-    # OTHER (unsegmented).
-    "FAA surveyed": (lambda d: (d["source"] == "faa")
-                     & (_faa_pos_class(d) == "surveyed"), True, True),
-    "FAA estimated": (lambda d: (d["source"] == "faa")
-                      & (_faa_pos_class(d) != "surveyed"), False, False),
+    # FAA NASR runway control: survey-grade = the PAINTED runway features
+    # (runway ends + displaced thresholds) in the surveyed provenance class
+    # (AC 150/5300-18C; LV A/B 2026-08-13 ~2 cm NMAD; CG 2026-08-30
+    # measured med -0.047 / NMAD 0.061). HELIPADS are excluded even when
+    # the position source reads surveyed/MILITARY: CG measured a
+    # consistent +0.33 m bias on 8 MILITARY-source helipads — a different
+    # accuracy class (owner 2026-08-30: some are hand-held GNSS), so they
+    # ride with the estimated class as context-only. Before 2026-08-30
+    # every FAA row fell to OTHER (unsegmented).
+    "FAA runway surveyed": (
+        lambda d: (d["source"] == "faa")
+        & (_faa_pos_class(d) == "surveyed")
+        & d["point_type"].isin(["runway_end", "displaced_threshold"]),
+        True, True),
+    "FAA other": (
+        lambda d: (d["source"] == "faa")
+        & ~((_faa_pos_class(d) == "surveyed")
+            & d["point_type"].isin(["runway_end", "displaced_threshold"])),
+        False, False),
 }
 
 
@@ -212,11 +221,46 @@ def transform_control(control, target_crs, *, target_epoch=2010.0,
         aoi_bounds_4326 = tuple(control.to_crs("EPSG:4326").total_bounds)
     t = get_transformer(src, target_crs, aoi_bounds_4326=aoi_bounds_4326)
     H = control["height"].to_numpy(dtype="float64")
+    # per-row VERTICAL compatibility (2026-08-30, found when ngl joined the
+    # default sources): the declared source chain is valid only for rows
+    # whose vertical_crs matches the declared source's vertical member.
+    # NGL interim rows carry NATIVE-frame ellipsoidal heights (schema
+    # contract) — running them through the NAVD88 chain would silently add
+    # the ~30 m geoid to already-ellipsoidal heights, the exact error
+    # class this library refuses. Incompatible rows keep the horizontal
+    # leg (positions stay valid for maps/sheets) and get h_ell = NaN:
+    # visibly unassessable, never silently wrong. Full per-frame vertical
+    # landing is the D6/§5 work.
+    n_vert_excluded = 0
+    vert_note = None
+    if "vertical_crs" in control.columns:
+        src_obj2 = pyproj.CRS(src)
+        src_vert = (src_obj2.sub_crs_list[1].to_epsg()
+                    if src_obj2.is_compound else None)
+        if src_vert is not None:
+            vc = control["vertical_crs"].astype("string")
+            incompat = vc.notna() & (vc != f"EPSG:{src_vert}")
+            n_vert_excluded = int(incompat.sum())
+            if n_vert_excluded:
+                bad = sorted(vc[incompat].unique())
+                vert_note = (
+                    f"{n_vert_excluded} row(s) carry vertical_crs {bad} != the "
+                    f"declared source vertical EPSG:{src_vert}: heights set to "
+                    "NaN (positions keep the horizontal leg). Assess those "
+                    "rows via their native-frame chain, or pass source_crs= "
+                    "matching them.")
+                logger.warning("transform_control: %s", vert_note)
+                H = H.copy()
+                H[incompat.to_numpy(dtype=bool)] = np.nan
     E, N, h_ell, _ = t.transform(
         control.geometry.x.to_numpy(dtype="float64"),
         control.geometry.y.to_numpy(dtype="float64"),
-        H, np.full(len(control), float(target_epoch)), errcheck=True)
+        np.nan_to_num(H, nan=0.0),  # NaN in -> PROJ errcheck aborts; the
+        np.full(len(control), float(target_epoch)), errcheck=True)
     out = control.copy()
+    # horizontal leg is height-independent for these chains, and the
+    # heights of masked rows are discarded below
+    h_ell = np.where(np.isfinite(H), h_ell, np.nan)
     out["h_ell"] = h_ell
     # per-point stated accuracy of the APPLIED operation (PROJ metadata, m).
     # Constant per call today; becomes genuinely per-point once B7 routes
@@ -235,6 +279,8 @@ def transform_control(control, target_crs, *, target_epoch=2010.0,
         "accuracy_m": t.accuracy,
         "pipeline": t.definition,
         "n_points": int(len(out)),
+        "n_vertical_excluded": n_vert_excluded,
+        "vertical_note": vert_note,
         # h_ell - H == applied geoid undulation + frame tie; a gross-error tripwire
         "dh_stats": {k: float(v) for k, v in
                      zip(("min", "median", "max"),
@@ -442,7 +488,8 @@ def assess_products(control, products, target_crs, *, outdir, site_name,
         # contact sheets need — dz colors cannot carry class identity, and
         # station/airport labels locate each sheet cell on the map (owner
         # 2026-08-13 spec; wired into the standard bundle 2026-08-30)
-        from groundcontrol.figures import standard_control_figures
+        from groundcontrol.figures import (SOURCE_DIRS, family_dz_figures,
+                                           standard_control_figures)
         first = next((p for p in products.values()
                       if isinstance(p, (str, Path))), None)
         artifacts["control_figures"] = standard_control_figures(
@@ -450,4 +497,25 @@ def assess_products(control, products, target_crs, *, outdir, site_name,
             hs_tif=(hs.get(next(k for k, p in products.items() if p == first))
                     if isinstance(hs, dict) and first is not None else hs),
             midas_velocities=midas_velocities)
+        # per-SOURCE dh map + histogram (family_dz_figures) in each source's
+        # subdir (owner 2026-08-30 layout): only families that came back
+        fams = []
+        src_col = sampled.get("source")
+        pt_col = sampled.get("point_type")
+        if src_col is not None:
+            if (src_col == "3dep").any():
+                fams.append("3dep")
+            if pt_col is not None and pt_col.astype("string").str.startswith(
+                    "gnss").fillna(False).any():
+                fams.append("gnss")
+            if ((src_col == "ngs").any() and "raw" in sampled.columns
+                    and "ref_frame" in sampled.columns):
+                fams.append("ngs_best")   # tier mask reads raw + ref_frame
+            if (src_col == "faa").any() and "raw" in sampled.columns:
+                fams.append("faa")        # provenance split reads raw
+        artifacts["family_figures"] = []
+        for fam in fams:
+            artifacts["family_figures"] += family_dz_figures(
+                sampled, aoi_gdf, outdir / SOURCE_DIRS[fam], site_name,
+                products=list(products), hs_tif=hs, families=(fam,))
     return sampled, stats, artifacts

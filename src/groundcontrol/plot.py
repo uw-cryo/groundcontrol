@@ -161,7 +161,7 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
                           vel_cols=("vel_e", "vel_n", "vel_u"), id_col=None,
                           n_labels: int = 5, vel_to_mm: float = 1000.0,
                           overlay_interp: bool = True, ref_frac: float = 0.12,
-                          hs_tif=None):
+                          hs_tif=None, dem_tif=None):
     """Horizontal velocity-vector (quiver) map for a GNSS station network.
 
     The horizontal companion to the sandbox NGL vertical-*rate* maps
@@ -253,6 +253,26 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
     fig = ax.figure
     ax.set_aspect(1.0 / max(np.cos(np.radians(mean_lat)), 0.1))
 
+    if hs_tif is None and dem_tif is not None:
+        # no pre-rendered hillshade: warp the DEM itself to lon/lat and
+        # shade it here (the standard-bundle path, owner 2026-08-30 — the
+        # MIDAS maps were shipping without their hillshade)
+        import rasterio
+        from rasterio.enums import Resampling
+        from rasterio.vrt import WarpedVRT
+        with rasterio.open(dem_tif) as src, WarpedVRT(src, crs="EPSG:4326") as vrt:
+            dec = max(1, int(np.ceil(max(vrt.width, vrt.height) / 3000)))
+            z = vrt.read(1, masked=True,
+                         out_shape=(vrt.height // dec, vrt.width // dec),
+                         resampling=Resampling.average).astype("f8").filled(np.nan)
+            hb = vrt.bounds
+        dx = (hb.right - hb.left) / z.shape[1] * 111320.0 \
+            * max(np.cos(np.radians(mean_lat)), 0.1)
+        dy = (hb.top - hb.bottom) / z.shape[0] * 111320.0
+        ax.imshow(hillshade(z, dx=dx, dy=dy, multidirectional=True),
+                  cmap="gray", vmin=0.0, vmax=1.0, alpha=0.8,
+                  extent=[hb.left, hb.right, hb.bottom, hb.top], zorder=0,
+                  interpolation="antialiased", interpolation_stage="rgba")
     if hs_tif is not None:
         # context underlay (owner figure review 2026-07-15): warp the (usually
         # projected) hillshade to lon/lat for these geographic axes; the map

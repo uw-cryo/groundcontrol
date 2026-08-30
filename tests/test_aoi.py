@@ -609,7 +609,10 @@ def test_assess_writes_context_sheets_for_gnss_and_faa(tmp_path):
     assert names == [f"s_{sub}_gallery_{tier}.png"
                      for sub in ("3dep_nva", "3dep_vva", "faa_runway", "opus")
                      for tier in ("120m", "30m")]
-    assert all((tmp_path / "out" / n).exists() for n in names)
+    # ... routed into per-SOURCE subdirs (owner layout 2026-08-30)
+    assert all(p.exists() for p in art["context_sheets"])
+    dirs = {p.parent.name for p in art["context_sheets"]}
+    assert dirs == {"3dep", "gnss", "faa"}
 
     dense = pts[pts["point_type"] == "monument"]   # NGS monuments: never sheeted
     _, _, art2 = assess_products(dense, {"DSM": dem}, CRS, source_crs=CRS,
@@ -732,10 +735,11 @@ def test_fetch_context_sheets_from_aoi_only(tmp_path, monkeypatch):
                              "--context-sheets"])
     assert rc == 0
     assert seen["crs"].is_projected                # UTM, not the 6318 landing
-    pages = sorted(p.name for p in tmp_path.glob("ctl_*_gallery_*.png"))
+    pages = sorted(p.name for p in tmp_path.rglob("ctl_*_gallery_*.png"))
     assert pages == sorted(f"ctl_{sub}_gallery_{tier}.png"
                            for sub in ("3dep_nva", "3dep_vva", "opus")
                            for tier in ("120m", "30m"))
+    assert (tmp_path / "gnss" / "ctl_opus_gallery_120m.png").exists()
     # the labeled all-sources control map accompanies the sheets (2026-08-30)
     assert (tmp_path / "ctl_control_map.png").exists()
 

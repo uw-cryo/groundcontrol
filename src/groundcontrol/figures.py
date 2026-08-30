@@ -295,6 +295,20 @@ def open_web_basemap(dst_crs, bounds, *, provider="esri", tile_level="auto",
     return base, vrt
 
 
+#: standard output-layout: per-SOURCE subdirectories under --outdir (owner
+#: 2026-08-30). Top level keeps the combined artifacts (control map,
+#: validation dz, MIDAS maps, parquet/CSV); source-specific figures land in
+#: their source's subdir. GNSS-class subsets share "gnss" (opus + ngl +
+#: campaign are one physical class of marks).
+SOURCE_DIRS = {
+    # contact-sheet subsets
+    "3dep_nva": "3dep", "3dep_vva": "3dep",
+    "opus": "gnss", "cors": "gnss", "gnss_other": "gnss",
+    "faa_runway": "faa",
+    # family_dz_figures families
+    "3dep": "3dep", "gnss": "gnss", "ngs_best": "ngs", "faa": "faa",
+}
+
 #: standard contact-sheet zoom tiers: (half-window m, tag, interpolation,
 #: scalebar m) — 120 m context + native-pixel 30 m (owner 2026-08-11: "see
 #: the 0.5 m pixels, maybe the antenna"; sandbox site_station_gallery TIERS)
@@ -405,9 +419,10 @@ def context_sheets(sampled, products, outdir, site_name, *, rgb=None,
         for stag, (pts, cls, colors) in subsets.items():
             if "id" not in pts.columns:  # synthetic frames; schema always has id
                 pts = pts.assign(id=pts.index.astype(str))
+            sub_out = Path(outdir) / SOURCE_DIRS.get(stag, stag)
             for half_m, ttag, interp, slen in tiers:
                 out += point_context_gallery(
-                    pts, layers, outdir, site_name, half_m=half_m,
+                    pts, layers, sub_out, site_name, half_m=half_m,
                     tier_tag=ttag, interp=interp, scale_len=slen,
                     class_col=cls, class_colors=colors, subset_tag=stag,
                     dpi=dpi)
@@ -887,48 +902,31 @@ def _aspect_panel_w(aoi_gdf, map_h, lo=0.5, hi=1.5):
     return float(np.clip(map_h / asp, lo * map_h, hi * map_h))
 
 
-def standard_control_figures(control, aoi, outdir, site_name, *,
-                             dem_tif=None, hs_tif=None, cmap=None,
-                             dem_alpha=0.4, midas_frame="IGS14",
-                             midas_velocities=True,
-                             buffer_km=60.0, clip_to_aoi=True,
-                             label_points=True, dpi=200):
-    """Write the default control figure bundle for a site; returns paths.
+def control_map_figure(ctl, aoi_p, outdir, site_name, *, dem_tif=None,
+                       hs_tif=None, cmap=None, dem_alpha=0.4,
+                       clip_to_aoi=True, label_points=True,
+                       label_gnss_ids=False, fname=None, title=None, dpi=200):
+    """ONE control map (the combined-map format/symbols): POINT_STYLE
+    markers, rotated runway chevrons, sparse-class labels, legend with
+    counts, hillshade underlay, scalebar. ``ctl`` must already be in the
+    figure CRS and ``aoi_p`` projected to it (or None).
 
-    ``label_points`` (owner request 2026-08-13, the NGS-map convention):
-    sparse, named classes get text labels — NGL/CORS station ids per point,
-    FAA points one label per AIRPORT (grouped by the id prefix; per-runway-
-    end labels would be unreadable). Dense classes (3DEP checkpoints, NGS
-    monuments) are never labeled.
+    ``label_gnss_ids=True`` widens the id labels from NGL/CORS to every
+    GNSS-class point (owner 2026-08-30: the per-source maps are the
+    locators for the contact sheets, and OPUS ids are sparse enough to
+    read there — never on the combined map).
     """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D
+    from matplotlib.markers import MarkerStyle
+    from matplotlib.transforms import Affine2D
 
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    out = []
-    from .aoi import read_aoi
-    aoi_gdf = read_aoi(aoi) if isinstance(aoi, (str, Path)) else aoi
-
-    # figure CRS: the DEM's if given, else the AOI's (or control's) UTM estimate
-    import rasterio
-    if dem_tif is not None:
-        with rasterio.open(dem_tif) as src:
-            fig_crs = src.crs
-    elif aoi_gdf is not None:
-        fig_crs = aoi_gdf.estimate_utm_crs()
-    else:
-        fig_crs = control.estimate_utm_crs()
-    ctl = control.to_crs(fig_crs)
-    aoi_p = aoi_gdf.to_crs(fig_crs) if aoi_gdf is not None else None
-
-    # ---- 1. control map ---------------------------------------------------
     fig, ax = plt.subplots(figsize=(10.5, 10))
     _relief(ax, dem_tif, hs_tif, cmap, dem_alpha, fig)
-    from matplotlib.markers import MarkerStyle
-    from matplotlib.transforms import Affine2D
 
     by_type = {}
     for ptype, (mk, col, sz, zo, lab) in POINT_STYLE.items():
@@ -951,14 +949,18 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
                        c=col, linewidths=lw, edgecolors=ec, zorder=zo)
         by_type[ptype] = Line2D([], [], marker=mk, ls="", color=col, ms=9,
                                 label=f"{lab} (n={len(sub)})")
-    if label_points and "source" in ctl.columns:
+    if label_points and "source" in ctl.columns and "id" in ctl.columns:
         import matplotlib.patheffects as _pe
         halo = [_pe.withStroke(linewidth=2.2, foreground="white")]
         # GNSS/CORS labels place FIRST and unconditionally; FAA airport
         # labels yield to them (owner 2026-08-13): dodge below on a close
         # approach, drop entirely on a collision
+        gmask = ctl["source"] == "ngl"
+        if label_gnss_ids and "point_type" in ctl.columns:
+            gmask = gmask | ctl["point_type"].astype("string").str.startswith(
+                "gnss").fillna(False)
         anchors = []
-        for _, r in ctl[ctl["source"] == "ngl"].iterrows():
+        for _, r in ctl[gmask].iterrows():
             ax.annotate(str(r["id"]), (r.geometry.x, r.geometry.y),
                         xytext=(5, 4), textcoords="offset points",
                         fontsize=7, fontweight="bold", color="#0033A0",
@@ -991,19 +993,86 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
         handles.append(Line2D([], [], ls="--", color=_INK, alpha=0.45,
                               label="AOI"))
     ax.legend(handles=handles, loc="lower left", fontsize=9, framealpha=0.92)
-    _finish_map(ax, aoi_p, clip_to_aoi)
-    ax.set_title(f"{site_name} — control points ({len(ctl)} usable)",
+    _finish_map(ax, aoi_p, clip_to_aoi, points=ctl)
+    ax.set_title(title or f"{site_name} — control points (n={len(ctl)})",
                  fontsize=11, color=_INK)
     fig.tight_layout()
-    fp = outdir / f"{site_name}_control_map.png"
+    fp = outdir / (fname or f"{site_name}_control_map.png")
     fig.savefig(fp, dpi=dpi)
     plt.close(fig)
-    out.append(fp)
+    return fp
 
-    # ---- 2. NGS monument-type facets ---------------------------------------
+
+def standard_control_figures(control, aoi, outdir, site_name, *,
+                             dem_tif=None, hs_tif=None, cmap=None,
+                             dem_alpha=0.4, midas_frame="IGS14",
+                             midas_velocities=True,
+                             buffer_km=60.0, clip_to_aoi=True,
+                             label_points=True, dpi=200):
+    """Write the default control figure bundle for a site; returns paths.
+
+    ``label_points`` (owner request 2026-08-13, the NGS-map convention):
+    sparse, named classes get text labels — NGL/CORS station ids per point,
+    FAA points one label per AIRPORT (grouped by the id prefix; per-runway-
+    end labels would be unreadable). Dense classes (3DEP checkpoints, NGS
+    monuments) are never labeled.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    out = []
+    from .aoi import read_aoi
+    aoi_gdf = read_aoi(aoi) if isinstance(aoi, (str, Path)) else aoi
+
+    # figure CRS: the DEM's if given, else the AOI's (or control's) UTM estimate
+    import rasterio
+    if dem_tif is not None:
+        with rasterio.open(dem_tif) as src:
+            fig_crs = src.crs
+    elif aoi_gdf is not None:
+        fig_crs = aoi_gdf.estimate_utm_crs()
+    else:
+        fig_crs = control.estimate_utm_crs()
+    ctl = control.to_crs(fig_crs)
+    aoi_p = aoi_gdf.to_crs(fig_crs) if aoi_gdf is not None else None
+
+    # ---- 1. control map (combined, top level) ------------------------------
+    out.append(control_map_figure(
+        ctl, aoi_p, outdir, site_name, dem_tif=dem_tif, hs_tif=hs_tif,
+        cmap=cmap, dem_alpha=dem_alpha, clip_to_aoi=clip_to_aoi,
+        label_points=label_points, dpi=dpi))
+
+    # ---- 1b. per-source maps, one per source subdir (owner 2026-08-30:
+    # the locator for that source's contact sheets — same format/symbols
+    # as the combined map, with GNSS-class ids labeled where sparse)
+    dir_masks = {}
+    if "source" in ctl.columns:
+        dir_masks["3dep"] = (ctl["source"] == "3dep")
+        dir_masks["ngs"] = (ctl["source"] == "ngs")
+        dir_masks["faa"] = (ctl["source"] == "faa")
+    if "point_type" in ctl.columns:
+        dir_masks["gnss"] = ctl["point_type"].astype("string").str.startswith(
+            "gnss").fillna(False)
+    for dname, m in dir_masks.items():
+        if not m.any():
+            continue
+        sub = ctl[m]
+        out.append(control_map_figure(
+            sub, aoi_p, outdir / dname, site_name, dem_tif=dem_tif,
+            hs_tif=hs_tif, cmap=cmap, dem_alpha=dem_alpha,
+            clip_to_aoi=clip_to_aoi, label_points=label_points,
+            label_gnss_ids=True, fname=f"{site_name}_{dname}_map.png",
+            title=f"{site_name} — {dname} control points (n={len(sub)})",
+            dpi=dpi))
+
+    # ---- 2. NGS monument-type facets (ngs/ subdir: source-specific) --------
     mon = (ctl[ctl.point_type == "monument"] if "raw" in ctl.columns
            else ctl.iloc[:0])  # facets read the raw datasheet fields
     if len(mon):
+        (outdir / "ngs").mkdir(parents=True, exist_ok=True)
         fig, axes = plt.subplots(1, len(_FACETS), figsize=(5.6 * len(_FACETS), 6),
                                  sharex=True, sharey=True)
         cyc = ["#0033A0", "#C00000", "#005F20", "#8B008B", "#8B4E00",
@@ -1024,7 +1093,7 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
         fig.suptitle(f"{site_name} — NGS monument datasheet attributes "
                      f"(n={len(mon)})", fontsize=11.5, color=_INK)
         fig.tight_layout(rect=[0, 0, 1, 0.94])
-        fp = outdir / f"{site_name}_monument_types.png"
+        fp = outdir / "ngs" / f"{site_name}_monument_types.png"
         fig.savefig(fp, dpi=dpi)
         plt.close(fig)
         out.append(fp)
@@ -1041,19 +1110,47 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
         b = aoi_gdf.to_crs(4326).total_bounds
         st = st[st.lon.between(b[0] - 3, b[2] + 3)
                 & st.lat.between(b[1] - 3, b[3] + 3)]
-        for cbv, tag in ((False, "horiz"), (True, "vertical")):
-            fp = outdir / f"{site_name}_midas_velocity_{tag}.png"
+        # ONE combined figure (owner 2026-08-30): horizontal quiver |
+        # vertical-colored, over the DEM hillshade (dem_tif warps + shades
+        # in plot_velocity_vectors; a pre-rendered PATH hs_tif also works,
+        # but the in-memory auto-hillshade tuple cannot be reprojected)
+        fig2, (axh_, axv_) = plt.subplots(1, 2, figsize=(18, 9))
+        hs_path = hs_tif if isinstance(hs_tif, (str, Path)) else None
+        for ax_, cbv in ((axh_, False), (axv_, True)):
             plot_velocity_vectors(
-                st, aoi=aoi_gdf, buffer_km=buffer_km, out_fn=str(fp),
-                color_by_vertical=cbv, hs_tif=hs_tif,
-                title=f"{site_name} — MIDAS ({midas_frame}) "
-                      f"{'vertical-colored ' if cbv else ''}velocity field")
-            out.append(fp)
+                st, aoi=aoi_gdf, buffer_km=buffer_km, ax=ax_,
+                color_by_vertical=cbv, hs_tif=hs_path, dem_tif=dem_tif,
+                title=("vertical-colored" if cbv else "horizontal"))
+        fig2.suptitle(f"{site_name} — MIDAS ({midas_frame}) velocity field",
+                      fontsize=13, color=_INK)
+        fp = outdir / f"{site_name}_midas_velocity.png"
+        fig2.savefig(fp, dpi=dpi, bbox_inches="tight")
+        plt.close(fig2)
+        out.append(fp)
     except Exception as exc:  # network etc. — the map figures still ship
         logger.warning("MIDAS velocity figures skipped: %s", exc)
 
     logger.info("standard control figures: %s", [p.name for p in out])
     return out
+
+
+def stats_lines(label, values, color):
+    """THE dual-track stats lines for figure text blocks (owner 2026-08-30:
+    formatting was duplicated across validation/family figures and the
+    order is standardized here — n FIRST, then the robust pair, then the
+    ASPRS Ed.2 parametric set after error_report's 3*NMAD gate). Returns
+    ``[(text, color, bold), ...]``.
+    """
+    from .accuracy import error_report
+    er = error_report(values)
+    return [
+        (f"{label}: n={er['n']}, med {er['median']:+.3f}, "
+         f"NMAD {er['nmad']:.3f}", color, True),
+        (f"   mean {er['mean']:+.3f}, σ {er['std']:.3f}, "
+         f"RMSE {er['rmse']:.3f}, LE90 {er['le90']:.3f}"
+         + (f" ({er['n_outliers']} out)" if er["n_outliers"] else ""),
+         color, False),
+    ]
 
 
 def _nmad(x):
@@ -1087,8 +1184,8 @@ _SEG_STYLE = {
     "GNSS campaign (other)": "#B07AA1",
     "GNSS (pre-split)": "gnss",
     "NGS monument": "monument",
-    "FAA surveyed": "runway_end",
-    "FAA estimated": "#8C6BB1",
+    "FAA runway surveyed": "runway_end",
+    "FAA other": "#8C6BB1",
     "OTHER (unsegmented)": "gnss",  # never rendered (context, non-GNSS
                                     # label) — placeholder for the sync test
 }
@@ -1150,14 +1247,26 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         if col not in sampled.columns:
             logger.warning("validation_dz: no column %s, skipping %s", col, prod)
             continue
-        # aspect-aware: size the map column to the AOI so the equal-aspect map
-        # fills it (no tall-narrow letterboxing); +colorbar allowance in-column
-        map_h = 6.2
-        mcol = _aspect_panel_w(aoi, map_h - 0.7) + 0.9
-        hist_w = 4.6
-        fig, axes = plt.subplots(
-            1, 3, figsize=(mcol + 2 * hist_w, map_h),
-            gridspec_kw=dict(width_ratios=[mcol, hist_w, hist_w]))
+        # Layout (owner iteration 2026-08-30): the equal-aspect map DOMINATES
+        # and is sized to its true aspect so no letterbox whitespace; the two
+        # histograms stack beside it on ONE SHARED x-axis; the dual-track
+        # stats live in their own text panel below the histograms (3+
+        # sources never fit inside a histogram box).
+        map_h = 7.4
+        title_cb = 0.55                       # title strip above the map
+        asp_w = _aspect_panel_w(aoi, map_h - title_cb, lo=0.4, hi=2.0)
+        mcol = asp_w + 1.15                   # + colorbar column
+        hist_w = 4.2
+        fig = plt.figure(figsize=(mcol + hist_w, map_h))
+        gs = fig.add_gridspec(3, 2, width_ratios=[mcol, hist_w],
+                              height_ratios=[1.0, 1.0, 0.62],
+                              hspace=0.3, wspace=0.08)
+        ax_map = fig.add_subplot(gs[:, 0])
+        ax_s = fig.add_subplot(gs[0, 1])
+        ax_n = fig.add_subplot(gs[1, 1], sharex=ax_s)
+        ax_t = fig.add_subplot(gs[2, 1])
+        ax_t.set_axis_off()
+        axes = [ax_map, ax_s, ax_n]
         hs_prod = hs_tif.get(prod) if isinstance(hs_tif, dict) else hs_tif
         _relief(axes[0], None, hs_prod, None, 0.0, None)
         use = sampled[np.isfinite(sampled[col])]
@@ -1179,17 +1288,17 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
                 mk, _, msz, _, mlab = POINT_STYLE.get(
                     pt, ("o", "#888888", 34, 5, str(pt)))
                 sub = use[use["point_type"] == pt]
-                lw = 1.2 if mk in ("+", "x") else 0.5
+                lw = 1.0 if mk in ("+", "x") else 0.35
                 axes[0].scatter(sub.geometry.x, sub.geometry.y, c=sub[col],
                                 cmap=DZ_CMAP, norm=norm, marker=mk,
-                                s=max(34, int(msz * 0.6)),
+                                s=max(15, int(msz * 0.32)),
                                 edgecolors="#333333", linewidths=lw, zorder=5)
                 handles.append(Line2D([], [], marker=mk, ls="", color="#333333",
-                                      ms=7, label=f"{mlab} ({len(sub)})"))
+                                      ms=6, label=f"{mlab} ({len(sub)})"))
         else:
             axes[0].scatter(use.geometry.x, use.geometry.y, c=use[col],
-                            cmap=DZ_CMAP, norm=norm, s=34,
-                            edgecolors="#333333", linewidths=0.5, zorder=5)
+                            cmap=DZ_CMAP, norm=norm, s=15,
+                            edgecolors="#333333", linewidths=0.35, zorder=5)
         if handles:
             axes[0].legend(handles=handles, loc="lower left", fontsize=7,
                            framealpha=0.85, borderpad=0.4, handletextpad=0.4)
@@ -1202,72 +1311,90 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
                           fontsize=11, color=_INK)
 
         is_dtm = is_dtm_product(prod)  # the ONE DSM/DTM classifier (round 4)
+        panels = []                       # (ax, seg_vals, seg_raw, own_lim)
         for ax, labels, lim_over in (
                 # display rule != applies rule: context-only GNSS segments
                 # (applies False/False in the stats) still render as
                 # datum-sanity context per this figure's contract — the
                 # validation flags alone silently emptied the GNSS
                 # histograms (audit round 3). Empty segments drop out below.
-                (axes[1], [lbl for lbl, s in seg_defs.items()
-                           if ((s[3] if is_dtm else s[2])
-                               or lbl.startswith("GNSS"))
-                           and lbl != "NGS monument"],
+                (ax_s, [lbl for lbl, s in seg_defs.items()
+                        if ((s[3] if is_dtm else s[2])
+                            or lbl.startswith("GNSS"))
+                        and lbl != "NGS monument"],
                  vendor_lim),
-                (axes[2], ["NGS monument"], wide_lim)):
+                (ax_n, ["NGS monument"], wide_lim)):
             seg_vals = {}
+            seg_raw = {}   # un-gated values: the dual-track stats source
             for lab in labels:
                 maskfn, style, *_ = seg_defs[lab]
                 v = use.loc[maskfn(use), col].to_numpy(float)
                 v = v[np.isfinite(v)]
+                raw_v = v
                 if lab == "NGS monument" and len(v):
-                    v = _ngs_gate(v, ngs_nmad_gate)
+                    v = _ngs_gate(v, ngs_nmad_gate)   # display gate only
                 if len(v):
                     seg_vals[lab] = v
-            # empirical tier-snapped panel limit unless overridden (#23);
-            # never tighter than the map so the panels stay comparable.
-            # Context-only segments render but do NOT set the shared scale:
-            # ARP-offset values inflating the pooled tier collapsed the
-            # validating distributions (audit round 4)
+                    seg_raw[lab] = raw_v
+            # per-panel empirical tier (#23) from the panel's OWN values;
+            # context-only segments never set the scale (audit round 4)
             val_vals = [v for lab, v in seg_vals.items()
-                        if (seg_defs[lab][3] if is_dtm else seg_defs[lab][2])]
-            lim = lim_over if lim_over is not None else (
-                max(snap_clim(np.concatenate(val_vals
-                                             or list(seg_vals.values())),
-                              k=3.0), pl) if seg_vals else pl)
-            txt = []
+                        if (seg_defs[lab][3] if is_dtm else seg_defs[lab][2])
+                        or lab == "NGS monument"]
+            own = lim_over if lim_over is not None else (
+                snap_clim(np.concatenate(val_vals or list(seg_vals.values())),
+                          k=3.0) if seg_vals else pl)
+            panels.append((ax, seg_vals, seg_raw, own))
+        # ONE shared x-axis across both histograms (owner 2026-08-30): the
+        # wider panel's tier wins, typically the NGS monuments'
+        lim = max(own for _, _, _, own in panels)
+        # bin width follows the tighter (survey) spread so its spike still
+        # resolves inside the shared, wider limits (owner 2026-08-30)
+        sv = panels[0][1]
+        pooled = np.concatenate(list(sv.values())) if sv else np.array([])
+        bw = max(float(_nmad(pooled)) / 2.0, lim / 150.0) if pooled.size \
+            else lim / 40.0
+        nbins = int(np.clip(round(2 * lim / bw), 41, 201))
+        txt_lines = []
+        for ax, seg_vals, seg_raw, _own in panels:
             for lab, v in seg_vals.items():
                 key = seg_defs[lab][1]  # POINT_STYLE key or raw hex
                 color = POINT_STYLE[key][1] if key in POINT_STYLE else key
-                ax.hist(np.clip(v, -lim, lim), bins=41, range=(-lim, lim),
+                ax.hist(np.clip(v, -lim, lim), bins=nbins, range=(-lim, lim),
                         histtype="stepfilled", alpha=0.45, color=color,
                         edgecolor=color, label=lab)
-                txt.append((f"{lab}: med {np.median(v):+.3f}, "
-                            f"NMAD {_nmad(v):.3f}, n={len(v)}", color))
+                # centralized dual-track lines (stats_lines: n first),
+                # rendered OUTSIDE the histograms in their own panel
+                # (owner 2026-08-30: 3+ sources never fit in a corner box)
+                txt_lines.extend(stats_lines(lab, seg_raw[lab], color))
             ax.axvline(0, color=_INK, lw=0.8)
             ax.set_xlim(-lim, lim)
-            ax.set_xlabel(f"dz = {prod} − control (m)", fontsize=9, color=_INK)
-            if txt:  # stats only when something plotted (#23: an NGS-only
-                # site rendered a bare axes + empty legend box). Segment-
-                # colored lines double as the legend (family_dz_figures
-                # convention): a separate legend box collided with them
-                # on long labels (docs refresh 2026-08-27).
-                for i, (line, color) in enumerate(txt):
-                    ax.text(0.02, 0.98 - 0.055 * i, line, transform=ax.transAxes,
-                            fontsize=8, va="top", color=color, fontweight="bold",
-                            bbox=dict(boxstyle="round,pad=0.2", fc="white",
-                                      ec="none", alpha=0.85))
-            else:
+            if not seg_vals:
                 ax.text(0.5, 0.5, "no matching checkpoints in AOI",
                         transform=ax.transAxes, ha="center", va="center",
                         fontsize=9, color=_MUT)
             ax.tick_params(labelsize=8, colors=_MUT)
             ax.grid(alpha=0.25, lw=0.5)
-        axes[1].set_title("survey-grade segments", fontsize=10, color=_INK)
-        axes[2].set_title(f"NGS monuments ({ngs_nmad_gate:.0f}-NMAD filtered)",
-                          fontsize=10, color=_INK)
+        plt.setp(ax_s.get_xticklabels(), visible=False)
+        ax_n.set_xlabel(f"dz = {prod} − control (m)", fontsize=9, color=_INK)
+        if "xform_acc_m" in sampled.columns:
+            _xa = sampled["xform_acc_m"].to_numpy(dtype="float64")
+            if np.isfinite(_xa).any():
+                txt_lines.append(("stated 3D transform budget "
+                                  f"±{np.nanmedian(_xa):g} m", _MUT, False))
+        if txt_lines:
+            step = min(0.115, 0.96 / len(txt_lines))
+            for i, (line, color, bold) in enumerate(txt_lines):
+                ax_t.text(0.0, 0.98 - step * i, line, transform=ax_t.transAxes,
+                          fontsize=7.5, va="top", color=color,
+                          fontweight="bold" if bold else "normal")
+        ax_s.set_title("survey-grade points", fontsize=10, color=_INK)
+        ax_n.set_title(f"NGS monuments ({ngs_nmad_gate:.0f}-NMAD filtered)",
+                       fontsize=10, color=_INK)
         fp = outdir / f"{site_name}_validation_dz_{prod}.png"
-        fig.tight_layout()
-        fig.savefig(fp, dpi=dpi)
+        # bbox_inches trims the residual outer margin (tight_layout fights
+        # the colorbar + spanning-gridspec combination)
+        fig.savefig(fp, dpi=dpi, bbox_inches="tight")
         plt.close(fig)
         out.append(fp)
         logger.info("wrote %s", fp)
@@ -1488,14 +1615,23 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
             # gap on tall-narrow AOIs); the shared-colorbar allowance rides on
             # the map columns in BOTH figsize and width_ratios so the inch
             # widths stay literal
-            map_h = 6.4
-            mcol = _aspect_panel_w(aoi_gdf, map_h - 0.7) + 0.9 / n_sub
-            hist_w = 5.0
-            fig, axes = plt.subplots(
-                1, n_sub + 1,
-                figsize=(mcol * n_sub + hist_w, map_h),
-                gridspec_kw=dict(width_ratios=[mcol] * n_sub + [hist_w]))
-            axh = axes[-1]
+            # settled layout (owner 2026-08-30, matches validation_dz):
+            # maps dominate and span both rows; histogram top-right; the
+            # dual-track stats OUTSIDE in their own bottom-right panel
+            map_h = 6.8
+            mcol = _aspect_panel_w(aoi_gdf, map_h - 0.6, lo=0.4, hi=2.0) \
+                + 0.9 / n_sub
+            hist_w = 4.2
+            fig = plt.figure(figsize=(mcol * n_sub + hist_w, map_h))
+            gs = fig.add_gridspec(2, n_sub + 1,
+                                  width_ratios=[mcol] * n_sub + [hist_w],
+                                  height_ratios=[1.0, 0.55],
+                                  hspace=0.22, wspace=0.1)
+            _axm = [fig.add_subplot(gs[:, i]) for i in range(n_sub)]
+            axh = fig.add_subplot(gs[0, n_sub])
+            axt = fig.add_subplot(gs[1, n_sub])
+            axt.set_axis_off()
+            axes = _axm + [axh]
             hs_prod = hs_tif.get(prod) if isinstance(hs_tif, dict) else hs_tif
             # ONE frame for every panel of this figure (all plotted points):
             # per-panel framing rendered side-by-side maps at different
@@ -1504,7 +1640,7 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
             fig_pts = sampled[np.logical_or.reduce([np.asarray(m, dtype=bool)
                                                      for m in sub_masks])
                               & np.isfinite(sampled[col].to_numpy(dtype="float64"))]
-            sc, stats_lines, n_gap = None, [], 0
+            sc, fam_lines, n_gap = None, [], 0
             for axm, sub, m in zip(axes[:-1], subs, sub_masks):
                 lab, _, style, mk = sub[:4]
                 _relief(axm, None, hs_prod, None, 0.0, None)
@@ -1527,21 +1663,15 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                               color=_INK)
                 if fin.any():
                     vv = v[fin]
-                    axh.hist(np.clip(vv, -hist_lim, hist_lim), bins=41,
+                    bw = max(float(_nmad(vv)) / 2.0, hist_lim / 150.0)
+                    nb = int(np.clip(round(2 * hist_lim / bw), 21, 161))
+                    axh.hist(np.clip(vv, -hist_lim, hist_lim), bins=nb,
                              range=(-hist_lim, hist_lim), histtype="stepfilled",
                              alpha=0.45, color=color, edgecolor=color)
-                    # dual-track stats (owner 2026-07-16): robust pair, then
-                    # the ASPRS-Ed.2 parametric set after a 3*NMAD gate
-                    from .accuracy import error_report
-                    er = error_report(vv)
-                    stats_lines.append(
-                        (f"{lab}: med {er['median']:+.3f}, "
-                         f"NMAD {er['nmad']:.3f}, n={er['n']}", color))
-                    stats_lines.append(
-                        (f"  mean {er['mean']:+.3f}, σ {er['std']:.3f}, "
-                         f"RMSE {er['rmse']:.3f}, LE90 {er['le90']:.3f}"
-                         + (f" ({er['n_outliers']} out)" if er["n_outliers"]
-                            else ""), color))
+                    # centralized dual-track lines (stats_lines: n first,
+                    # owner 2026-08-30)
+                    fam_lines.extend((t, c) for t, c, _b
+                                     in stats_lines(lab, vv, color))
             if sc is not None:
                 cb = fig.colorbar(sc, ax=list(axes[:-1]), shrink=0.75,
                                   pad=0.015, extend="both")
@@ -1553,24 +1683,24 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
             axh.set_xlim(-hist_lim, hist_lim)
             axh.set_xlabel(f"dz = {prod} \u2212 control (m)", fontsize=9,
                            color=_INK)
-            # colored stats lines double as the legend (no overlap issues)
-            for i, (line, color) in enumerate(stats_lines):
-                axh.text(0.02, 0.98 - 0.05 * i, line, transform=axh.transAxes,
-                         fontsize=8.5, va="top", color=color,
-                         fontweight="bold" if not line.startswith("  ") else
-                         "normal",
-                         bbox=dict(boxstyle="round,pad=0.2", fc="white",
-                                   ec="none", alpha=0.8))
+            # colored stats lines OUTSIDE the histogram, in their own panel
+            # (owner 2026-08-30, matching the validation figure)
             xa = (sampled["xform_acc_m"].to_numpy(dtype="float64")
                   if "xform_acc_m" in sampled.columns else np.array([np.nan]))
             if np.isfinite(xa).any():
                 b = np.nanmedian(xa)
                 if np.isfinite(b):
-                    axh.text(0.02, 0.02, f"stated 3D transform budget ±{b:g} m",
-                             transform=axh.transAxes, fontsize=8, color=_MUT,
-                             va="bottom",
-                             bbox=dict(boxstyle="round,pad=0.2", fc="white",
-                                       ec="none", alpha=0.8))
+                    fam_lines.append((f"stated 3D transform budget ±{b:g} m",
+                                      _MUT))
+            if fam_lines:
+                step = min(0.13, 0.96 / len(fam_lines))
+                for i, (line, color) in enumerate(fam_lines):
+                    axt.text(0.0, 0.98 - step * i, line,
+                             transform=axt.transAxes, fontsize=8, va="top",
+                             color=color,
+                             fontweight="normal"
+                             if line.startswith(("   ", "stated"))
+                             else "bold")
             axh.tick_params(labelsize=8, colors=_MUT)
             axh.grid(alpha=0.25, lw=0.5)
             gap = f"; {n_gap} unsampled (nodata/gap)" if n_gap else ""

@@ -141,7 +141,7 @@ def test_summarize_dz_segments_nodata_and_applies(tmp_path):
         "3DEP NVA", "3DEP VVA", "GNSS continuous", "GNSS semi-continuous",
         "GNSS campaign (OPUS)", "GNSS campaign (NGL)",
         "GNSS campaign (other)", "GNSS (pre-split)", "NGS monument",
-        "FAA surveyed", "FAA estimated",
+        "FAA runway surveyed", "FAA other",
         "OTHER (unsegmented)"}
 
 
@@ -557,15 +557,20 @@ def test_faa_segments_route_by_pos_class(tmp_path):
     pts = _landed([0.05, 0.05, 0.05, 0.05]).rename(columns={"h_ell": "height"})
     pts["source"] = "faa"
     pts["point_type"] = ["runway_end", "runway_end", "helipad", "displaced_threshold"]
+    # the helipad is SURVEYED-class on paper — it must still route to
+    # context (the CG +0.33 m military-helipad finding)
     pts["raw"] = [json.dumps({"pos_class": c})
-                  for c in ("surveyed", "surveyed", "estimated", "surveyed")]
+                  for c in ("surveyed", "surveyed", "surveyed", "surveyed")]
     pts["h_ell"] = pts["height"]
     sampled = sample_products(pts, {"DSM": dsm})
     stats = summarize_dz(sampled, products=["DSM"]).set_index("segment")
-    assert stats.loc["FAA surveyed", "n"] == 3
-    assert bool(stats.loc["FAA surveyed", "applies"])
-    assert stats.loc["FAA estimated", "n"] == 1
-    assert not bool(stats.loc["FAA estimated", "applies"])
+    # survey-grade = PAINTED runway features only: the surveyed HELIPAD is
+    # context (CG 2026-08-30: 8 MILITARY-source helipads measured +0.33 m —
+    # a different accuracy class, some hand-held GNSS per the owner)
+    assert stats.loc["FAA runway surveyed", "n"] == 3   # 2 ends + 1 displaced
+    assert bool(stats.loc["FAA runway surveyed", "applies"])
+    assert stats.loc["FAA other", "n"] == 1             # the surveyed helipad
+    assert not bool(stats.loc["FAA other", "applies"])
     assert stats.loc["OTHER (unsegmented)", "n"] == 0
 
 
@@ -580,3 +585,28 @@ def test_assess_bundle_includes_labeled_control_map(tmp_path):
     names = [p.name for p in art["control_figures"]]
     assert "cm_control_map.png" in names
     assert (tmp_path / "out" / "cm_control_map.png").exists()
+
+
+def test_transform_control_masks_mismatched_vertical_rows():
+    """Mixed-vertical cache (ngl in the defaults, 2026-08-30): rows whose
+    vertical_crs disagrees with the declared source vertical get h_ell=NaN
+    (positions keep the horizontal leg) — never a silently mis-applied
+    geoid. Compatible rows are byte-identical to a compatible-only run."""
+    import warnings as _w
+    pts = _control_6319(4)  # helper frame; retag as a NAVD88-landed cache
+    pts = pts.rename(columns={"h_ell": "height"}) if "h_ell" in pts.columns else pts
+    pts = pts.set_crs("EPSG:6318", allow_override=True)
+    pts["vertical_crs"] = ["EPSG:5703", "EPSG:5703", "EPSG:7912", "EPSG:5703"]
+    with _w.catch_warnings():
+        _w.simplefilter("ignore")
+        out, info = transform_control(pts, "EPSG:6341+5703",
+                                      source_crs="EPSG:6318+5703")
+        ref, _ = transform_control(pts.drop(columns=["vertical_crs"]),
+                                   "EPSG:6341+5703", source_crs="EPSG:6318+5703")
+    assert info["n_vertical_excluded"] == 1
+    assert "EPSG:7912" in info["vertical_note"]
+    assert np.isnan(out["h_ell"].iloc[2])
+    ok = [0, 1, 3]
+    np.testing.assert_allclose(out["h_ell"].iloc[ok], ref["h_ell"].iloc[ok])
+    # the horizontal leg still lands the excluded row (maps/sheets valid)
+    assert out.geometry.iloc[2].x == ref.geometry.iloc[2].x

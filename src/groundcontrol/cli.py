@@ -26,9 +26,10 @@ def fetch_control_main(argv=None) -> int:
                         "vector file (GeoJSON preferred; any OGR format), or a "
                         "DEM/DSM/DTM raster whose valid-data footprint becomes "
                         "the AOI")
-    p.add_argument("--sources", default="3dep,ngs,opus",
-                   help="comma-separated sources (default: 3dep,ngs,opus; also "
-                        "ngl, faa)")
+    p.add_argument("--sources", default="3dep,ngs,opus,ngl,faa",
+                   help="comma-separated sources (default: every provider — "
+                        "3dep,ngs,opus,ngl,faa; owner 2026-08-30: NGL is "
+                        "first-class, not opt-in)")
     p.add_argument("--out", required=True, help="output path (.parquet or .csv)")
     p.add_argument("--target-crs", default=None,
                    help="target 3D CRS (NOT YET IMPLEMENTED — interim landing is "
@@ -392,8 +393,8 @@ def assess_dem_main(argv=None) -> int:
     p.add_argument("--control", default=None,
                    help="control GeoParquet cache: reused when present, else fetched "
                         "from --sources and written here (default: <outdir>/<site-name>_control.parquet)")
-    p.add_argument("--sources", default="3dep,ngs,opus",
-                   help="comma-separated fetch sources (default: 3dep,ngs,opus)")
+    p.add_argument("--sources", default="3dep,ngs,opus,ngl,faa",
+                   help="comma-separated fetch sources (default: every provider)")
     p.add_argument("--outdir", required=True, help="output directory")
     p.add_argument("--site-name", default=None,
                    help="prefix for output artifacts (default: the first product's "

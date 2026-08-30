@@ -132,8 +132,8 @@ def _aoi_bounds_and_poly(aoi):
     return resolve_aoi(aoi)
 
 
-def fetch_control(aoi, sources=("3dep", "ngs", "opus"), target_crs=None, target_epoch=None,
-                  landing_crs=None):
+def fetch_control(aoi, sources=("3dep", "ngs", "opus", "ngl", "faa"),
+                  target_crs=None, target_epoch=None, landing_crs=None):
     """Fetch control points for an AOI from the requested sources.
 
     Returns ``(GeoDataFrame, status)``. See the dispatcher contract in the

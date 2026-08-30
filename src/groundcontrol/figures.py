@@ -37,7 +37,9 @@ logger = logging.getLogger(__name__)
 #:   simplification of the FAA CUG runway-construction bars + arrow/
 #:   chevron stems (p. 124), which are runway-oriented and don't reduce
 #:   to a scatter marker;
-#: - NGS monument '+': near the USGS topo benchmark "x" (USGS
+#: - NGS monument 'P' (SOLID plus, owner 2026-08-31: the line-only '+'
+#:   could not carry a dz fill + outline): near the USGS topo benchmark
+#:   "x" (USGS
 #:   Topographic Map Symbols, pubs.usgs.gov/gip/TopographicMapSymbols).
 #:   The NGS web-map de facto scheme (circle = vertical, triangle =
 #:   horizontal, square = combined; filled = order 1) is a possible
@@ -58,7 +60,7 @@ logger = logging.getLogger(__name__)
 #:   into campaign (OPUS) so applies stays continuous with main.
 #: Values: (marker, color, size, zorder, label).
 POINT_STYLE = {
-    "monument": ("+", "#111111", 30, 4, "NGS monument"),
+    "monument": ("P", "#111111", 30, 4, "NGS monument"),
     # occupation-class ramp: three lightness steps of one blue family
     # (owner iterations 2026-08-30: three close blues failed, then white
     # failed on white backgrounds) — near-black navy / mid blue / light

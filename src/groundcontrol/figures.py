@@ -286,7 +286,7 @@ def open_web_basemap(dst_crs, bounds, *, provider="esri", tile_level="auto",
         logger.warning("web basemap (%s) unavailable, RGB panel skipped: %s",
                        provider, e)
         return None
-    logger.info("web basemap %s: z%d%s, %.2f units/px, %dx%d over %s",
+    logger.info("web basemap %s: z%d%s, %.3g units/px, %dx%d over %s",
                 provider, z, " (auto)" if tile_level == "auto" else "",
                 res, w, h, [round(b) for b in bounds])
     return base, vrt
@@ -928,6 +928,13 @@ SHEET_SUBSET_TITLES = {
     "3dep_vva": "3DEP VVA checkpoint",
 }
 
+def _sparse_boost(n: int) -> float:
+    """Marker-size multiplier for sparse classes (owner 2026-09-01: three
+    monuments vanished on a full-map mountain hillshade): a handful of
+    points must carry the map alone; dense classes keep house size."""
+    return 3.0 if n <= 10 else (1.8 if n <= 50 else 1.0)
+
+
 def class_ink(style_key_or_color):
     """Text/histogram color for a POINT_STYLE key or raw color — the pale
     map fills (light-blue campaign stars) fall back to :data:`_PALE_INK`
@@ -945,6 +952,12 @@ def _edge_for(mk, col):
     return "white"
 
 
+#: _web_map_underlay render cache: the MIDAS figure draws the SAME
+#: underlay on two panels (owner 2026-09-01: duplicate esri fetches in
+#: the log) — key (crs, rounded bounds, provider, max_px), tiny cap.
+_UNDERLAY_CACHE: dict = {}
+
+
 def _web_map_underlay(ax, crs, bounds, provider="esri_hillshade",
                       max_px=2400):
     """Web-tile underlay for a control map with no DEM (the AOI-only path,
@@ -955,6 +968,17 @@ def _web_map_underlay(ax, crs, bounds, provider="esri_hillshade",
 
     label, _ = WEB_BASEMAP_PROVIDERS[provider]
     minx, miny, maxx, maxy = (float(v) for v in bounds)
+    key = (str(crs), round(minx, 6), round(miny, 6), round(maxx, 6),
+           round(maxy, 6), provider, max_px)
+    hit = _UNDERLAY_CACHE.get(key)
+    if hit is not None:
+        arr, ext = hit
+        ax.imshow(arr, cmap="gray", vmin=0, vmax=255, alpha=0.9, extent=ext,
+                  zorder=0, interpolation="antialiased",
+                  interpolation_stage="rgba")
+        ax.text(0.995, 0.005, label, transform=ax.transAxes, ha="right",
+                va="bottom", fontsize=6.5, color="#555555")
+        return
     span = max(maxx - minx, maxy - miny)
     import pyproj
     if pyproj.CRS.from_user_input(crs).is_geographic:
@@ -973,9 +997,13 @@ def _web_map_underlay(ax, crs, bounds, provider="esri_hillshade",
     finally:
         vrt.close()
         base.close()
-    ax.imshow(arr, cmap="gray", vmin=0, vmax=255, alpha=0.9,
-              extent=[hb.left, hb.right, hb.bottom, hb.top], zorder=0,
-              interpolation="antialiased", interpolation_stage="rgba")
+    ext = [hb.left, hb.right, hb.bottom, hb.top]
+    if len(_UNDERLAY_CACHE) > 6:   # tiny working set: figure bundles only
+        _UNDERLAY_CACHE.clear()
+    _UNDERLAY_CACHE[key] = (arr, ext)
+    ax.imshow(arr, cmap="gray", vmin=0, vmax=255, alpha=0.9, extent=ext,
+              zorder=0, interpolation="antialiased",
+              interpolation_stage="rgba")
     ax.text(0.995, 0.005, label, transform=ax.transAxes, ha="right",
             va="bottom", fontsize=6.5, color="#555555")
 
@@ -1019,7 +1047,9 @@ def control_map_figure(ctl, aoi_p, outdir, site_name, *, dem_tif=None,
         sub = ctl[ctl.point_type == ptype]
         if not len(sub):
             continue
-        lw = 0.5
+        boost = _sparse_boost(len(sub))
+        sz = int(sz * boost)
+        lw = 0.5 if boost == 1.0 else 1.0
         ec = _edge_for(mk, col)
         if ptype in ("runway_end", "displaced_threshold"):
             # chevrons rotate to the published runway-end true alignment
@@ -1785,10 +1815,12 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
                 # every POINT_STYLE marker is FILLED (owner 2026-08-31: the
                 # dz ramp needs face + thin dark edge; line-only shapes and
                 # their under-stroke workaround are retired)
+                boost = _sparse_boost(len(sub))
                 axes[0].scatter(sub.geometry.x, sub.geometry.y, c=sub[col],
                                 cmap=DZ_CMAP, norm=norm, marker=mk,
-                                s=max(11, int(msz * 0.24)),
-                                edgecolors="#333333", linewidths=0.35,
+                                s=int(max(11, int(msz * 0.24)) * boost),
+                                edgecolors="#333333",
+                                linewidths=0.35 if boost == 1.0 else 0.7,
                                 zorder=5)
                 handles.append(Line2D([], [], marker=mk, ls="", color="#333333",
                                       ms=6, label=f"{mlab} ({len(sub)})"))

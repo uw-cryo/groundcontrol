@@ -67,7 +67,6 @@ import io
 import json
 import logging
 import re
-import time
 from concurrent.futures import ThreadPoolExecutor
 
 import geopandas as gpd
@@ -76,7 +75,7 @@ import pandas as pd
 import requests
 
 from groundcontrol.crs import decyear, decyear_inv
-from groundcontrol.sources.checkpoints_3dep import cache_dir
+from groundcontrol.sources.checkpoints_3dep import cache_dir, cache_stale
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -156,8 +155,7 @@ def _load_index(url: str = INDEX_URL, max_age_days: float = INDEX_MAX_AGE_DAYS) 
     """Cached station index (~/.cache/groundcontrol; GROUNDCONTROL_CACHE_DIR
     override), refreshed when older than ``max_age_days``."""
     local = cache_dir() / "ngl_DataHoldings.txt"
-    stale = (not local.exists()
-             or (time.time() - local.stat().st_mtime) > max_age_days * 86400)
+    stale = cache_stale(local, max_age_days)
     if stale:
         logger.info("downloading %s -> %s", url, local)
         r = requests.get(url, timeout=120)
@@ -492,8 +490,7 @@ def _tenv3_text(station: str, frame: str,
     AGAIN through read_tenv3). Raises ``requests.HTTPError`` on 404."""
     station = str(station).strip().upper()
     local = cache_dir() / f"ngl_{station}_{frame}.tenv3"
-    stale = (not local.exists()
-             or (time.time() - local.stat().st_mtime) > max_age_days * 86400)
+    stale = cache_stale(local, max_age_days)
     if stale:
         url = TENV3_URL.format(frame=frame, sta=station)
         logger.info("downloading %s -> %s", url, local)
@@ -562,8 +559,7 @@ def _steps_text(max_age_days: float = INDEX_MAX_AGE_DAYS) -> str:
     (the I/O-only warmer :func:`fetch` runs concurrently; parsing 40 MB
     of text inside the pool convoys the GIL against other sources)."""
     local = cache_dir() / "ngl_steps.txt"
-    stale = (not local.exists()
-             or (time.time() - local.stat().st_mtime) > max_age_days * 86400)
+    stale = cache_stale(local, max_age_days)
     if stale:
         logger.info("downloading %s -> %s (large catalog; first run or "
                     "stale cache — subsequent runs read the local copy)",
@@ -676,8 +672,7 @@ def _midas_text(frame: str,
     """Raw MIDAS table text through the disk cache — download only (the
     I/O-only warmer; see :func:`_steps_text`)."""
     local = cache_dir() / f"ngl_midas_{frame}.txt"
-    stale = (not local.exists()
-             or (time.time() - local.stat().st_mtime) > max_age_days * 86400)
+    stale = cache_stale(local, max_age_days)
     if stale:
         url = MIDAS_URL.format(frame=frame)
         logger.info("downloading %s -> %s", url, local)

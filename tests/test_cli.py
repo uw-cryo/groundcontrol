@@ -960,3 +960,40 @@ def test_assess_derives_landing_for_non_nad83_target(tmp_path, monkeypatch):
         _assess([n83, "--vdatum", "ellipsoid", BBOX,
                  "--outdir", str(tmp_path / "out3")])
     assert seen["landing"] is None
+
+
+def test_cache_stale_refresh_env(tmp_path, monkeypatch):
+    """GROUNDCONTROL_REFRESH forces every shared-cache file stale (the
+    --refresh fresh-run switch); otherwise age rules apply."""
+    from groundcontrol.sources.checkpoints_3dep import cache_stale
+    f = tmp_path / "x.txt"
+    monkeypatch.delenv("GROUNDCONTROL_REFRESH", raising=False)
+    assert cache_stale(f)                      # missing
+    f.write_text("hi")
+    assert not cache_stale(f)                  # exists, no age limit
+    assert not cache_stale(f, max_age_days=7)  # fresh
+    import os
+    os.utime(f, (0, 0))                        # ancient mtime
+    assert cache_stale(f, max_age_days=7)
+    monkeypatch.setenv("GROUNDCONTROL_REFRESH", "1")
+    f.touch()
+    assert cache_stale(f)                      # forced
+
+
+def test_assess_refresh_ignores_control_cache(tmp_path, monkeypatch, capsys):
+    _forbid_fetch(monkeypatch)
+    monkeypatch.delenv("GROUNDCONTROL_REFRESH", raising=False)
+    dsm = _plane_tif_nad83(tmp_path)
+    cache = tmp_path / "ctl.parquet"
+    _points().to_parquet(cache)
+    # without --refresh the cache short-circuits the fetch; with it the
+    # (forbidden) fetch is reached — proving the cache was ignored
+    import os
+    try:
+        with pytest.raises(AssertionError, match="fetch_control called"):
+            _assess([dsm, "--vdatum", "ellipsoid", BBOX,
+                     "--control", str(cache),
+                     "--outdir", str(tmp_path / "out"), "--refresh"])
+    finally:   # the CLI sets the env for its process; scrub it here
+        os.environ.pop("GROUNDCONTROL_REFRESH", None)
+    assert "ignoring control cache" in capsys.readouterr().err

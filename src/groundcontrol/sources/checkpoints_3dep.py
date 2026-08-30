@@ -44,10 +44,25 @@ def cache_dir() -> Path:
     return d
 
 
+def cache_stale(local: Path, max_age_days: float | None = None) -> bool:
+    """ONE staleness rule for every shared-cache file: missing, older than
+    ``max_age_days`` (``None`` = never expires), or ``GROUNDCONTROL_REFRESH``
+    set in the environment (the CLI ``--refresh`` flag: force re-download
+    of everything this run touches)."""
+    import time
+    if os.environ.get("GROUNDCONTROL_REFRESH"):
+        return True
+    if not local.exists():
+        return True
+    if max_age_days is None:
+        return False
+    return (time.time() - local.stat().st_mtime) > max_age_days * 86400
+
+
 def fetch(aoi_bounds_4326, url: str = PARQUET_URL) -> gpd.GeoDataFrame:
     """Bbox read of the national checkpoint DB (downloads + caches on first use)."""
     local = cache_dir() / Path(url).name
-    if not local.exists():
+    if cache_stale(local):
         logger.info("downloading %s -> %s", url, local)
         r = requests.get(url, timeout=120)
         r.raise_for_status()

@@ -47,7 +47,7 @@ import pandas as pd
 import requests
 
 from groundcontrol.crs import decyear
-from groundcontrol.sources.checkpoints_3dep import cache_dir
+from groundcontrol.sources.checkpoints_3dep import cache_dir, cache_stale
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -103,7 +103,7 @@ def fetch(aoi_bounds_4326, cycle: str | None = None) -> dict:
     local = None
     for cyc in cycles:
         local = cache_dir() / f"faa_APT_{cyc}.zip"
-        if local.exists():
+        if not cache_stale(local):
             break
         url = APT_URL.format(cycle=cyc)
         logger.info("downloading %s -> %s", url, local)

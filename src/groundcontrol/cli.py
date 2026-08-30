@@ -73,10 +73,17 @@ def fetch_control_main(argv=None) -> int:
                         "simplified to <=100 points) instead of the default "
                         "grid extent (costly on large rasters without "
                         "overviews)")
+    p.add_argument("--refresh", action="store_true",
+                   help="force re-download of every shared-cache file this "
+                        "run touches (source catalogs, station series, web "
+                        "indexes) — the fresh-run switch; caches otherwise "
+                        "refresh on their own staleness windows")
     p.add_argument("--quiet", action="store_true",
                    help="suppress the package's INFO progress logging")
     args = p.parse_args(argv)
     _setup_logging(args.quiet)
+    if args.refresh:
+        os.environ["GROUNDCONTROL_REFRESH"] = "1"
 
     from groundcontrol import io
     from groundcontrol.sources import fetch_control
@@ -673,10 +680,16 @@ def assess_dem_main(argv=None) -> int:
                         "without overviews; the default is safe — points "
                         "over nodata NaN out at sampling and are reported "
                         "as gaps")
+    p.add_argument("--refresh", action="store_true",
+                   help="force re-download of every shared-cache file this "
+                        "run touches AND ignore an existing per-site control "
+                        "cache (re-fetch + overwrite) — the fresh-run switch")
     p.add_argument("--quiet", action="store_true",
                    help="suppress the package's INFO progress logging")
     args = p.parse_args(argv)
     _setup_logging(args.quiet)
+    if args.refresh:
+        os.environ["GROUNDCONTROL_REFRESH"] = "1"
     if args.radius is not None and args.method != p.get_default("method"):
         p.error("--radius and --method are mutually exclusive (radius mode "
                 "computes a neighborhood median)")
@@ -813,7 +826,11 @@ def assess_dem_main(argv=None) -> int:
         hs = _check_rasters({"hillshade": hs}, "--hs")["hillshade"]
     elif hs:
         hs = _check_rasters(hs, "--hs")
-    control = _preflight(_read_cache, cache) if cache.exists() else None
+    control = (None if args.refresh
+               else _preflight(_read_cache, cache) if cache.exists() else None)
+    if args.refresh and cache.exists():
+        print(f"--refresh: ignoring control cache {cache} (re-fetching)",
+              file=sys.stderr)
     # Only now create --outdir: every INPUT check above is side-effect free,
     # so a rejected input leaves nothing behind (an output-side rejection
     # below can leave an empty --outdir; the export checks need it to exist).

@@ -487,7 +487,7 @@ def check_product_family(products) -> None:
 
 def assess_products(control, products, target_crs, *, outdir, site_name,
                     aoi=None, hs=None, rgb=None, intensity=None,
-                    basemap="esri", midas_velocities=True,
+                    basemap="esri", midas_velocities=True, sheets=False,
                     target_epoch=2010.0, method="linear",
                     radius=None, source_crs=None, figures=True, write=True,
                     point_lim=None, vendor_lim=None, wide_lim=None,
@@ -508,7 +508,9 @@ def assess_products(control, products, target_crs, *, outdir, site_name,
     ``intensity`` raster when given | one shaded-relief panel per product.
     The bundle also carries the MIDAS velocity maps and NGL series
     figures (``ngl/`` subdir) by default — ``midas_velocities=False``
-    opts OUT (e.g. for a deliberately offline run).
+    opts OUT (e.g. for a deliberately offline run). Per-point contact
+    sheets are OPT-IN (``sheets=True`` / ``--context-sheets``): the
+    slow figure component, and most runs don't need them.
     With ``write=True`` the sampled points land in
     ``<outdir>/<site_name>_assessed.parquet`` (io.write provenance sidecar)
     and the stats table in ``<site_name>_dz_stats.csv``.
@@ -581,10 +583,15 @@ def assess_products(control, products, target_crs, *, outdir, site_name,
             point_lim=point_lim, vendor_lim=vendor_lim, wide_lim=wide_lim)
         # standard contact sheets for the sparse photo-identifiable subsets
         # (GNSS occupation classes, FAA runway control; owner 2026-08-29)
-        sheets = context_sheets(sampled, products, outdir, site_name,
-                                rgb=rgb, intensity=intensity, basemap=basemap)
         if sheets:
-            artifacts["context_sheets"] = sheets
+            # per-point contact sheets: the SLOW figure component (web-tile
+            # windows per point) — opt-in since 2026-09-01 (owner: useful,
+            # but not what most users want to wait for by default)
+            sheet_paths = context_sheets(sampled, products, outdir, site_name,
+                                         rgb=rgb, intensity=intensity,
+                                         basemap=basemap)
+            if sheet_paths:
+                artifacts["context_sheets"] = sheet_paths
         # the LABELED all-sources control map (+ monument facets, and the
         # MIDAS velocity maps + NGL series — default ON like every other
         # standard figure, owner 2026-08-31: "you shouldn't have to

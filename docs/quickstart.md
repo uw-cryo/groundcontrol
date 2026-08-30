@@ -183,9 +183,11 @@ sampled, stats, artifacts = assess_products(
 # for pre-rendered ones on very large mosaics.
 ```
 
-CLI: `groundcontrol-assess --product DSM=dsm.tif --product DTM=dtm.tif
---target-crs dsm_frame.wkt --outdir out/` (AOI = product footprints, site name = file
-stem, hillshade computed).
+CLI: `groundcontrol-assess dsm.tif dtm.tif --vdatum ellipsoid` (positional
+rasters classify by filename — `dtm` in the stem selects the bare-earth rules; AOI =
+product footprints, site name = file stem, outdir = `<stem>_groundcontrol/`,
+hillshade computed; `--product NAME=PATH` / `--target-crs` remain for explicit
+control).
 
 ## 6. Per-point context contact sheets
 
@@ -198,7 +200,7 @@ OPUS / other GNSS / FAA runway / 3DEP NVA / 3DEP VVA — at two tiers (120 m con
 ortho and/or the `basemap=` web provider (Esri default, network, credited on the
 sheet; `None` offline) — then `intensity=` grayscale when given, then one
 shaded-relief panel per product. An AOI-only fetch gets RGB-only sheets
-(`groundcontrol-fetch --context-sheets`). Call `point_context_gallery` directly for
+(`groundcontrol-fetch --context-sheets`; the sheets are opt-in on both CLIs). Call `point_context_gallery` directly for
 custom layer stacks or other subsets. Layers are
 `(tag, path, kind)` with `kind` in `"rgb"` / `"gray"` / `"relief"`; a DEM alone gives a
 relief-only sheet, and an `"rgb"` path may be a list (fallback chain, e.g. ortho then a

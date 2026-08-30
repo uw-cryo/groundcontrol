@@ -627,7 +627,7 @@ def test_assess_writes_context_sheets_for_gnss_and_faa(tmp_path):
     _, _, art = assess_products(pts, {"DSM": dem}, CRS, source_crs=CRS,
                                 outdir=tmp_path / "out", site_name="s",
                                 basemap=None,      # offline test: no tile fetch
-                                midas_velocities=False)
+                                midas_velocities=False, sheets=True)
     names = sorted(p.name for p in art["context_sheets"])
     # per-source subsets x the two standard tiers (recovered spec 2026-08-29)
     assert names == [f"s_{sub}_gallery_{tier}.jpg"
@@ -641,7 +641,8 @@ def test_assess_writes_context_sheets_for_gnss_and_faa(tmp_path):
     dense = pts[pts["point_type"] == "monument"]   # NGS monuments: never sheeted
     _, _, art2 = assess_products(dense, {"DSM": dem}, CRS, source_crs=CRS,
                                  outdir=tmp_path / "out2", site_name="d",
-                                 basemap=None, midas_velocities=False)
+                                 basemap=None, midas_velocities=False,
+                                 sheets=True)
     assert "context_sheets" not in art2
     assert not list((tmp_path / "out2").glob("*gallery*"))
 

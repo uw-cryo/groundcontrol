@@ -57,7 +57,9 @@ def fetch_control_main(argv=None) -> int:
                         "outside the NAD83 area of use: e.g. --landing-crs EPSG:7912 "
                         "for Nepal NGL control. Geographic CRS only")
     p.add_argument("--context-sheets", action="store_true",
-                   help=argparse.SUPPRESS)   # deprecated 2026-08-31: default now
+                   help="also write the per-point context contact sheets "
+                        "(RGB web-basemap windows per fetched point — the "
+                        "slow part; off by default)")
     p.add_argument("--no-figures", action="store_true",
                    help="write only the control file + provenance; skip the "
                         "standard figure set (contact sheets, labeled control "
@@ -108,17 +110,16 @@ def fetch_control_main(argv=None) -> int:
     io.write(gdf, out, status=status,
              command="groundcontrol-fetch " + " ".join(argv or sys.argv[1:]))
     print(f"wrote {out} ({len(gdf)} points) + provenance sidecar", file=sys.stderr)
-    if args.context_sheets:
-        print("note: --context-sheets is deprecated — the standard figure set "
-              "is written by default (use --no-figures to skip)", file=sys.stderr)
     if not args.no_figures:
         # figures are ON by default, matching groundcontrol-assess (owner
         # 2026-08-31: "you shouldn't have to specify"); a source that found
         # no sites simply contributes no figures
         from groundcontrol.figures import context_sheets, standard_control_figures
-        sheets = context_sheets(gdf, {}, Path(out).parent, Path(out).stem,
-                                basemap=None if args.basemap == "none"
-                                else args.basemap)
+        sheets = []
+        if args.context_sheets:   # opt-in: the slow figure component
+            sheets = context_sheets(gdf, {}, Path(out).parent, Path(out).stem,
+                                    basemap=None if args.basemap == "none"
+                                    else args.basemap)
         # the labeled all-sources control map that locates each sheet cell,
         # plus the MIDAS velocity + NGL time-series figures (owner
         # 2026-08-30: the AOI-only path gets the full standard set too)
@@ -651,6 +652,11 @@ def assess_dem_main(argv=None) -> int:
                    help="web-imagery provider for the contact sheets' RGB panel "
                         "(fetched over the network, credited on the sheet; "
                         "'none' for offline runs; default: esri)")
+    p.add_argument("--context-sheets", action="store_true",
+                   help="also write the per-point context contact sheets "
+                        "(web-imagery windows per GNSS/FAA/3DEP point — "
+                        "useful for photo-ID QA, but the slow part of the "
+                        "figure stage; off by default)")
     p.add_argument("--no-figures", action="store_true", help="skip figure output")
     p.add_argument("--point-lim", type=float, default=None,
                    help="pin the validation-figure map color limit (m); default "
@@ -921,6 +927,7 @@ def assess_dem_main(argv=None) -> int:
         hs=hs, rgb=rgb, intensity=intensity,
         basemap=None if args.basemap == "none" else args.basemap,
         midas_velocities=True,  # explicit at the entry point (default too)
+        sheets=args.context_sheets,
         target_epoch=args.target_epoch, method=args.method,
         radius=args.radius, source_crs=source_crs, figures=not args.no_figures,
         point_lim=args.point_lim, vendor_lim=args.vendor_lim,

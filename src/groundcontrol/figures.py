@@ -1806,7 +1806,8 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
                               height_ratios=[0.82, 0.82, 0.98],
                               hspace=0.3, wspace=0.35)
         ax_map = fig.add_subplot(gs[:, 0])
-        ax_map.set_anchor("W")   # aspect slack goes right, never a left gulf
+        ax_map.set_anchor("NW")  # aspect slack goes right/below — the map
+        #                          hugs the title, never floats mid-column
         cax = fig.add_subplot(gs[:, 1])   # full map height, never floating
         ax_s = fig.add_subplot(gs[0, 2])
         ax_n = fig.add_subplot(gs[1, 2], sharex=ax_s)
@@ -1862,11 +1863,12 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         cb.set_label(f"dz = {prod} − control (m)", fontsize=9, color=_INK)
         cb.ax.tick_params(labelsize=8, colors=_MUT)
         _finish_map(axes[0], aoi, points=use)
-        # two lines, anchored over the MAP (loc left): one long line on a
-        # narrow-aspect AOI overflowed into the histogram column
-        axes[0].set_title(f"Vertical difference (m, {prod} minus control)\n"
-                          f"n={len(use)}: {site_name}", fontsize=11,
-                          color=_INK, loc="left")
+        # FIGURE-level single-line title (owner 2026-09-01: an axes-level
+        # title wrapped oddly across map aspects — the figure is always
+        # wide enough, whatever the AOI shape)
+        fig.suptitle(f"Vertical difference (m, {prod} minus control), "
+                     f"n={len(use)}: {site_name}", x=0.01, y=0.995,
+                     ha="left", va="top", fontsize=12, color=_INK)
 
         is_dtm = is_dtm_product(prod)  # the ONE DSM/DTM classifier (round 4)
         panels = []                       # (ax, seg_vals, seg_raw, own_lim)

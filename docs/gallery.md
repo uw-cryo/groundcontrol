@@ -12,11 +12,16 @@ spans 1940s leveling to 2020s GNSS).
 
 ## 1. Multi-source control fetch
 
-`fetch_control` on a ~60 km AOI: 1,677 usable points from four sources in one
-normalized schema, plotted over the 3DEP DTM + hillshade with datum-tagged
-elevation. The dense central grid is the NGS calibration range.
+`fetch_control` on a ~60 km AOI: 1,707 points from five sources in one
+normalized schema — 3DEP checkpoints, NGS monuments, OPUS campaign GNSS, and
+FAA runway control (rotated runway-end chevrons, helipad H-rings) — over the
+product hillshade. Sparse named classes carry labels (CORS/GNSS station ids
+per point, FAA one label per airport) so every contact-sheet cell can be
+located on the map; dense classes are never labeled. This is the standard
+`{site}_control_map.png` written by `groundcontrol-assess` and
+`groundcontrol-fetch` alike.
 
-![control map](img/casagrande_large_control_map.png)
+![control map](img/casagrande_control_map.jpg)
 
 ## 2. DEM accuracy assessment with dual-track statistics
 
@@ -38,9 +43,11 @@ control landing is printed on every histogram.
 --target-crs <3D UTM .wkt> --outdir out/ --site-name casagrande` — nothing else.
 The AOI is the mosaic's valid-data footprint, the underlay is a hillshade
 computed from the product, and the figure is `validation_dz_figures`: every
-control segment on one map plus the survey-grade histograms (3DEP NVA
-checkpoints, OPUS campaign GNSS) and the NGS-monument histogram after a
-3·NMAD gate. Here 1,550 sampled points over the 60 km mosaic, NVA median
+control segment on one map — marker SHAPE carries the class (checkpoints,
+GNSS stars, NGS monuments, FAA chevrons — the same symbology as the control
+map), color stays the dz ramp — plus the survey-grade histograms (3DEP NVA
+checkpoints, OPUS campaign GNSS, FAA surveyed runway points) and the
+NGS-monument histogram after a 3·NMAD gate. Here 1,550 sampled points over the 60 km mosaic, NVA median
 −0.040 m / NMAD 0.042 m. Run on this mosaic: 69 s end to end, of which the
 footprint and the hillshade take ~3 s.
 
@@ -56,13 +63,16 @@ quality-tier filters are what make that separable.
 
 ![NGS best dz](img/casagrande_large_dz_ngs_best_DTM.png)
 
-## 4. GNSS vertical velocities (MIDAS)
+## 4. GNSS velocities (MIDAS)
 
-`plot_velocity_vectors` with per-station MIDAS rates over hillshade — RED =
-subsidence by convention throughout the library. This is the observed
-velocity field that stage-2 epoch propagation (`propagate_epoch`) consumes.
+The standard combined velocity figure (`ngl/` in every assessment output
+tree): horizontal quiver and vertical-colored panels over the DEM
+hillshade, with the network velocity interpolated at the AOI centroid —
+RED = subsidence by convention throughout the library. This is the
+observed velocity field that stage-2 epoch propagation
+(`propagate_epoch`) consumes.
 
-![MIDAS vertical velocities](img/casagrande_large_midas_velocity_vertical.png)
+![MIDAS velocities](img/casagrande_midas_velocity.jpg)
 
 ## 5. Datasheet quality attributes
 

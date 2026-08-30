@@ -87,15 +87,30 @@ the NAD83(2011)+NAVD88 → ellipsoidal-UTM landing is printed on the histogram.
 
 ## 7. Per-point context contact sheets
 
-`point_context_gallery` — standard in the `assess_products` bundle for the
-GNSS and FAA subsets (`figures.context_sheets`), opt-in for custom layer
-stacks like this one: for every control point a strip of image windows — here 120 m windows of 3DEP lidar intensity and the
-3DEP DSM as color shaded relief — with the point's own marker (runway-end
-chevrons rotate to the published runway heading). Threshold paint and runway
-numbers are bright in intensity, so the surveyed FAA positions can be checked
-against the pavement features by eye; the same sheet takes an RGB ortho or a
-web basemap as the first panel (`kind="rgb"`, with a fallback chain for
-ortho nodata holes). Sheets paginate, and surveyed / estimated classes never
-share a page.
+`figures.context_sheets`, standard in the `assess_products` bundle: contact
+sheets broken out by what came back (`cors` / `opus` / `gnss_other` /
+`faa_runway` / `3dep_nva` / `3dep_vva`) at two tiers (120 m context + 30 m
+native-pixel). Panels adapt to the available layers — here the FAA surveyed
+page with the full stack: web-basemap RGB (Esri World Imagery, credited in
+the title; a user ortho rides in front with the web tiles as nodata
+fallback) | 3DEP lidar intensity | DSM color shaded relief, with the point's
+own marker (runway-end chevrons rotate to the published runway heading,
+helipad H-rings surround the pad paint). Threshold paint and runway numbers
+are bright in both imagery and intensity, so surveyed FAA positions are
+checkable against the pavement by eye; surveyed / estimated classes never
+share a page. Imagery panels: (c) Esri World Imagery.
 
-![FAA runway context sheet](img/casagrande_faa_runway_gallery_120m.png)
+![FAA runway context sheet](img/casagrande_faa_runway_gallery_120m.jpg)
+
+## 8. AOI-only, anywhere: Nepal GNSS with no DEM at all
+
+The same standard sheets from `groundcontrol-fetch --context-sheets` with
+nothing but an AOI — no DEM, no intensity: RGB web-basemap panels only,
+built in the AOI's estimated UTM. Site: the Rasuwa (Nepal) NGL stations,
+fetched with the non-CONUS landing (`--landing-crs EPSG:7912`; the default
+NAD83(2011) landing correctly refuses outside its area of use). The basemap
+tile level auto-probes down from z19 to the deepest level with real content
+in the region, and a point where the provider has no imagery renders an
+honest labeled blank. Imagery panels: (c) Esri World Imagery.
+
+![Nepal CORS context sheet](img/rasuwa_cors_gallery_120m.jpg)

@@ -193,18 +193,25 @@ _WMS_XML = """<GDAL_WMS>
 """
 
 
-def open_web_basemap(dst_crs, bounds, *, provider="esri", tile_level=19,
-                     margin_m=500.0):
+def open_web_basemap(dst_crs, bounds, *, provider="esri", tile_level="auto",
+                     margin_m=500.0, probe_xy=None):
     """Tiled web imagery as an OPEN dataset warped into ``dst_crs`` over
     ``bounds`` (+margin) — the contact sheets' default RGB panel. Windowed
     reads fetch only the tiles they touch; an in-memory ``WarpedVRT`` (no
     gdalwarp subprocess) serves true ground meters at any latitude, with
     the pixel size matched to ``tile_level``'s native resolution at the
-    site latitude. Returns ``(base_dataset, warped_vrt)`` — the CALLER
-    closes both (vrt first) — or ``None`` with a warning when the WMS
-    driver, the network, or the CRS math is unavailable (the sheets then
-    simply lack the RGB panel; auxiliary imagery is not worth failing an
-    assessment over).
+    site latitude. ``tile_level="auto"`` (default) probes z19 down to z15
+    and keeps the deepest level where at least HALF the probe locations
+    show real content (vs :data:`WEB_BLANK_CHROMA`) — ``probe_xy``: up to a
+    dozen ``(x, y)`` points in ``dst_crs`` (the contact sheets pass their
+    control points: a 190 km Nepal AOI whose bbox center hits Kathmandu's
+    z19 tiles must not pick z19 for the 11 rural stations; 2026-08-30),
+    else 3 bbox fractions. Providers' max level varies by region: Esri
+    rural Nepal tops out well below its z19 CONUS coverage.
+    Returns ``(base_dataset, warped_vrt)`` — the CALLER closes both (vrt
+    first) — or ``None`` with a warning when the WMS driver, the network,
+    or the CRS math is unavailable (the sheets then simply lack the RGB
+    panel; auxiliary imagery is not worth failing an assessment over).
     """
     import math
 
@@ -214,32 +221,77 @@ def open_web_basemap(dst_crs, bounds, *, provider="esri", tile_level=19,
     from rasterio.vrt import WarpedVRT
 
     label, url = WEB_BASEMAP_PROVIDERS[provider]
-    try:
+
+    def _open(z):
         crs = pyproj.CRS.from_user_input(dst_crs)
         minx, miny, maxx, maxy = (float(v) for v in bounds)
         to4326 = pyproj.Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
         lat = to4326.transform((minx + maxx) / 2, (miny + maxy) / 2)[1]
-        res = 156543.03392 * math.cos(math.radians(lat)) / 2 ** tile_level
+        res = 156543.03392 * math.cos(math.radians(lat)) / 2 ** z
         m = margin_m
         if crs.is_geographic:
             res, m = res / 111320.0, margin_m / 111320.0
-        minx, miny, maxx, maxy = minx - m, miny - m, maxx + m, maxy + m
-        w = max(1, int(math.ceil((maxx - minx) / res)))
-        h = max(1, int(math.ceil((maxy - miny) / res)))
-        base = rasterio.open(_WMS_XML.format(url=url, z=tile_level))
+        x0, y0, x1, y1 = minx - m, miny - m, maxx + m, maxy + m
+        w = max(1, int(math.ceil((x1 - x0) / res)))
+        h = max(1, int(math.ceil((y1 - y0) / res)))
+        base = rasterio.open(_WMS_XML.format(url=url, z=z))
         try:
             vrt = WarpedVRT(base, crs=crs.to_wkt(),
-                            transform=from_origin(minx, maxy, res, res),
+                            transform=from_origin(x0, y1, res, res),
                             width=w, height=h)
         except Exception:
             base.close()
             raise
+        vrt.gc_web_basemap = True  # placeholder-tile detection is scoped to us
+        return base, vrt, res, w, h
+
+    def _has_content(vrt, w, h):
+        from rasterio.windows import Window
+        if probe_xy:
+            rcs = []
+            inv = ~vrt.transform
+            for x, y in list(probe_xy)[:12]:
+                c, r = inv * (float(x), float(y))
+                if 0 <= c < w and 0 <= r < h:
+                    rcs.append((int(r), int(c)))
+        else:
+            rcs = [(int(h * f), int(w * f)) for f in (0.5, 0.25, 0.75)]
+        if not rcs:
+            rcs = [(h // 2, w // 2)]
+        n_ok = 0
+        for r, c in rcs:
+            win = Window(max(0, c - 24), max(0, r - 24),
+                         min(48, w), min(48, h))
+            arr = vrt.read(window=win).astype("float64")
+            if (arr.size and arr.shape[0] >= 3
+                    and np.abs(np.diff(arr[:3], axis=0)).mean() >= WEB_BLANK_CHROMA):
+                n_ok += 1
+        # at least half the probed locations must show content: one urban
+        # station must not pin a deep level the rural majority lacks
+        return n_ok >= max(1, (len(rcs) + 1) // 2)
+
+    try:
+        levels = ((19, 18, 17, 16, 15) if tile_level == "auto"
+                  else (int(tile_level),))
+        base = vrt = None
+        for z in levels:
+            if base is not None:
+                vrt.close()
+                base.close()
+            base, vrt, res, w, h = _open(z)
+            if len(levels) == 1 or _has_content(vrt, w, h):
+                break
+        else:
+            logger.warning("web basemap %s: no content found down to z%d at "
+                           "this AOI; keeping the last level (honest blanks)",
+                           provider, levels[-1])
     except Exception as e:
         logger.warning("web basemap (%s) unavailable, RGB panel skipped: %s",
                        provider, e)
         return None
-    logger.info("web basemap %s: z%d, %.2f units/px, %dx%d over %s",
-                provider, tile_level, res, w, h, [round(b) for b in bounds])
+    logger.info("web basemap %s: z%d%s, %.2f units/px, %dx%d over %s",
+                provider, z, " (auto)" if tile_level == "auto" else "",
+                res, w, h, [round(b) for b in bounds])
     return base, vrt
 
 
@@ -330,8 +382,11 @@ def context_sheets(sampled, products, outdir, site_name, *, rgb=None,
             if map_crs is not None and map_crs.is_geographic:
                 map_crs = all_pts.estimate_utm_crs()   # meter windows need a grid
                 all_pts = all_pts.to_crs(map_crs)
-            web = open_web_basemap(map_crs, all_pts.total_bounds,
-                                   provider=basemap)
+            step = max(1, len(all_pts) // 12)
+            web = open_web_basemap(
+                map_crs, all_pts.total_bounds, provider=basemap,
+                probe_xy=list(zip(all_pts.geometry.x[::step],
+                                  all_pts.geometry.y[::step])))
             if web is not None:
                 base, vrt = web
                 stack.callback(base.close)
@@ -461,6 +516,13 @@ def point_context_gallery(points, layers, outdir, site_name, *,
         ok = np.isfinite(arr).all(axis=0)
         if kind == "rgb" and src.nodata is None:
             ok &= (arr != 0).any(axis=0)
+            # a web provider's placeholder tile is pure achromatic (gray or
+            # black + text): web-basemap sources only — user orthos may be
+            # legitimately grayscale (KH-9)
+            if (getattr(src, "gc_web_basemap", False) and arr.shape[0] >= 3
+                    and ok.size and np.abs(np.diff(arr[:3], axis=0)).mean()
+                    < WEB_BLANK_CHROMA):
+                return 0.0
         return float(ok.mean()) if ok.size else 0.0
 
     def _panel(ax, dss, kind, x0, y0):
@@ -693,6 +755,13 @@ def _raw_field(series, key):
         return v if v else None  # two raw readers bucket identically (rd 4)
     return series.apply(get)
 
+
+#: mean inter-band difference below which a WEB-BASEMAP window is treated
+#: as a provider placeholder ("map data not yet available" tiles are pure
+#: achromatic gray/black + text — measured chroma 0.0 vs >= 24 for every
+#: real window, Nepal/CG 2026-08-30). Applied ONLY to web-basemap sources:
+#: a grayscale USER ortho (KH-9!) is legitimate achromatic imagery.
+WEB_BLANK_CHROMA = 3.0
 
 #: auto-hillshade decimation: longest DEM side read at most this many px
 HILLSHADE_MAX_PX = 2048

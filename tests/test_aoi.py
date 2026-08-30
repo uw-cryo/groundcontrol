@@ -736,3 +736,36 @@ def test_fetch_context_sheets_from_aoi_only(tmp_path, monkeypatch):
     assert pages == sorted(f"ctl_{sub}_gallery_{tier}.png"
                            for sub in ("3dep_nva", "3dep_vva", "opus")
                            for tier in ("120m", "30m"))
+
+
+def test_web_placeholder_chroma_rule_scoped_to_basemap_sources(tmp_path, caplog):
+    """A pure-achromatic window from a WEB-BASEMAP source is a provider
+    placeholder (measured chroma 0.0 vs >=24 real; Nepal 2026-08-30) and
+    falls through the chain — but a grayscale USER ortho (KH-9) is
+    legitimate imagery and must render."""
+    import rasterio
+    from groundcontrol.figures import point_context_gallery
+    n = 40
+    gray = np.full((3, n, n), 204, dtype="uint8")          # placeholder-like
+    color = np.random.default_rng(0).integers(0, 255, (3, n, n), dtype="uint8")
+    for name, arr in (("gray.tif", gray), ("color.tif", color)):
+        with rasterio.open(tmp_path / name, "w", driver="GTiff", height=n, width=n,
+                           count=3, dtype="uint8", crs=CRS,
+                           transform=from_origin(400000.0, 3650000.0, 3.0, 3.0)) as d:
+            d.write(arr)
+    pts = gpd.GeoDataFrame({"id": ["A"]},
+                           geometry=gpd.points_from_xy([400060.0], [3649940.0]), crs=CRS)
+    with rasterio.open(tmp_path / "gray.tif") as fake_web, \
+            rasterio.open(tmp_path / "color.tif") as real:
+        fake_web.gc_web_basemap = True                     # the basemap marker
+        with caplog.at_level("INFO", logger="groundcontrol.figures"):
+            pages = point_context_gallery(
+                pts, [("rgb", [fake_web, real], "rgb")], tmp_path, "s",
+                subset_tag="w")
+        assert pages and "fallback source 1 used" in caplog.text  # placeholder skipped
+    with rasterio.open(tmp_path / "gray.tif") as user_ortho:      # NO marker
+        caplog.clear()
+        with caplog.at_level("INFO", logger="groundcontrol.figures"):
+            point_context_gallery(pts, [("rgb", [user_ortho, str(tmp_path / "color.tif")],
+                                         "rgb")], tmp_path, "s2", subset_tag="w")
+        assert "fallback source 1 used" not in caplog.text        # grayscale renders

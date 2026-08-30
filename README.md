@@ -15,7 +15,7 @@ Fetch ground control points for an arbitrary AOI and assess DEM accuracy — wit
 ## Status
 
 **v0.1.2 — pre-alpha, quiet release.** The fetch → transform → sample → statistics →
-figures pipeline works end to end (CLI + Python API) and is covered by **427 offline
+figures pipeline works end to end (CLI + Python API) and is covered by **450 offline
 tests** run in CI on Python 3.10/3.12, with the geodesy core additionally adversarially
 audited (independent review agents; math cross-checked against external oracles). The API
 may still move between minor versions — pin the tag if you build on it, and expect sharp
@@ -32,7 +32,7 @@ per-source status report:
 | USGS 3DEP checkpoints | `3dep` | national GeoParquet with bbox pushdown |
 | NGS Data Explorer (NDE) | `ngs` | monumented control, per-realization datum landing |
 | OPUS shared solutions | `opus` | campaign GNSS occupations (`gnss_campaign`): episodic, nothing left on site; NGS monument-stability tier (A/B vs C/D) decoded per record |
-| Nevada Geodetic Lab GNSS | `ngl` | daily `.tenv3` series, `steps.txt`, MIDAS velocities; per-station occupation class earned by the station's own record (`gnss_cont` / `gnss_semicont` / `gnss_campaign`) — an occupation-pattern claim, not a quality tier |
+| Nevada Geodetic Lab GNSS | `ngl` | daily `.tenv3` series, `steps.txt` (earthquake-step evidence for epoch propagation), MIDAS velocities; per-station occupation class earned by the station's own record (`gnss_cont` / `gnss_semicont` / `gnss_campaign`) — an occupation-pattern claim, not a quality tier; corroborated curated-network membership (`networks.py`: NGS CORS, IGS) in `raw["networks"]` |
 | FAA NASR runway control | `faa` | photo-identifiable runway ends, displaced thresholds, helipads from the public-domain 28-day NASR subscription; per-point position-source provenance (surveyed vs estimated) with AC 150/5300-18C accuracies on the surveyed class |
 
 - **One normalized schema** (`schema.py`) — a single canonical control-point GeoDataFrame
@@ -42,10 +42,15 @@ per-source status report:
 - **CRS / datum / epoch engine** (`crs.py`) — cached, fail-loud, AOI-aware `get_transformer`;
   `transform_points` (packaged 3D/4D control→DEM-frame transform); `land_horizontal`
   (per-datum landing of mixed NAD83 realizations via NADCON5, validated against NGS NCAT
-  to < 1 cm); **stage-2 epoch propagation** (`propagate_epoch`) with a velocity ladder of
+  to < 1 cm; `landing_crs=` overrides the interim frame for non-CONUS AOIs — Nepal lands
+  at ITRF); **stage-2 epoch propagation** (`propagate_epoch`) with a velocity ladder of
   per-point MIDAS ENU → plate-motion model (bundled **ITRF2020 PMM** poles + PB2002
   per-point plate assignment) → no-op with the velocity·Δt bound surfaced; static-frame
-  guards so plate motion is never fabricated inside NAD83(2011).
+  guards so plate motion is never fabricated inside NAD83(2011); an **earthquake-step
+  guard** so secular velocity never silently carries a point across a coseismic step
+  (NGL `steps.txt` evidence rides in `raw["eq_steps"]`; a Gorkha-class step is 0.1–2 m
+  that no velocity model contains — skipped rows surface as `step_blocked` with an
+  honest unbounded residual).
 - **Assessment pipeline** (`assess.py` + `groundcontrol-assess`) — `transform_control`
   (one direct 3D transform, declared-CRS guard, per-point `xform_acc_m` stated transform
   budget) → `sample_products` → `summarize_dz` → standard validation figures, with
@@ -166,7 +171,7 @@ What the standard outputs look like on a real site: **[docs/gallery.md](docs/gal
 
 ![3DEP checkpoint dz](docs/img/casagrande_large_dz_3dep_DTM.png)
 
-![FAA runway control context](docs/img/casagrande_faa_runway_gallery_120m.png)
+![FAA runway control context](docs/img/casagrande_faa_runway_gallery_120m.jpg)
 
 ## Not yet implemented
 
@@ -230,6 +235,7 @@ src/groundcontrol/
   geodesy.py       CRS construction, epoch-pinned pipelines, vertical preflight
   velocity.py      MIDAS velocity interpolation / fill
   aoi.py           AOI contract: bbox / vector file / raster footprint / GeoDataFrame
+  networks.py      curated reference-network membership registry (ngs_cors, igs)
   assess.py        transform -> sample -> stats assessment pipeline
   sample.py        raster sampling (windowed / in-memory / radius)
   accuracy.py      dual-track residual statistics (robust + ASPRS/LBS parametric)

@@ -124,6 +124,12 @@ prop = propagate_epoch(gdf, target_epoch=2020.0,
 # point via the bundled PB2002 boundaries. Rows without any usable velocity stay
 # put; their velocity·Δt bound lands in the durable `epoch_residual_m` column
 # (feeds the accuracy budget) plus the attrs['epoch_propagation'] report.
+# EARTHQUAKE STEPS: a row whose [coord_epoch, target_epoch] interval spans a
+# steps.txt earthquake (evidence rides in raw["eq_steps"] from the ngl source)
+# is NOT carried across it by secular velocity — left at its own epoch with an
+# honest unbounded (NaN) residual by default; on_step_crossing="raise" or
+# "propagate" (durable STEP-UNMODELED provenance) override. A coseismic step
+# (Gorkha 2015: 0.1-2 m) is in no velocity model.
 ```
 
 Composition order with stage 1 (the two orders commute to mm): run stage 2 in the
@@ -212,10 +218,12 @@ pages = point_context_gallery(sampled[sampled["source"] == "faa"], layers, "out"
 
 ## Caveats (current interim state)
 
-- Landing frame is fixed at EPSG:6318 horizontal; `target_crs=`/`target_epoch=` raise
-  until the full user-chosen landing ships.
+- Horizontal landing defaults to EPSG:6318 (override with `landing_crs=` for
+  non-CONUS AOIs, §1); the full user-chosen 3D `target_crs=`/`target_epoch=`
+  landing still raises.
 - Accuracy columns: only certain-semantics values populated (`acc_h` = NGS 95% network
-  accuracy; OPUS raw peak-to-peak) — conventions under review (D3).
+  accuracy; OPUS raw peak-to-peak; FAA AC 150/5300-18C on the surveyed class) —
+  conventions under review (D3).
 - NGL heights are antenna-reference ellipsoidal heights; `raw["ant_m"]` carries the
   antenna offset (subtract before comparing to a DSM/DTM — and the monument itself may
   be raised above ground).

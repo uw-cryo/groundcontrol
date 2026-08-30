@@ -931,9 +931,11 @@ SHEET_SUBSET_TITLES = {
 }
 
 def _sparse_boost(n: int) -> float:
-    """Marker-size multiplier for sparse classes (owner 2026-09-01: three
-    monuments vanished on a full-map mountain hillshade): a handful of
-    points must carry the map alone; dense classes keep house size."""
+    """Marker-size multiplier keyed on the MAP-TOTAL point count (owner
+    2026-09-01: three monuments vanished on a full-map hillshade; the
+    per-class version then mixed marker scales on one map — sparse FAA
+    next to dense NGS — which read as inconsistency). ONE factor per
+    map, applied to every class uniformly."""
     return 3.0 if n <= 10 else (1.8 if n <= 50 else 1.0)
 
 
@@ -1045,11 +1047,11 @@ def control_map_figure(ctl, aoi_p, outdir, site_name, *, dem_tif=None,
             logger.warning("map underlay skipped: %s", exc)
 
     by_type = {}
+    boost = _sparse_boost(len(ctl))          # ONE factor for the whole map
     for ptype, (mk, col, sz, zo, lab) in POINT_STYLE.items():
         sub = ctl[ctl.point_type == ptype]
         if not len(sub):
             continue
-        boost = _sparse_boost(len(sub))
         sz = int(sz * boost)
         lw = 0.5 if boost == 1.0 else 1.0
         ec = _edge_for(mk, col)
@@ -1791,7 +1793,7 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
                               hspace=0.3, wspace=0.35)
         ax_map = fig.add_subplot(gs[:, 0])
         ax_map.set_anchor("W")   # aspect slack goes right, never a left gulf
-        cax = fig.add_subplot(gs[0:2, 1])
+        cax = fig.add_subplot(gs[:, 1])   # full map height, never floating
         ax_s = fig.add_subplot(gs[0, 2])
         ax_n = fig.add_subplot(gs[1, 2], sharex=ax_s)
         ax_t = fig.add_subplot(gs[2, 2])
@@ -1809,6 +1811,7 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         from matplotlib.lines import Line2D
         norm = _mpl.colors.Normalize(vmin=-pl, vmax=pl)
         handles = []
+        boost = _sparse_boost(len(use))      # ONE factor for the whole map
         if "point_type" in use.columns and use["point_type"].notna().any():
             pts_order = [t for t in LEGEND_ORDER
                          if (use["point_type"] == t).any()]
@@ -1821,7 +1824,6 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
                 # every POINT_STYLE marker is FILLED (owner 2026-08-31: the
                 # dz ramp needs face + thin dark edge; line-only shapes and
                 # their under-stroke workaround are retired)
-                boost = _sparse_boost(len(sub))
                 axes[0].scatter(sub.geometry.x, sub.geometry.y, c=sub[col],
                                 cmap=DZ_CMAP, norm=norm, marker=mk,
                                 s=int(max(11, int(msz * 0.24)) * boost),

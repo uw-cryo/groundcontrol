@@ -33,10 +33,11 @@ logger = logging.getLogger(__name__)
 #: - helipad = thick X (owner 2026-08-31: ONE symbol everywhere — the
 #:   FAA-chart H-in-circle read badly at map scale and could not carry a
 #:   dz ramp fill);
-#: - runway end / displaced threshold = chevrons (matplotlib carets 6/7):
+#: - runway end / displaced threshold = FILLED triangles up/down (owner
+#:   2026-08-31: line-only carets could not carry a dz fill + outline),
+#:   rotated to the published runway alignment where drawn on maps —
 #:   simplification of the FAA CUG runway-construction bars + arrow/
-#:   chevron stems (p. 124), which are runway-oriented and don't reduce
-#:   to a scatter marker;
+#:   chevron stems (p. 124), which don't reduce to a scatter marker;
 #: - NGS monument 'P' (SOLID plus, owner 2026-08-31: the line-only '+'
 #:   could not carry a dz fill + outline): near the USGS topo benchmark
 #:   "x" (USGS
@@ -72,8 +73,8 @@ POINT_STYLE = {
     "gnss": ("*", "#888888", 90, 5, "GNSS (pre-split)"),
     "VVA": ("s", "#E69F00", 45, 6, "3DEP VVA"),
     "NVA": ("o", "#C00000", 55, 7, "3DEP NVA"),
-    "runway_end": (6, "#1B7837", 55, 6, "FAA runway end"),
-    "displaced_threshold": (7, "#66A61E", 50, 6, "FAA displaced threshold"),
+    "runway_end": ("^", "#1B7837", 55, 6, "FAA runway end"),
+    "displaced_threshold": ("v", "#66A61E", 50, 6, "FAA displaced threshold"),
     "helipad": ("X", "#1B7837", 60, 6, "FAA helipad"),
 }
 #: legend order: the two 3DEP checkpoint classes adjacent, then the GNSS
@@ -930,7 +931,7 @@ def _edge_for(mk, col):
     family edge so a white star stays visible on the hillshade."""
     if col in _PALE_INK:
         return "#08306B"
-    return "white" if mk != "+" else col
+    return "white"
 
 
 def _web_map_underlay(ax, crs, bounds, provider="esri_hillshade",
@@ -1007,7 +1008,7 @@ def control_map_figure(ctl, aoi_p, outdir, site_name, *, dem_tif=None,
         sub = ctl[ctl.point_type == ptype]
         if not len(sub):
             continue
-        lw = 1.1 if mk == "+" else 0.5
+        lw = 0.5
         ec = _edge_for(mk, col)
         if ptype in ("runway_end", "displaced_threshold"):
             # chevrons rotate to the published runway-end true alignment
@@ -1021,18 +1022,12 @@ def control_map_figure(ctl, aoi_p, outdir, site_name, *, dem_tif=None,
         else:
             ax.scatter(sub.geometry.x, sub.geometry.y, marker=mk, s=sz,
                        c=col, linewidths=lw, edgecolors=ec, zorder=zo)
-        # legend swatch: an UNFILLED marker (the chevrons) draws with its
-        # LINE color — a white markeredgecolor made such rows invisible
-        # (owner 2026-08-30); filled pale markers keep the dark family edge
-        if MarkerStyle(mk).is_filled():
-            by_type[ptype] = Line2D(
-                [], [], marker=mk, ls="", ms=9, markerfacecolor=col,
-                markeredgecolor=(ec if col in _PALE_INK else col),
-                color=class_ink(col), label=f"{lab} (n={len(sub)})")
-        else:
-            by_type[ptype] = Line2D(
-                [], [], marker=mk, ls="", ms=11, color=col,
-                markeredgewidth=1.4, label=f"{lab} (n={len(sub)})")
+        # legend swatch (every POINT_STYLE marker is filled since
+        # 2026-08-31): pale fills keep the dark family edge
+        by_type[ptype] = Line2D(
+            [], [], marker=mk, ls="", ms=9, markerfacecolor=col,
+            markeredgecolor=(ec if col in _PALE_INK else col),
+            color=class_ink(col), label=f"{lab} (n={len(sub)})")
     if label_points and "source" in ctl.columns and "id" in ctl.columns:
         import matplotlib.patheffects as _pe
         halo = [_pe.withStroke(linewidth=2.2, foreground="white")]
@@ -1733,27 +1728,18 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
                          if (use["point_type"] == t).any()]
             pts_order += [t for t in use["point_type"].dropna().unique()
                           if t not in pts_order]
-            import matplotlib.patheffects as _pe
-            from matplotlib.markers import MarkerStyle
             for pt in pts_order:
                 mk, _, msz, _, mlab = POINT_STYLE.get(
                     pt, ("o", "#888888", 34, 5, str(pt)))
                 sub = use[use["point_type"] == pt]
-                kw = dict(c=sub[col], cmap=DZ_CMAP, norm=norm, marker=mk,
-                          s=max(11, int(msz * 0.24)), zorder=5)
-                if MarkerStyle(mk).is_filled():
-                    sc_ = axes[0].scatter(sub.geometry.x, sub.geometry.y,
-                                          edgecolors="#333333",
-                                          linewidths=0.35, **kw)
-                else:
-                    # line-only markers (+, carets) have no face to edge:
-                    # the dz color IS the stroke, so the thin outline every
-                    # ramp-filled symbol needs (owner 2026-08-31) comes from
-                    # a slightly wider dark under-stroke instead
-                    sc_ = axes[0].scatter(sub.geometry.x, sub.geometry.y,
-                                          linewidths=1.1, **kw)
-                    sc_.set_path_effects([_pe.withStroke(linewidth=2.0,
-                                          foreground="#333333")])
+                # every POINT_STYLE marker is FILLED (owner 2026-08-31: the
+                # dz ramp needs face + thin dark edge; line-only shapes and
+                # their under-stroke workaround are retired)
+                axes[0].scatter(sub.geometry.x, sub.geometry.y, c=sub[col],
+                                cmap=DZ_CMAP, norm=norm, marker=mk,
+                                s=max(11, int(msz * 0.24)),
+                                edgecolors="#333333", linewidths=0.35,
+                                zorder=5)
                 handles.append(Line2D([], [], marker=mk, ls="", color="#333333",
                                       ms=6, label=f"{mlab} ({len(sub)})"))
         else:

@@ -364,20 +364,42 @@ def fetch(aoi_bounds_4326, frame: str = "IGS14", epoch=None, time_range=None,
     logger.info("NGL: %d candidate station(s) in bbox %s (frame %s)",
                 len(sel), tuple(aoi_bounds_4326), frame)
 
-    def _get(row):
-        url = TENV3_URL.format(frame=frame, sta=row["sta"])
-        r = requests.get(url, timeout=120)
-        if r.status_code == 404:
-            # indexed station without a series in this frame directory —
-            # skip with a loud warning (not silent: recorded in the log)
-            logger.warning("NGL station %s: no %s tenv3 at %s (404); skipping",
-                           row["sta"], frame, url)
-            return None
-        r.raise_for_status()
-        return {"meta": _station_meta(row), "tenv3": r.text}
+    logger.info("NGL: fetching %d daily series (tenv3, %d at a time from "
+                "geodesy.unr.edu — the slow part; each is cached for later "
+                "runs)", len(sel), MAX_WORKERS)
 
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+    def _get(row):
+        try:
+            text = _tenv3_text(row["sta"], frame)
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code == 404:
+                # indexed station without a series in this frame directory
+                # — skip with a loud warning (recorded in the log)
+                logger.warning("NGL station %s: no %s tenv3 (404); skipping",
+                               row["sta"], frame)
+                return None
+            raise
+        logger.info("NGL: %s series ready", row["sta"])
+        return {"meta": _station_meta(row), "tenv3": text}
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS + 2) as ex:
+        # warm the big shared catalogs CONCURRENTLY with the per-station
+        # pulls (owner 2026-09-01: the ~40 MB steps catalog + MIDAS table
+        # downloaded serially AFTER the tenv3s and read as a hang): the
+        # attach helpers then re-read the warm disk cache in seconds.
+        # Failures are swallowed here on purpose — each attach path
+        # handles and logs its own degrade mode.
+        warm = []
+        if with_velocities:
+            warm.append(ex.submit(_midas_velocity_map, frame))
+        if with_steps:
+            warm.append(ex.submit(read_steps))
         results = list(ex.map(_get, (row for _, row in sel.iterrows())))
+        for f in warm:
+            try:
+                f.result()
+            except Exception:
+                pass
     stations = [s for s in results if s is not None]
     if not stations:
         # nothing to enrich: skip the MIDAS/network/steps catalog fetches
@@ -450,6 +472,17 @@ def read_tenv3(station: str, frame: str = "IGS14",
     """
     if frame not in FRAME_TO_EPSG:
         raise ValueError(f"unknown NGL frame {frame!r}; supported: {sorted(FRAME_TO_EPSG)}")
+    return parse_tenv3(_tenv3_text(station, frame, max_age_days))
+
+
+def _tenv3_text(station: str, frame: str,
+                max_age_days: float = INDEX_MAX_AGE_DAYS) -> str:
+    """One station's raw tenv3 text, through the per-station disk cache
+    (``ngl_<STA>_<frame>.tenv3``, DataHoldings staleness pattern). Shared
+    by :func:`read_tenv3` AND :func:`fetch` (owner 2026-09-01: fetch
+    bypassed the cache, so every assess run re-downloaded every series —
+    ~100 s for 9 stations — and the figure stage then downloaded them all
+    AGAIN through read_tenv3). Raises ``requests.HTTPError`` on 404."""
     station = str(station).strip().upper()
     local = cache_dir() / f"ngl_{station}_{frame}.tenv3"
     stale = (not local.exists()
@@ -460,7 +493,7 @@ def read_tenv3(station: str, frame: str = "IGS14",
         r = requests.get(url, timeout=120)
         r.raise_for_status()
         local.write_text(r.text)
-    return parse_tenv3(local.read_text())
+    return local.read_text()
 
 
 def parse_steps(text: str) -> pd.DataFrame:
@@ -537,7 +570,9 @@ def read_steps(station: str | None = None,
     stale = (not local.exists()
              or (time.time() - local.stat().st_mtime) > max_age_days * 86400)
     if stale:
-        logger.info("downloading %s -> %s", STEPS_URL, local)
+        logger.info("downloading %s -> %s (large catalog; first run or "
+                    "stale cache — subsequent runs read the local copy)",
+                    STEPS_URL, local)
         r = requests.get(STEPS_URL, timeout=120)
         r.raise_for_status()
         local.write_text(r.text)

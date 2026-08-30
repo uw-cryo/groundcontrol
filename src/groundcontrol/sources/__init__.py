@@ -177,16 +177,24 @@ def fetch_control(aoi, sources=("3dep", "ngs", "opus", "ngl", "faa"),
     raw: dict = {}
     fetch_err: dict = {}
     if known:
+        import time as _time
+        from concurrent.futures import as_completed
+        t0 = _time.monotonic()
         with ThreadPoolExecutor(max_workers=len(known)) as pool:
             futs = {}
             for name in known:
                 logger.info("querying %s ...", name)
-                futs[name] = pool.submit(PROVIDERS[name][0], bounds)
-            for name in known:
+                futs[pool.submit(PROVIDERS[name][0], bounds)] = name
+            for fut in as_completed(futs):
+                name = futs[fut]
                 try:
-                    raw[name] = futs[name].result()
+                    raw[name] = fut.result()
+                    logger.info("%s fetched (%.1f s)", name,
+                                _time.monotonic() - t0)
                 except Exception as e:  # logged once, in the main handler
                     fetch_err[name] = e
+                    logger.info("%s failed after %.1f s (details below)",
+                                name, _time.monotonic() - t0)
     for name in sources:
         if name not in PROVIDERS:
             status[name] = {"n_rows": 0, "error": f"unknown source {name!r}"}

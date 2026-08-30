@@ -729,8 +729,9 @@ def point_context_gallery(points, layers, outdir, site_name, *,
     finally:
         for src in owned:
             src.close()
-    logger.info("wrote %d page(s), %d points: %s", len(out_paths), n,
-                [p.name for p in out_paths])
+    for fp_ in out_paths:
+        logger.info("wrote %s", fp_)
+    logger.info("%d contact-sheet page(s), %d points", len(out_paths), n)
     return out_paths
 
 
@@ -1665,7 +1666,8 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
     except Exception as exc:  # network etc. — the map figures still ship
         logger.warning("MIDAS velocity figures skipped: %s", exc)
 
-    logger.info("standard control figures: %s", [p.name for p in out])
+    for p_ in out:
+        logger.info("wrote %s", p_)
     return out
 
 

@@ -116,10 +116,9 @@ def fetch_control_main(argv=None) -> int:
         # 2026-08-31: "you shouldn't have to specify"); a source that found
         # no sites simply contributes no figures
         from groundcontrol.figures import context_sheets, standard_control_figures
-        for fp in context_sheets(gdf, {}, Path(out).parent, Path(out).stem,
-                                 basemap=None if args.basemap == "none"
-                                 else args.basemap):
-            print(f"wrote {fp}", file=sys.stderr)
+        sheets = context_sheets(gdf, {}, Path(out).parent, Path(out).stem,
+                                basemap=None if args.basemap == "none"
+                                else args.basemap)
         # the labeled all-sources control map that locates each sheet cell,
         # plus the MIDAS velocity + NGL time-series figures (owner
         # 2026-08-30: the AOI-only path gets the full standard set too)
@@ -128,11 +127,14 @@ def fetch_control_main(argv=None) -> int:
             import geopandas as gpd
             from shapely.geometry import box
             aoi_fig = gpd.GeoDataFrame(geometry=[box(*aoi)], crs=4326)
-        for fp in standard_control_figures(
-                gdf, aoi_fig,
-                Path(out).parent, Path(out).stem, midas_velocities=True,
-                map_basemap=None if args.basemap == "none" else "esri_hillshade"):
-            print(f"wrote {fp}", file=sys.stderr)
+        figs = standard_control_figures(
+            gdf, aoi_fig,
+            Path(out).parent, Path(out).stem, midas_velocities=True,
+            map_basemap=None if args.basemap == "none" else "esri_hillshade")
+        # per-file paths are in the INFO log (the writers log each one);
+        # stdout gets the count, not a raw list (owner 2026-09-01)
+        print(f"wrote {len(sheets) + len(figs)} figures next to {out}",
+              file=sys.stderr)
     return 0
 
 
@@ -859,9 +861,17 @@ def assess_dem_main(argv=None) -> int:
     print(f"transform: {t['description']} (stated accuracy {acc_note})", file=sys.stderr)
     with_stats = stats[stats.segment != "ALL"] if len(stats) else stats
     print(with_stats.to_string(index=False), file=sys.stderr)
+    n_figs = 0
     for k, v in artifacts.items():
-        if k != "transform":
+        if k == "transform":
+            continue
+        if isinstance(v, (list, tuple)):
+            n_figs += len(v)     # figure groups: paths are in the INFO log
+        else:
             print(f"wrote {v}", file=sys.stderr)
+    if n_figs:
+        print(f"wrote {n_figs} figures under {outdir} "
+              "(per-file paths in the INFO log)", file=sys.stderr)
     return 0
 
 

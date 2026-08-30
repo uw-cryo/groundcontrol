@@ -32,6 +32,14 @@ logger.addHandler(logging.NullHandler())
 FOOTPRINT_MAX_PX = 1024
 
 
+#: raster_footprint: above this many polygonized valid patches the exact
+#: union is abandoned for the valid-data bounds box — strip/tile mosaics
+#: polygonize into thousands of pieces and unary_union goes effectively
+#: quadratic (rasuwa 67-strip corridor mosaic: 5+ min CPU, killed;
+#: 2026-08-31). Normal footprints are a handful of pieces.
+FOOTPRINT_MAX_PIECES = 2000
+
+
 def raster_footprint(path, *, max_px: int = FOOTPRINT_MAX_PX):
     """Valid-data footprint of a raster as a one-row GeoDataFrame in EPSG:4326.
 
@@ -51,7 +59,10 @@ def raster_footprint(path, *, max_px: int = FOOTPRINT_MAX_PX):
     (untagged NaN counts as valid), so its footprint is its bounds — set
     the tag (``gdal_edit -a_nodata``) for holes to be excluded. Raises
     ``ValueError`` for a raster with no CRS (an AOI needs one) or no valid
-    pixels.
+    pixels. A footprint fragmenting into more than
+    :data:`FOOTPRINT_MAX_PIECES` patches (strip/tile mosaics) is
+    simplified to the valid-data bounds box with a warning — the exact
+    union is unbounded-cost there.
     """
     import geopandas as gpd
     import numpy as np
@@ -91,7 +102,25 @@ def raster_footprint(path, *, max_px: int = FOOTPRINT_MAX_PX):
                 "vector AOI if the raster is not empty")
         geoms = [shape(g) for g, v in shapes(valid.astype("uint8"), mask=valid,
                                              transform=t)]
-        poly = unary_union(geoms)
+        if len(geoms) > FOOTPRINT_MAX_PIECES:
+            # heavily fragmented mosaic: the exact union is unbounded-cost
+            # for a footprint most callers use as a fetch/figure extent —
+            # fall back to the valid-data BOUNDS box, loudly (pass a
+            # vector AOI when the exact outline matters)
+            from shapely.geometry import box as _box
+            rows = np.flatnonzero(valid.any(axis=1))
+            cols = np.flatnonzero(valid.any(axis=0))
+            c0 = t * (int(cols[0]), int(rows[-1]) + 1)
+            c1 = t * (int(cols[-1]) + 1, int(rows[0]))
+            poly = _box(min(c0[0], c1[0]), min(c0[1], c1[1]),
+                        max(c0[0], c1[0]), max(c0[1], c1[1]))
+            logger.warning(
+                "raster footprint %s: %d disjoint valid patches (> %d) — "
+                "simplified to the valid-data bounds box; pass a vector "
+                "AOI for an exact footprint", os.fspath(path), len(geoms),
+                FOOTPRINT_MAX_PIECES)
+        else:
+            poly = unary_union(geoms)
         # densify so straight projected edges curve correctly in lon/lat;
         # tolerance from the geometry itself (affine coefficients are not
         # pixel sizes under rotation: review round 1, 90 deg -> crash)

@@ -1519,15 +1519,33 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
         out.append(fp)
 
     # ---- 3+4. MIDAS motion figures (network fetch: gated) -------------------
-    if not midas_velocities or aoi_gdf is None:
-        logger.info("MIDAS velocity figures skipped (midas_velocities=%s, "
-                    "aoi=%s)", midas_velocities, aoi_gdf is not None)
+    if not midas_velocities:
+        logger.info("MIDAS velocity figures skipped (midas_velocities=False)")
         return out
+    ngl_scope = aoi_gdf
+    if ngl_scope is None:
+        # aoi=None must not silently drop the standard NGL bundle (rasuwa
+        # shakeout 2026-08-31 — same silent-omission class as the
+        # default-ON flip): scope the velocity/series figures to the
+        # product footprint, else the control extent. Map CLIPPING is
+        # untouched — this box exists only for this block.
+        import geopandas as gpd
+        import rasterio
+        from shapely.geometry import box
+        if dem_tif is not None:
+            with rasterio.open(dem_tif) as src:
+                ngl_scope = gpd.GeoDataFrame(geometry=[box(*src.bounds)],
+                                             crs=src.crs)
+            logger.info("MIDAS/NGL figure scope: aoi=None -> product bounds")
+        else:
+            ngl_scope = gpd.GeoDataFrame(geometry=[box(*ctl.total_bounds)],
+                                         crs=ctl.crs)
+            logger.info("MIDAS/NGL figure scope: aoi=None -> control bounds")
     try:
         from .plot import plot_velocity_vectors
         from .sources.ngl import read_midas
         st = read_midas(midas_frame)
-        b = aoi_gdf.to_crs(4326).total_bounds
+        b = ngl_scope.to_crs(4326).total_bounds
         st = st[st.lon.between(b[0] - 3, b[2] + 3)
                 & st.lat.between(b[1] - 3, b[3] + 3)]
         if not len(st):
@@ -1558,11 +1576,11 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
             from .velocity import DEFAULT_RADIUS_KM as buffer_km
         vel_bmap = map_basemap
         plot_velocity_vectors(
-            st, aoi=aoi_gdf, buffer_km=buffer_km, ax=axh_,
+            st, aoi=ngl_scope, buffer_km=buffer_km, ax=axh_,
             color_by_vertical=False, hs_tif=hs_path, dem_tif=dem_tif,
             basemap=vel_bmap, title="Horizontal motion (mm/yr)")
         plot_velocity_vectors(
-            st, aoi=aoi_gdf, buffer_km=buffer_km, ax=axv_,
+            st, aoi=ngl_scope, buffer_km=buffer_km, ax=axv_,
             color_by_vertical=True, hs_tif=hs_path, dem_tif=dem_tif,
             basemap=vel_bmap, cbar_ax=cax_, show_ref=False,
             title="Vertical motion (mm/yr)")

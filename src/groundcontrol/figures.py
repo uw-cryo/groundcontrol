@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import textwrap
 from pathlib import Path
 
 import numpy as np
@@ -923,6 +924,33 @@ def _aspect_panel_w(aoi_gdf, map_h, lo=0.5, hi=1.5):
     return float(np.clip(map_h / asp, lo * map_h, hi * map_h))
 
 
+def _map_panel_size(gdf, *, base=7.0, min_in=2.6, max_in=12.0, max_h=None):
+    """Equal-aspect map panel size ``(w, h)`` in inches from ``gdf`` bounds
+    (an AOI or points GeoDataFrame), ASPECT-TRUE so the drawn map fills its
+    axes with no letterbox — the fixed-canvas root cause of the wide/tall-AOI
+    whitespace (owner layout audit 2026-08-30). ``base`` is the panel side
+    for a square AOI; the long side of an extreme aspect is capped at
+    ``max_in`` first — then, for figures whose side columns would stretch
+    with a full-height map (validation/family), ``max_h`` caps the height —
+    and finally the short side is floored at ``min_in`` (a >4:1 strip
+    letterboxes slightly rather than becoming unreadable).
+    ``None``/empty/degenerate bounds -> a ``base`` square."""
+    asp = 1.0
+    if gdf is not None and len(gdf):
+        b = gdf.total_bounds
+        dx, dy = float(b[2] - b[0]), float(b[3] - b[1])
+        if np.isfinite(dx) and np.isfinite(dy) and dx > 0 and dy > 0:
+            asp = dy / dx
+    w, h = base / asp ** 0.5, base * asp ** 0.5
+    if max(w, h) > max_in:
+        f = max_in / max(w, h)
+        w, h = w * f, h * f
+    if max_h is not None and h > max_h:
+        f = max_h / h
+        w, h = w * f, h * f
+    return max(w, min_in), max(h, min_in)
+
+
 #: too-pale-for-white-background fills -> the legible ink used for
 #: histogram fills/edges and stats text (class_ink); the GNSS-family hue
 #: keeps the campaign class visually in the family
@@ -1047,7 +1075,14 @@ def control_map_figure(ctl, aoi_p, outdir, site_name, *, dem_tif=None,
 
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(10.5, 10))
+    # figsize follows the AOI/point-extent aspect (owner layout audit
+    # 2026-08-30: the fixed 10.5x10 canvas left huge blank bands left/right
+    # of tall maps and above/below wide ones); bbox_inches="tight" at
+    # savefig trims the residual canvas
+    mw, mh = _map_panel_size(aoi_p if aoi_p is not None else ctl,
+                             base=8.0, min_in=3.5, max_in=12.0)
+    fig, ax = plt.subplots(figsize=(mw + 0.4, mh + 0.7))
+    fig.subplots_adjust(left=0.02, right=0.98, bottom=0.02, top=0.94)
     _relief(ax, dem_tif, hs_tif, cmap, dem_alpha, fig)
     if dem_tif is None and hs_tif is None and basemap is not None:
         # no DEM to shade (AOI-only): open web hillshade underlay, credited
@@ -1131,9 +1166,8 @@ def control_map_figure(ctl, aoi_p, outdir, site_name, *, dem_tif=None,
     _finish_map(ax, aoi_p, clip_to_aoi, points=ctl)
     ax.set_title(title or f"Control points (n={len(ctl)}): {site_name}",
                  fontsize=11, color=_INK)
-    fig.tight_layout()
     fp = outdir / (fname or f"{site_name}_control_map.png")
-    fig.savefig(fp, dpi=dpi)
+    fig.savefig(fp, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
     return fp
 
@@ -1790,21 +1824,32 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         # and is sized to its true aspect so no letterbox whitespace; the two
         # histograms stack beside it on ONE SHARED x-axis; the dual-track
         # stats live in their own text panel below the histograms (3+
-        # sources never fit inside a histogram box).
-        map_h = 7.4
-        title_cb = 0.55                       # title strip above the map
-        asp_w = _aspect_panel_w(aoi, map_h - title_cb, lo=0.4, hi=2.0)
-        mcol = asp_w + 0.15
+        # sources never fit inside a histogram box). Layout audit 2026-08-30:
+        # the map COLUMN is now aspect-true too (the former width-only clamp
+        # left the drawn map floating in an over-wide column with a dead gap
+        # to the colorbar), margins are explicit inches so the cell height
+        # matches what the panel width assumed, and the figure height adapts
+        # down for wide AOIs, floored by the histogram+stats column.
+        use = sampled[np.isfinite(sampled[col])]
+        mw, mh = _map_panel_size(aoi if aoi is not None else use,
+                                 base=6.6, min_in=2.0, max_in=12.0,
+                                 max_h=6.6)
+        sup = 0.55                            # title strip above the map
         hist_w = 4.2
-        # the colorbar gets its OWN slim column (owner 2026-08-31, tall SF
+        # the colorbar gets its OWN column (owner 2026-08-31, tall SF
         # AOI: attached to the map axes it landed against the histograms
-        # and its label overprinted their spines); hist rows squished so
-        # the dual-track stats block breathes (2026-08-31)
-        cb_w = 0.28
-        fig = plt.figure(figsize=(mcol + cb_w + hist_w + 0.6, map_h))
-        gs = fig.add_gridspec(3, 3, width_ratios=[mcol, cb_w, hist_w],
+        # and its label overprinted their spines); the column is wider
+        # than the bar — the slack carries the left-side ticks + label —
+        # and the bar itself is repositioned flush right after draw; hist
+        # rows squished so the dual-track stats block breathes (2026-08-31)
+        cb_w = 0.9
+        fig_h = max(mh + 0.3, 5.6) + sup
+        fig = plt.figure(figsize=(mw + cb_w + hist_w + 1.1, fig_h))
+        gs = fig.add_gridspec(3, 3, width_ratios=[mw, cb_w, hist_w],
                               height_ratios=[0.82, 0.82, 0.98],
-                              hspace=0.3, wspace=0.35)
+                              left=0.01, right=0.985, bottom=0.07,
+                              top=1.0 - sup / fig_h,
+                              hspace=0.3, wspace=0.14)
         ax_map = fig.add_subplot(gs[:, 0])
         ax_map.set_anchor("NW")  # aspect slack goes right/below — the map
         #                          hugs the title, never floats mid-column
@@ -1816,7 +1861,6 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         axes = [ax_map, ax_s, ax_n]
         hs_prod = hs_tif.get(prod) if isinstance(hs_tif, dict) else hs_tif
         _relief(axes[0], None, hs_prod, None, 0.0, None)
-        use = sampled[np.isfinite(sampled[col])]
         pl = point_lim if point_lim is not None else snap_clim(use[col], k=3.0)
         # marker SHAPE carries class identity (owner 2026-08-30: identical
         # circles hid which points were NVA vs GNSS vs monuments vs FAA);
@@ -1953,10 +1997,13 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         fp = outdir / f"{site_name}_validation_dz_{prod}.png"
         # equal-aspect shrinks the MAP's axes box inside its gridspec
         # cell; clamp the colorbar to the map's final drawn height so it
-        # never extends past the map (owner 2026-09-01)
+        # never extends past the map (owner 2026-09-01), and to a fixed
+        # 0.28-in bar flush right in its column (the column slack holds
+        # the left-side ticks + label)
         fig.canvas.draw()
         pm, pc = ax_map.get_position(), cax.get_position()
-        cax.set_position([pc.x0, pm.y0, pc.width, pm.height])
+        bw = 0.28 / fig.get_size_inches()[0]
+        cax.set_position([pc.x1 - bw, pm.y0, bw, pm.height])
         # bbox_inches trims the residual outer margin (tight_layout fights
         # the colorbar + spanning-gridspec combination)
         fig.savefig(fp, dpi=dpi, bbox_inches="tight")
@@ -2195,27 +2242,6 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                 map_lim = snap_clim(fig_v, k=3.0)
                 hist_lim = max(snap_clim(fig_v, k=6.0), map_lim)
             n_sub = len(subs)
-            # aspect-aware map columns (fill the axes; kill the map->colorbar
-            # gap on tall-narrow AOIs); the shared-colorbar allowance rides on
-            # the map columns in BOTH figsize and width_ratios so the inch
-            # widths stay literal
-            # settled layout (owner 2026-08-30, matches validation_dz):
-            # maps dominate and span both rows; histogram top-right; the
-            # dual-track stats OUTSIDE in their own bottom-right panel
-            map_h = 6.8
-            mcol = _aspect_panel_w(aoi_gdf, map_h - 0.6, lo=0.4, hi=2.0) \
-                + 0.9 / n_sub
-            hist_w = 4.2
-            fig = plt.figure(figsize=(mcol * n_sub + hist_w, map_h))
-            gs = fig.add_gridspec(2, n_sub + 1,
-                                  width_ratios=[mcol] * n_sub + [hist_w],
-                                  height_ratios=[1.0, 0.55],
-                                  hspace=0.22, wspace=0.1)
-            _axm = [fig.add_subplot(gs[:, i]) for i in range(n_sub)]
-            axh = fig.add_subplot(gs[0, n_sub])
-            axt = fig.add_subplot(gs[1, n_sub])
-            axt.set_axis_off()
-            axes = _axm + [axh]
             hs_prod = hs_tif.get(prod) if isinstance(hs_tif, dict) else hs_tif
             # ONE frame for every panel of this figure (all plotted points):
             # per-panel framing rendered side-by-side maps at different
@@ -2224,6 +2250,57 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
             fig_pts = sampled[np.logical_or.reduce([np.asarray(m, dtype=bool)
                                                      for m in sub_masks])
                               & np.isfinite(sampled[col].to_numpy(dtype="float64"))]
+            # settled layout (owner 2026-08-30, matches validation_dz):
+            # maps dominate on the left; histogram top-right; the dual-track
+            # stats OUTSIDE in their own bottom-right panel. Layout audit
+            # 2026-08-30: panels are aspect-true (the fixed 6.8-in canvas +
+            # width-clamped columns left wide-AOI maps floating as strips
+            # with a taller colorbar beside them), and WIDE panels STACK
+            # vertically — n side-by-side 11-in strips made the figure
+            # unreadably wide; a tall/square AOI keeps the settled row.
+            mw, mh = _map_panel_size(aoi_gdf if aoi_gdf is not None
+                                     else fig_pts,
+                                     base=6.2, min_in=2.2, max_in=11.0,
+                                     max_h=6.0)
+            stacked = n_sub > 1 and mh < 0.6 * mw
+            # panel titles wrap to the panel width (text never reworded):
+            # long subclass names overlapped across narrow tall-AOI panels
+            wrap_w = max(16, int(mw * 9))
+            tlines = max(len(textwrap.wrap(f"{sub[0]} (n={len(sampled)})",
+                                           wrap_w)) for sub in subs)
+            ttl = 0.26 * tlines + 0.08         # per-panel title strip (in)
+            hist_w, cb_w = 4.2, 0.9
+            if stacked:
+                maps_w, maps_h = mw, n_sub * (mh + ttl)
+            else:
+                maps_w = n_sub * mw + 0.25 * (n_sub - 1)
+                maps_h = mh + ttl
+            sup = 0.4                          # suptitle strip (in)
+            fig_h = max(maps_h, 5.4) + sup
+            fig_w = maps_w + cb_w + hist_w + 0.9
+            fig = plt.figure(figsize=(fig_w, fig_h))
+            # the colorbar column is wider than the bar — the slack carries
+            # the left-side ticks + label — and the bar is repositioned
+            # flush right + clamped to the maps after draw
+            gs = fig.add_gridspec(1, 3, width_ratios=[maps_w, cb_w, hist_w],
+                                  left=0.015, right=0.99, bottom=0.07,
+                                  top=1.0 - (sup + ttl) / fig_h, wspace=0.06)
+            if stacked:
+                gsm = gs[0, 0].subgridspec(n_sub, 1,
+                                           hspace=(ttl + 0.15) / max(mh, 1.0))
+                _axm = [fig.add_subplot(gsm[i, 0]) for i in range(n_sub)]
+            else:
+                gsm = gs[0, 0].subgridspec(1, n_sub, wspace=0.05)
+                _axm = [fig.add_subplot(gsm[0, i]) for i in range(n_sub)]
+            for a in _axm:      # aspect slack hugs the title, never floats
+                a.set_anchor("N")
+            cax = fig.add_subplot(gs[0, 1])
+            gsr = gs[0, 2].subgridspec(2, 1, height_ratios=[1.0, 0.62],
+                                       hspace=0.28)
+            axh = fig.add_subplot(gsr[0, 0])
+            axt = fig.add_subplot(gsr[1, 0])
+            axt.set_axis_off()
+            axes = _axm + [axh]
             sc, fam_lines, n_gap = None, [], 0
             for axm, sub, m in zip(axes[:-1], subs, sub_masks):
                 lab, _, style, mk = sub[:4]
@@ -2243,7 +2320,8 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                                  vmax=map_lim, s=34, marker=mk,
                                  edgecolors="#404040", linewidths=0.6, zorder=5)
                 _finish_map(axm, aoi_gdf, points=fig_pts)
-                axm.set_title(f"{lab} (n={int(fin.sum())})", fontsize=10.5,
+                axm.set_title(textwrap.fill(f"{lab} (n={int(fin.sum())})",
+                                            wrap_w), fontsize=10.5,
                               color=_INK)
                 if fin.any():
                     vv = v[fin]
@@ -2257,8 +2335,11 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                     fam_lines.extend((t, c) for t, c, _b
                                      in stats_lines(lab, vv, color))
             if sc is not None:
-                cb = fig.colorbar(sc, ax=list(axes[:-1]), shrink=0.75,
-                                  pad=0.015, extend="both")
+                cb = fig.colorbar(sc, cax=cax, extend="both")
+                # ticks + label LEFT of the bar (the validation-figure
+                # convention): the right side faces the histogram column
+                cb.ax.yaxis.set_ticks_position("left")
+                cb.ax.yaxis.set_label_position("left")
                 # dz is relative — same-frame by construction (the
                 # transform landed control in the product CRS), so the
                 # datum is provenance metadata, not a plot label (owner
@@ -2267,6 +2348,8 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                              f"\n[\u00b1{map_lim:g} m tier]",
                              fontsize=9, color=_INK)
                 cb.ax.tick_params(labelsize=8, colors=_MUT)
+            else:                              # no drawable subclass
+                cax.set_axis_off()
             axh.axvline(0, color=_INK, lw=0.8)
             axh.set_xlim(-hist_lim, hist_lim)
             axh.set_xlabel(f"dz = {prod} \u2212 control (m)", fontsize=9,
@@ -2296,6 +2379,15 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                          f"\u2014 {title}{gap}: {site_name}",
                          fontsize=11.5, color=_INK)
             fp = outdir / f"{site_name}_dz_{fam}_{prod}.png"
+            # equal-aspect shrinks the map boxes inside their cells; clamp
+            # the colorbar to the union of the DRAWN maps (owner 2026-09-01
+            # validation convention) as a fixed 0.28-in bar flush right
+            fig.canvas.draw()
+            pos = [a.get_position() for a in _axm]
+            y0, y1 = min(p.y0 for p in pos), max(p.y1 for p in pos)
+            pc = cax.get_position()
+            bw = 0.28 / fig_w
+            cax.set_position([pc.x1 - bw, y0, bw, y1 - y0])
             fig.savefig(fp, dpi=dpi, bbox_inches="tight")
             plt.close(fig)
             out.append(fp)

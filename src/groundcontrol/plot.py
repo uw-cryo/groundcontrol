@@ -28,9 +28,12 @@ def plot_control(gdf, title=None, out_fn=None):
     ax_map.set_ylabel("Latitude")
     ax_map.set_aspect("equal")
     ax_map.legend(fontsize=8)
-    ax_map.set_title(f"control points ({gdf.crs.to_string() if gdf.crs else 'no CRS'})",
-                     fontsize=9)
-    ax_hist.set_xlabel("height (m, NAVD88)")
+    ax_map.set_title(f"Control points (n={len(gdf)})", fontsize=9)
+    # CRS is metadata, not a title (owner 2026-08-31); heights carry
+    # whatever vertical each source declares — never stamp a datum here
+    ax_map.text(0.01, 0.01, gdf.crs.to_string() if gdf.crs else "no CRS",
+                transform=ax_map.transAxes, fontsize=6.5, color="#777777")
+    ax_hist.set_xlabel("height (m)")
     ax_hist.set_ylabel("count")
     ax_hist.legend(fontsize=8)
     ax_hist.set_title("height distribution", fontsize=9)
@@ -255,6 +258,20 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
     fig = ax.figure
     ax.set_aspect(1.0 / max(np.cos(np.radians(mean_lat)), 0.1))
 
+    if basemap is not None:
+        # web hillshade base layer (owner 2026-08-31): drawn first so a
+        # DEM's own hillshade renders ON TOP of it and the buffer zone
+        # beyond the DEM footprint still reads as terrain; auxiliary
+        # imagery is never worth failing a figure over
+        try:
+            from .figures import _web_map_underlay
+            _web_map_underlay(ax, "EPSG:4326", (bx0, by0, bx1, by1),
+                              provider=basemap)
+        except Exception as exc:
+            import warnings
+            warnings.warn(f"velocity-map basemap skipped: {exc}",
+                          stacklevel=2)
+
     if hs_tif is None and dem_tif is not None:
         # no pre-rendered hillshade: warp the DEM itself to lon/lat and
         # shade it here (the standard-bundle path, owner 2026-08-30 — the
@@ -291,19 +308,6 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
         ax.imshow(hs, cmap="gray", vmin=1, vmax=255, alpha=0.8,
                   extent=[hb.left, hb.right, hb.bottom, hb.top], zorder=0,
                   interpolation="antialiased", interpolation_stage="rgba")
-
-    if hs_tif is None and dem_tif is None and basemap is not None:
-        # AOI-only path: no DEM anywhere, so pull the web hillshade layer
-        # (owner 2026-08-31 — the velocity field should still read against
-        # terrain); auxiliary imagery is never worth failing a figure over
-        try:
-            from .figures import _web_map_underlay
-            _web_map_underlay(ax, "EPSG:4326", (bx0, by0, bx1, by1),
-                              provider=basemap)
-        except Exception as exc:
-            import warnings
-            warnings.warn(f"velocity-map basemap skipped: {exc}",
-                          stacklevel=2)
 
     if poly is not None:
         import geopandas as gpd

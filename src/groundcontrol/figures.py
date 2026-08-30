@@ -28,27 +28,11 @@ logger = logging.getLogger(__name__)
 
 #: point_type -> (marker, color, size, zorder, label). GNSS plots BEHIND
 #: the 3DEP checkpoints; NVA above VVA (owner figure review, 2026-07-15).
-def _heliport_marker():
-    """FAA VFR-chart heliport symbol as a Path marker: 'H' inside a circle
-    ring. Compound path: outer circle + reversed inner circle (annulus via
-    winding) + a TextPath 'H' scaled into the ring."""
-    from matplotlib.path import Path as _P
-    from matplotlib.textpath import TextPath
-
-    outer = _P.circle((0, 0), 1.0)
-    inner = _P.circle((0, 0), 0.78)
-    inner = _P(inner.vertices[::-1], inner.codes)  # reverse winding -> ring
-    h = TextPath((0, 0), "H", size=1.0)
-    b = h.get_extents()
-    verts = ((h.vertices - ((b.x0 + b.x1) / 2.0, (b.y0 + b.y1) / 2.0))
-             / max(b.width, b.height) * 1.15)
-    return _P.make_compound_path(outer, inner, _P(verts, h.codes))
-
-
 #: package-level marker key, convention-based where conventions exist
 #: (primary sources verified 2026-08-13):
-#: - helipad = H-in-circle: exact match to the FAA Aeronautical Chart
-#:   Users' Guide heliport symbol (aeronav.faa.gov/user_guide, p. 23);
+#: - helipad = thick X (owner 2026-08-31: ONE symbol everywhere — the
+#:   FAA-chart H-in-circle read badly at map scale and could not carry a
+#:   dz ramp fill);
 #: - runway end / displaced threshold = chevrons (matplotlib carets 6/7):
 #:   simplification of the FAA CUG runway-construction bars + arrow/
 #:   chevron stems (p. 124), which are runway-oriented and don't reduce
@@ -88,7 +72,7 @@ POINT_STYLE = {
     "NVA": ("o", "#C00000", 55, 7, "3DEP NVA"),
     "runway_end": (6, "#1B7837", 55, 6, "FAA runway end"),
     "displaced_threshold": (7, "#66A61E", 50, 6, "FAA displaced threshold"),
-    "helipad": (_heliport_marker(), "#1B7837", 110, 6, "FAA helipad"),
+    "helipad": ("X", "#1B7837", 60, 6, "FAA helipad"),
 }
 #: legend order: the two 3DEP checkpoint classes adjacent, then the GNSS
 #: occupation classes dark-to-light (continuous, semi-continuous, campaign,
@@ -686,8 +670,7 @@ def point_context_gallery(points, layers, outdir, site_name, *,
                                 "runway_end", "displaced_threshold"):
                             mk = MarkerStyle(
                                 mk, transform=Affine2D().rotate_deg(-az))
-                        # helipad H-ring locator SURROUNDS the pad paint
-                        s = 450 if ptype == "helipad" else 170
+                        s = 170
                         ax.scatter([x], [y], s=s, marker=mk,
                                    linewidths=2.0, zorder=5, **mkw)
                         ax.set_xlim(ext[0], ext[1])
@@ -714,9 +697,10 @@ def point_context_gallery(points, layers, outdir, site_name, *,
             page_note = (f"{page_cls} — page {pg}/{len(pages)}"
                          if len(pages) > 1 else page_cls)
             fig.suptitle(
-                f"{subset_tag} points — {tags} ({2*half_m:.0f} m "
+                f"{SHEET_SUBSET_TITLES.get(subset_tag, subset_tag)} points "
+                f"— {tags} ({2*half_m:.0f} m "
                 f"windows{', native pixels' if interp == 'nearest' else ''})"
-                f"{page_note}: {site_name}",
+                f": {site_name}{page_note}",
                 fontsize=12, y=1.0 - 0.12 / fig_h)
             fig.subplots_adjust(left=0.01, right=0.995,
                                 top=1.0 - 0.52 / fig_h, bottom=0.18 / fig_h)
@@ -918,6 +902,18 @@ def _aspect_panel_w(aoi_gdf, map_h, lo=0.5, hi=1.5):
 _PALE_INK = {"white": "#4477AA", "#A6CEE3": "#6FA3D0"}
 
 
+#: contact-sheet subset display names — titles say what the subset IS,
+#: not the internal tag (owner 2026-08-31 title sweep); unknown tags
+#: (sandbox callers) fall back to the tag itself.
+SHEET_SUBSET_TITLES = {
+    "cors": "GNSS continuous (CORS)",
+    "opus": "OPUS shared solutions",
+    "gnss_other": "GNSS semi-continuous / campaign",
+    "faa_runway": "FAA runway",
+    "3dep_nva": "3DEP NVA checkpoint",
+    "3dep_vva": "3DEP VVA checkpoint",
+}
+
 def class_ink(style_key_or_color):
     """Text/histogram color for a POINT_STYLE key or raw color — the pale
     map fills (light-blue campaign stars) fall back to :data:`_PALE_INK`
@@ -1009,7 +1005,7 @@ def control_map_figure(ctl, aoi_p, outdir, site_name, *, dem_tif=None,
         sub = ctl[ctl.point_type == ptype]
         if not len(sub):
             continue
-        lw = 1.4 if ptype == "helipad" else (1.1 if mk == "+" else 0.5)
+        lw = 1.1 if mk == "+" else 0.5
         ec = _edge_for(mk, col)
         if ptype in ("runway_end", "displaced_threshold"):
             # chevrons rotate to the published runway-end true alignment
@@ -1023,10 +1019,9 @@ def control_map_figure(ctl, aoi_p, outdir, site_name, *, dem_tif=None,
         else:
             ax.scatter(sub.geometry.x, sub.geometry.y, marker=mk, s=sz,
                        c=col, linewidths=lw, edgecolors=ec, zorder=zo)
-        # legend swatch: an UNFILLED marker (chevrons, the helipad H-ring)
-        # draws with its LINE color — a white markeredgecolor made the
-        # helipad row invisible (owner 2026-08-30); filled pale markers keep
-        # the dark family edge
+        # legend swatch: an UNFILLED marker (the chevrons) draws with its
+        # LINE color — a white markeredgecolor made such rows invisible
+        # (owner 2026-08-30); filled pale markers keep the dark family edge
         if MarkerStyle(mk).is_filled():
             by_type[ptype] = Line2D(
                 [], [], marker=mk, ls="", ms=9, markerfacecolor=col,
@@ -1424,7 +1419,7 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
                              dem_tif=None, hs_tif=None, cmap=None,
                              dem_alpha=0.4, midas_frame="IGS14",
                              midas_velocities=True, map_basemap="esri_hillshade",
-                             buffer_km=60.0, clip_to_aoi=True,
+                             buffer_km=None, clip_to_aoi=True,
                              label_points=True, dpi=200):
     """Write the default control figure bundle for a site; returns paths.
 
@@ -1482,7 +1477,8 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
             hs_tif=hs_tif, cmap=cmap, dem_alpha=dem_alpha,
             clip_to_aoi=clip_to_aoi, label_points=label_points,
             label_gnss_ids=True, fname=f"{site_name}_{dname}_map.png",
-            title=f"{dname} control points (n={len(sub)}): {site_name}",
+            title=f"{dname.upper()} control points (n={len(sub)}): "
+                  f"{site_name}",
             basemap=map_basemap, dpi=dpi))
 
     # ---- 2. NGS monument-type facets (ngs/ subdir: source-specific) --------
@@ -1507,8 +1503,8 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
             _finish_map(ax, aoi_p, clip_to_aoi)
             ax.legend(loc="lower left", fontsize=7.5, framealpha=0.9)
             ax.set_title(f"NGS monuments by {key}", fontsize=10, color=_INK)
-        fig.suptitle(f"NGS monument datasheet attributes: {site_name} "
-                     f"(n={len(mon)})", fontsize=11.5, color=_INK)
+        fig.suptitle(f"NGS monument datasheet attributes (n={len(mon)}): "
+                     f"{site_name}", fontsize=11.5, color=_INK)
         fig.tight_layout(rect=[0, 0, 1, 0.94])
         fp = outdir / "ngs" / f"{site_name}_monument_types.png"
         fig.savefig(fp, dpi=dpi)
@@ -1542,8 +1538,12 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
         axv_ = fig2.add_subplot(gs2[0, 1], sharey=axh_)  # shared latitude
         cax_ = fig2.add_subplot(gs2[0, 2])
         hs_path = hs_tif if isinstance(hs_tif, (str, Path)) else None
-        vel_bmap = map_basemap if (dem_tif is None and hs_path is None) \
-            else None
+        # map buffer = the interpolation search radius (owner 2026-08-31:
+        # one consistent area around the site), web hillshade under the
+        # DEM's own hillshade so the buffer zone is never blank
+        if buffer_km is None:
+            from .velocity import DEFAULT_RADIUS_KM as buffer_km
+        vel_bmap = map_basemap
         plot_velocity_vectors(
             st, aoi=aoi_gdf, buffer_km=buffer_km, ax=axh_,
             color_by_vertical=False, hs_tif=hs_path, dem_tif=dem_tif,
@@ -1703,8 +1703,10 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         mcol = asp_w + 1.15                   # + colorbar column
         hist_w = 4.2
         fig = plt.figure(figsize=(mcol + hist_w, map_h))
+        # hist rows squished slightly so the dual-track stats block
+        # breathes (owner 2026-08-31: 12+ lines were too compressed)
         gs = fig.add_gridspec(3, 2, width_ratios=[mcol, hist_w],
-                              height_ratios=[1.0, 1.0, 0.62],
+                              height_ratios=[0.82, 0.82, 0.98],
                               hspace=0.3, wspace=0.08)
         ax_map = fig.add_subplot(gs[:, 0])
         ax_s = fig.add_subplot(gs[0, 1])
@@ -1752,8 +1754,9 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         cb.set_label(f"dz = {prod} − control (m)", fontsize=9, color=_INK)
         cb.ax.tick_params(labelsize=8, colors=_MUT)
         _finish_map(axes[0], aoi, points=use)
-        axes[0].set_title(f"{prod} − control (n={len(use)}): {site_name}",
-                          fontsize=11, color=_INK)
+        axes[0].set_title(f"Vertical difference (m, {prod} minus control), "
+                          f"n={len(use)}: {site_name}", fontsize=11,
+                          color=_INK)
 
         is_dtm = is_dtm_product(prod)  # the ONE DSM/DTM classifier (round 4)
         panels = []                       # (ax, seg_vals, seg_raw, own_lim)
@@ -1827,7 +1830,7 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
                 txt_lines.append(("stated 3D transform budget "
                                   f"±{np.nanmedian(_xa):g} m", _MUT, False))
         if txt_lines:
-            step = min(0.115, 0.96 / len(txt_lines))
+            step = min(0.10, 0.97 / len(txt_lines))
             for i, (line, color, bold) in enumerate(txt_lines):
                 ax_t.text(0.0, 0.98 - step * i, line, transform=ax_t.transAxes,
                           fontsize=7.5, va="top", color=color,
@@ -1865,7 +1868,7 @@ def _opus_tier(d):
 #: an expected DSM bias is not an error, so VVA is EXCLUDED from the DSM
 #: figure (owner 2026-07-15) rather than shown as a huge tail.
 DZ_FAMILIES = {
-    "3dep": ("3DEP CHECKPOINTS", [
+    "3dep": ("3DEP checkpoints", [
         ("Non-Vegetated Vertical Accuracy (NVA)",
          lambda d: (d["source"] == "3dep") & (d["point_type"] == "NVA"),
          "NVA", "o"),
@@ -1885,7 +1888,7 @@ DZ_FAMILIES = {
     # NGL antenna-reference points, a mixture whose med/NMAD matches
     # neither). Legacy OPUS rows fold into Campaign (OPUS) like the stats
     # table; empty subclasses are skipped at render time.
-    "gnss": ("GNSS CONTROL (by occupation class)", [
+    "gnss": ("GNSS by occupation class", [
         ("Continuous", lambda d: d["point_type"] == "gnss_cont",
          "gnss_cont", "o"),
         ("Semi-continuous", lambda d: d["point_type"] == "gnss_semicont",
@@ -1910,7 +1913,7 @@ DZ_FAMILIES = {
     # own panel: rows without a decodable code must stay visible, never
     # silently fall out. Okabe-Ito blue/vermillion = a quality contrast,
     # deliberately not the occupation-class blue ramp.
-    "opus_stability": ("OPUS CAMPAIGN MARKS (NGS stability code: "
+    "opus_stability": ("OPUS campaign marks (NGS stability code: "
                        "A/B = bedrock/deep-set, expected to hold; "
                        "C/D = surface/shallow, may move)", [
         # _opus_tier is NA for every non-OPUS row, so the tier comparison
@@ -1924,7 +1927,7 @@ DZ_FAMILIES = {
          lambda d: (d["source"] == "opus") & _opus_tier(d).isna(),
          "#888888", "o"),
     ]),
-    "ngs_best": ("NGS MONUMENTS (best)", [
+    "ngs_best": ("NGS monuments, best vertical classes", [
         ("NGS best", None, "monument", "o"),   # mask injected from ngs_best
     ]),
     # FAA NASR runway control, split by published coordinate provenance
@@ -1934,7 +1937,7 @@ DZ_FAMILIES = {
     # short panel labels: long ones collide on narrow-aspect AOIs (SF);
     # surveyed = 3RD PARTY SURVEY/NGS/MILITARY/ARPTS CONTRACTOR,
     # estimated = OWNER/FAA-EST IMAGERY/ADO/OE-AAA/blank
-    "faa": ("FAA RUNWAY CONTROL (by position source)", [
+    "faa": ("FAA runways by position source", [
         ("Surveyed",
          lambda d: (d["source"] == "faa")
          & (_raw_field(d["raw"], "pos_class") == "surveyed"),
@@ -2000,7 +2003,6 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
     if overlays is not None:
         overlays = overlays.to_crs(sampled.crs)
     lims = lims or {}   # {family: (map_lim, hist_lim)} override; else empirical
-    datum = _datum_tag(sampled.crs)
     catalog = {**DZ_FAMILIES, **(extra_families or {})}
     out = []
     for fam in families:
@@ -2139,8 +2141,12 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
             if sc is not None:
                 cb = fig.colorbar(sc, ax=list(axes[:-1]), shrink=0.75,
                                   pad=0.015, extend="both")
-                cb.set_label(f"dz = {prod} \u2212 control "
-                             f"(m, {datum})\n[\u00b1{map_lim:g} m tier]",
+                # dz is relative — same-frame by construction (the
+                # transform landed control in the product CRS), so the
+                # datum is provenance metadata, not a plot label (owner
+                # 2026-08-31)
+                cb.set_label(f"dz = {prod} \u2212 control (m)"
+                             f"\n[\u00b1{map_lim:g} m tier]",
                              fontsize=9, color=_INK)
                 cb.ax.tick_params(labelsize=8, colors=_MUT)
             axh.axvline(0, color=_INK, lw=0.8)
@@ -2168,8 +2174,9 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
             axh.tick_params(labelsize=8, colors=_MUT)
             axh.grid(alpha=0.25, lw=0.5)
             gap = f"; {n_gap} unsampled (nodata/gap)" if n_gap else ""
-            fig.suptitle(f"{prod} \u2212 control \u2014 {title}{gap}: "
-                         f"{site_name}", fontsize=11.5, color=_INK)
+            fig.suptitle(f"Vertical difference (m, {prod} minus control) "
+                         f"\u2014 {title}{gap}: {site_name}",
+                         fontsize=11.5, color=_INK)
             fp = outdir / f"{site_name}_dz_{fam}_{prod}.png"
             fig.savefig(fp, dpi=dpi, bbox_inches="tight")
             plt.close(fig)

@@ -253,6 +253,7 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
     inside[np.flatnonzero(sel)[inside_sel]] = True
     buffered = sel & ~inside
 
+    own_fig = ax is None
     if ax is None:
         _, ax = plt.subplots(figsize=(9, 9))
     fig = ax.figure
@@ -469,7 +470,11 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
     ax.set_title(f"{title}\nn={n_in} inside AOI + n={n_buf} within "
                  f"{buffer_km:g} km buffer{ref_note}{pm_note}", fontsize=10)
 
-    fig.tight_layout()
+    if own_fig:
+        # only lay out a figure this function created: a caller-owned axes
+        # usually shares a gridspec (dedicated colorbar axis etc.) that
+        # tight_layout cannot handle — the caller owns that layout
+        fig.tight_layout()
     if out_fn:
         fig.savefig(out_fn, dpi=150, bbox_inches="tight")
     return fig

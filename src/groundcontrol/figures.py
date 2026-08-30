@@ -651,8 +651,16 @@ def point_context_gallery(points, layers, outdir, site_name, *,
                 for j, (tag, chain, kind) in enumerate(srcs):
                     ax = fig.add_subplot(gs[row_i, cell * (npanel + 1) + j])
                     try:
-                        x, y, ext = _panel(ax, chain, kind,
-                                           r.geometry.x, r.geometry.y)
+                        try:
+                            x, y, ext = _panel(ax, chain, kind,
+                                               r.geometry.x, r.geometry.y)
+                        except Exception:
+                            # ONE retry: web-tile reads fail transiently
+                            # (rate limits, dropped connections) and a
+                            # second windowed read usually lands
+                            ax.clear()
+                            x, y, ext = _panel(ax, chain, kind,
+                                               r.geometry.x, r.geometry.y)
                         # locator = the package marker key's shape for this
                         # point_type, drawn as an outline so the imagery
                         # stays readable (unfilled markers take color=, not
@@ -679,11 +687,14 @@ def point_context_gallery(points, layers, outdir, site_name, *,
                         ax.set_xlim(ext[0], ext[1])
                         ax.set_ylim(ext[2], ext[3])
                     except Exception as e:
+                        ax.clear()
                         ax.text(0.5, 0.5, f"{tag}\nunavailable", ha="center",
                                 va="center", transform=ax.transAxes,
                                 fontsize=8)
-                        logger.warning("%s %s panel failed: %s",
-                                       r[id_col], tag, e)
+                        logger.warning(
+                            "%s %s panel failed after retry (web-tile reads "
+                            "can be transient; panel left blank): %s",
+                            r[id_col], tag, e)
                     ax.set_aspect("equal")
                     ax.set_xticks([]), ax.set_yticks([])
                     if j == 0:

@@ -1115,7 +1115,12 @@ def gnss_timeseries(control, outdir, site_name, *, frame="IGS14",
     panels — dE, dN, dU — every NGL station median-removed and reduced to
     ``bin_yr`` bin medians, colored per panel by that component's MIDAS
     rate on the RdYlBu ramp (RED = negative; for dU that is subsidence),
-    earthquake steps dashed. Returns the path or None (no NGL rows)."""
+    earthquake steps dashed. Returns the path or None (no NGL rows).
+
+    Part of the standard bundle: :func:`standard_control_figures` (and so
+    :func:`groundcontrol.assess.assess_products`) already emits this into
+    the ``ngl/`` subdir — calling it directly as well duplicates the
+    figure in a second directory."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -1322,7 +1327,12 @@ def gnss_station_series(control, outdir, site_name, *, frame="IGS14",
     intercepts), RED = kept (significant) steps, dotted GRAY = rejected
     candidates. Candidate steps come from the row's own steps.txt
     evidence (``raw`` eq_steps + equip_steps). Short records get no rate
-    (checkpoint only). Returns the path or None (no NGL rows)."""
+    (checkpoint only). Returns the path or None (no NGL rows).
+
+    Part of the standard bundle: :func:`standard_control_figures` (and so
+    :func:`groundcontrol.assess.assess_products`) already emits this into
+    the ``ngl/`` subdir — calling it directly as well duplicates the
+    figure in a second directory."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -1520,6 +1530,12 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
         b = aoi_gdf.to_crs(4326).total_bounds
         st = st[st.lon.between(b[0] - 3, b[2] + 3)
                 & st.lat.between(b[1] - 3, b[3] + 3)]
+        if not len(st):
+            # the FAA/3DEP no-sites pattern (owner 2026-08-31): a region
+            # with no MIDAS stations emits no velocity/series figures
+            logger.info("MIDAS velocity figures skipped: no MIDAS "
+                        "stations within the buffered AOI")
+            return out
         # ONE combined figure (owner 2026-08-30): horizontal quiver |
         # vertical-colored, over the DEM hillshade, EQUAL-SIZE panels (the
         # colorbar gets its own axis instead of shrinking the right map).

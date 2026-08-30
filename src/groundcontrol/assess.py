@@ -467,7 +467,7 @@ def summarize_dz(sampled, products=None, segments=SEGMENTS):
 
 def assess_products(control, products, target_crs, *, outdir, site_name,
                     aoi=None, hs=None, rgb=None, intensity=None,
-                    basemap="esri", midas_velocities=False,
+                    basemap="esri", midas_velocities=True,
                     target_epoch=2010.0, method="linear",
                     radius=None, source_crs=None, figures=True, write=True,
                     point_lim=None, vendor_lim=None, wide_lim=None,
@@ -486,6 +486,9 @@ def assess_products(control, products, target_crs, *, outdir, site_name,
     and/or the ``basemap`` web provider — ``"esri"`` by default, fetched
     over the network and credited on the sheet; ``None`` for offline) |
     ``intensity`` raster when given | one shaded-relief panel per product.
+    The bundle also carries the MIDAS velocity maps and NGL series
+    figures (``ngl/`` subdir) by default — ``midas_velocities=False``
+    opts OUT (e.g. for a deliberately offline run).
     With ``write=True`` the sampled points land in
     ``<outdir>/<site_name>_assessed.parquet`` (io.write provenance sidecar)
     and the stats table in ``<site_name>_dz_stats.csv``.
@@ -554,10 +557,13 @@ def assess_products(control, products, target_crs, *, outdir, site_name,
                                 rgb=rgb, intensity=intensity, basemap=basemap)
         if sheets:
             artifacts["context_sheets"] = sheets
-        # the LABELED all-sources control map (+ monument facets, and MIDAS
-        # velocity maps when midas_velocities=True — a network fetch, so
-        # library-default False; the CLI passes True): the companion the
-        # contact sheets need — dz colors cannot carry class identity, and
+        # the LABELED all-sources control map (+ monument facets, and the
+        # MIDAS velocity maps + NGL series — default ON like every other
+        # standard figure, owner 2026-08-31: "you shouldn't have to
+        # specify"; a site with no MIDAS stations/NGL rows just emits
+        # nothing, the FAA/3DEP no-sites pattern, and the network fetch
+        # degrades to a logged skip offline): the companion the contact
+        # sheets need — dz colors cannot carry class identity, and
         # station/airport labels locate each sheet cell on the map (owner
         # 2026-08-13 spec; wired into the standard bundle 2026-08-30)
         from groundcontrol.figures import (SOURCE_DIRS, family_dz_figures,

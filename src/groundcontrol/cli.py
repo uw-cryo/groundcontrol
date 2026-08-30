@@ -534,7 +534,7 @@ def assess_dem_main(argv=None) -> int:
         outdir=outdir, site_name=site_name, aoi=aoi_fig,
         hs=hs, rgb=rgb, intensity=intensity,
         basemap=None if args.basemap == "none" else args.basemap,
-        midas_velocities=True,  # the CLI is a network context already
+        midas_velocities=True,  # explicit at the entry point (default too)
         target_epoch=args.target_epoch, method=args.method,
         radius=args.radius, source_crs=source_crs, figures=not args.no_figures,
         point_lim=args.point_lim, vendor_lim=args.vendor_lim,

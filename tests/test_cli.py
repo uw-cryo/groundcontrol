@@ -802,9 +802,17 @@ def test_vdatum_presets_and_polar_rebase(tmp_path):
     wkt = _vdatum_target_crs({"DSM": ens}, "earthdem")
     assert pyproj.CRS(wkt).equals(build_utm_itrf2014_3d(32610))
     assert VDATUM_PRESETS["precision3d"] == "ellipsoid:g1674"
+    assert set(VDATUM_PRESETS) == {"3dep", "cop30", "precision3d",
+                                   "earthdem", "arcticdem", "rema"}
     c = with_vdatum("EPSG:3413", "ellipsoid:itrf2014")   # ArcticDEM grid
     assert c.name.startswith("ITRF2014 /")
     assert len(c.axis_info) == 3
+    # cop30: orthometric vertical on a rebased ensemble grid
+    from pyproj.crs import CompoundCRS
+    cop = with_vdatum("EPSG:4326", VDATUM_PRESETS["cop30"])
+    want = CompoundCRS(name="x", components=[pyproj.CRS.from_epsg(9000),
+                                             pyproj.CRS.from_epsg(3855)])
+    assert cop.equals(want)
 
 
 def test_assess_ensemble_refusal_names_pgc_presets(tmp_path, monkeypatch):

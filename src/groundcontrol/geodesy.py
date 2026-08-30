@@ -293,6 +293,26 @@ def rebase_projection_3d(horizontal, base_epsg: int, base_name: str) -> CRS:
     ).to_3d()
 
 
+def rebase_projection_2d(horizontal, base_epsg: int, base_name: str) -> CRS:
+    """2D companion to :func:`rebase_projection_3d`: the product's own map
+    projection (or geographic graticule) on a realized base, kept 2D — the
+    horizontal member for a compound with an orthometric vertical
+    (COP30: EGM2008 heights on an ensemble EPSG:4326 grid)."""
+    h = CRS.from_user_input(horizontal)
+    base = CRS.from_epsg(base_epsg)
+    if h.is_geographic:
+        return base
+    if not h.is_projected or h.coordinate_operation is None:
+        raise ValueError(
+            f"rebase_projection_2d: '{h.name}' is not a plain projected "
+            "or geographic 2D CRS")
+    return ProjectedCRS(
+        conversion=h.coordinate_operation,
+        geodetic_crs=base,
+        name=f"{base_name} / {h.coordinate_operation.name}",
+    )
+
+
 def with_vdatum(horizontal, vdatum: str) -> CRS:
     """Attach a vertical datum to a 2D horizontal CRS -> a full 3D target.
 
@@ -331,6 +351,37 @@ def with_vdatum(horizontal, vdatum: str) -> CRS:
             "horizontal CRS — it already declares (or cannot take) a "
             "height axis; pass the full 3D frame as target_crs instead")
     spec = vdatum.strip().lower()
+    _vr = spec.rsplit(":", 1) if ":" in spec else None
+    if (_vr is not None and not spec.startswith("ellipsoid")
+            and _vr[1] in ELLIPSOID_REALIZATIONS):
+        # "<vertical>:<realization>" — an orthometric vertical on a
+        # REBASED horizontal (COP30's EGM2008 heights on an ensemble
+        # EPSG:4326 grid): the realization disambiguates the horizontal
+        # legs; the vertical is datum-defined regardless. A plain
+        # "EPSG:5703" also contains a colon: the branch keys on the
+        # right-hand part being a KNOWN realization token.
+        vpart, token = vdatum.strip().rsplit(":", 1)
+        token = token.lower()
+        if not is_wgs84_ensemble(h):
+            raise ValueError(
+                f"with_vdatum: '{vdatum}' re-bases an ensemble "
+                f"horizontal, but '{h.name}' already names a realization "
+                f"— use plain {vpart!r}")
+        base_epsg, base_name = ELLIPSOID_REALIZATIONS[token]
+        h2 = rebase_projection_2d(h, base_epsg, base_name)
+        try:
+            v = CRS.from_user_input(vpart)
+        except Exception as e:
+            raise ValueError(
+                f"with_vdatum: {vpart!r} does not resolve as a CRS "
+                f"({e})") from e
+        if not v.is_vertical:
+            raise ValueError(
+                f"with_vdatum: {vpart!r} resolves to '{v.name}', which "
+                "is not a vertical CRS")
+        from pyproj.crs import CompoundCRS
+        return CompoundCRS(name=f"{h2.name} + {v.name}",
+                           components=[h2, v])
     if spec.startswith("ellipsoid:"):
         token = spec.split(":", 1)[1]
         if token not in ELLIPSOID_REALIZATIONS:
@@ -354,8 +405,9 @@ def with_vdatum(horizontal, vdatum: str) -> CRS:
             "agnostic transform chain. State the realization the heights "
             "are actually on: 'ellipsoid:itrf2014' (SETSM EarthDEM/"
             "ArcticDEM/REMA and most modern satellite photogrammetry), "
-            "'ellipsoid:itrf2020', 'ellipsoid:g2139', ... — or pass the "
-            "full 3D frame as target_crs")
+            "'ellipsoid:itrf2020', 'ellipsoid:g2139', ..., an orthometric "
+            "'<vertical>:<realization>' ('EPSG:3855:itrf2014', Copernicus "
+            "GLO-30) — or pass the full 3D frame as target_crs")
     if spec == "ellipsoid":
         return h.to_3d()
     try:

@@ -255,27 +255,32 @@ def _classify_input(path):
 #: archaeology. Evidence + caveats: docs/vdatum.md.
 VDATUM_PRESETS = {
     "3dep": "EPSG:5703",
+    "cop30": "EPSG:3855:itrf2014",
     "precision3d": "ellipsoid:g1674",
     "earthdem": "ellipsoid:itrf2014",
-    "arcticdem-strip": "ellipsoid:itrf2014",
-    "rema-strip": "ellipsoid:itrf2014",
-    "rema-mosaic": "ellipsoid:itrf2014",
-    "arcticdem-mosaic": "ellipsoid:itrf2014",
+    "arcticdem": "ellipsoid:itrf2014",
+    "rema": "ellipsoid:itrf2014",
 }
 
+#: presets are DATED SNAPSHOTS of each product line's source-delivery
+#: datum (owner 2026-09-01: products version, and datums move — NSRS 2022
+#: will replace NAVD88; PGC registration policies change per release);
+#: the note is printed at resolve time so the assumption is on the record.
 _PRESET_NOTES = {
-    "3dep": "NAVD88 orthometric (CONUS lidar)",
-    "precision3d": "Vantor-stated WGS84 G1674 (= ITRF2008 @ 2005.0)",
-    "earthdem": "UNREGISTERED strips+mosaic: expect meters-level vertical "
-                "bias — coregistration still required",
-    "arcticdem-strip": "unregistered strip: ~4 m absolute (PGC's figure)",
-    "rema-strip": "unregistered strip: ~4 m absolute (PGC's figure)",
-    "rema-mosaic": "v2 aligned to ICESat-2 ATL06 (ITRF2014, ~2019-2021)",
-    "arcticdem-mosaic": "v4.1 anchored to Copernicus GLO-30 outside "
-                        "Greenland (GrIMP/IS2 inside) — see docs/vdatum.md",
+    "3dep": "NAVD88 orthometric as delivered (GEOID18-realized chain; the "
+            "NSRS 2022 modernization will change this) [as of 2026-09]",
+    "cop30": "Copernicus GLO-30/90: EGM2008 heights, grid rebased to "
+             "ITRF2014 [as of 2026-09]",
+    "precision3d": "Vantor-stated WGS84 G1674 (= ITRF2008 @ 2005.0) "
+                   "[as of 2026-09]",
+    "earthdem": "UNREGISTERED strips + mosaics (v1.1): meters-level "
+                "vertical bias, coregistration still required [as of 2026-09]",
+    "arcticdem": "strips unregistered (~4 m); mosaic v4.1 anchored to "
+                 "GLO-30 outside Greenland — docs/vdatum.md [as of 2026-09]",
+    "rema": "strips unregistered (~4 m); mosaic v2 IS2-aligned (ITRF2014) "
+            "— docs/vdatum.md [as of 2026-09]",
 }
 
-#: filename patterns that identify PGC SETSM products in the refusal hint
 _PGC_NAME_RE = r"setsm|arcticdem|rema|earthdem|utm\d{2}[ns]_\d"
 
 
@@ -362,8 +367,7 @@ def _embedded_target_crs(products):
                     choices += (
                         "\nthis filename looks like a PGC SETSM product — "
                         "presets apply the researched frame:\n"
-                        "  --vdatum earthdem | arcticdem-strip | "
-                        "arcticdem-mosaic | rema-strip | rema-mosaic\n"
+                        "  --vdatum earthdem | arcticdem | rema\n"
                         "(evidence and caveats: docs/vdatum.md)")
             else:
                 choices = (
@@ -555,9 +559,10 @@ def assess_dem_main(argv=None) -> int:
                         "'ellipsoid' (heights on the horizontal datum's ellipsoid), "
                         "'ellipsoid:<realization>' (itrf2020/itrf2014/itrf2008/"
                         "g2139/g1674 — REQUIRED for WGS84-ensemble horizontals "
-                        "like EPSG:326xx), a product PRESET (3dep, precision3d, "
-                        "earthdem, arcticdem-strip/-mosaic, rema-strip/-mosaic "
-                        "— the researched frame per docs/vdatum.md), "
+                        "like EPSG:326xx), a product PRESET (3dep, cop30, "
+                        "precision3d, earthdem, arcticdem, rema — the "
+                        "researched source-delivery frame, dated; see "
+                        "docs/vdatum.md), "
                         "or any vertical CRS ('EPSG:5703' NAVD88, 'EPSG:3855' "
                         "EGM2008, 'NAVD88 height', ...). Mutually exclusive with "
                         "--target-crs; a geoid model name (GEOID18) is not a CRS — "

@@ -11,18 +11,48 @@ common products, with the evidence.
 
 ## Presets
 
+One preset per product **line**; strip-vs-mosaic and version nuances are
+registration questions, recorded in the notes and the sections below (the
+frame token is the same either way today — the printed note tells you what
+the preset does and does not claim).
+
 | `--vdatum` | resolves to | rationale |
 |---|---|---|
-| `3dep` | `EPSG:5703` | USGS 3DEP lidar is NAVD88 orthometric (CONUS) |
+| `3dep` | `EPSG:5703` | USGS 3DEP lidar as delivered: NAVD88 orthometric (CONUS; currently GEOID18-realized in the transform chain) |
+| `cop30` | `EPSG:3855:itrf2014` | Copernicus GLO-30/90: EGM2008 heights on an ensemble-labeled grid, rebased to ITRF2014 for the horizontal legs |
 | `precision3d` | `ellipsoid:g1674` | Vantor states WGS84 G1674 explicitly for Precision3D products; G1674 is aligned to ITRF2008 @ epoch 2005.0 |
-| `earthdem` | `ellipsoid:itrf2014` | see below — **unregistered**; expect meters-level vertical bias, coregistration still required |
-| `arcticdem-strip`, `rema-strip` | `ellipsoid:itrf2014` | unregistered SETSM strips, ~4 m absolute (PGC's figure) |
-| `rema-mosaic` | `ellipsoid:itrf2014` | REMA v2 is aligned to ICESat-2 ATL06 (ITRF2014, ~2019–2021) |
-| `arcticdem-mosaic` | `ellipsoid:itrf2014` | v4.1: Greenland tiles aligned to GrIMP v2 (itself ICESat-2/ITRF2014); tiles **outside Greenland are anchored to Copernicus GLO-30**, which carries its own ~meter-level absolute calibration |
+| `earthdem` | `ellipsoid:itrf2014` | see below — **unregistered** at every level; expect meters-level vertical bias, coregistration still required |
+| `arcticdem` | `ellipsoid:itrf2014` | strips unregistered (~4 m absolute, PGC's figure); mosaic v4.1 anchored to GrIMP v2 (→ IS2/ITRF2014) over Greenland, **Copernicus GLO-30 elsewhere** |
+| `rema` | `ellipsoid:itrf2014` | strips unregistered; mosaic v2 aligned to ICESat-2 ATL06 (ITRF2014, ~2019–2021) |
 
 `ellipsoid:<realization>` rebuilds the product's own map projection (UTM or
-the polar stereographic grids) on the realized geographic base — the general
-mechanism behind every preset.
+the polar stereographic grids) on the realized geographic base;
+`<vertical>:<realization>` does the same for an orthometric vertical
+(`EPSG:3855:itrf2014` = EGM2008 heights on an ITRF2014-rebased grid) —
+the two general mechanisms behind every preset.
+
+## Presets are dated snapshots
+
+Every preset records the **source-delivery default as of 2026-09**, and the
+resolve-time note says so. These will move:
+
+- **NSRS 2022 modernization**: NAVD88 and the NAD83 realizations are being
+  replaced (NATRF2022 + NAPGD2022/GEOID2022). Once 3DEP products start
+  shipping in the modernized frames, `3dep` stops being a single answer and
+  the product's own vintage decides.
+- **PGC registration policy changes per release** (ICESat-2 strip
+  registration is promised; ICESat-2 itself moved to ITRF2020 at Release
+  007), so `earthdem`/`arcticdem`/`rema` are version-dependent statements.
+- **Converted products lie**: many tools convert delivered orthometric
+  heights to ellipsoidal (or vice versa) without updating metadata. A
+  preset describes the *source delivery*; if your copy has been through a
+  conversion pipeline, state what it actually is — and when in doubt, the
+  control-based dz itself is the diagnostic (a ~geoid-magnitude offset
+  means the vertical datum assumption is wrong).
+
+When product metadata eventually carries version/datum fields worth
+trusting, version-aware presets (or reading the product's own declaration)
+are the intended upgrade path.
 
 ## Why "WGS84 ellipsoid height" is not an answer
 

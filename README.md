@@ -137,9 +137,10 @@ states the vertical datum of the product heights and pairs with the raster's own
 horizontal CRS: `ellipsoid`, `ellipsoid:<realization>` (`itrf2014`, `itrf2020`,
 `g2139`, ... — required for WGS84-ensemble horizontals like `EPSG:326xx`, whose bare
 ellipsoid is ~2 m of deliberate ambiguity and is refused), or any vertical CRS
-(`EPSG:5703` NAVD88, `EPSG:3855` EGM2008), or a product preset (`3dep`,
-`precision3d`, `earthdem`, `arcticdem-strip`/`-mosaic`, `rema-strip`/`-mosaic`) that
-applies the researched frame for that product — see the
+(`EPSG:5703` NAVD88, `EPSG:3855` EGM2008), or a product preset (`3dep`, `cop30`,
+`precision3d`, `earthdem`, `arcticdem`, `rema`) that applies the researched
+source-delivery frame for that product line (a dated snapshot — products
+version and datums move) — see the
 [vertical datum field guide](docs/vdatum.md). A product whose embedded CRS is already
 3D/compound needs neither; a 2D
 product with neither `--vdatum` nor `--target-crs` is refused with the common choices

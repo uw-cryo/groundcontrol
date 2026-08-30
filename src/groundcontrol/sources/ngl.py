@@ -391,9 +391,9 @@ def fetch(aoi_bounds_4326, frame: str = "IGS14", epoch=None, time_range=None,
         # handles and logs its own degrade mode.
         warm = []
         if with_velocities:
-            warm.append(ex.submit(_midas_velocity_map, frame))
+            warm.append(ex.submit(_midas_text, _MIDAS_FRAME))
         if with_steps:
-            warm.append(ex.submit(read_steps))
+            warm.append(ex.submit(_steps_text))
         results = list(ex.map(_get, (row for _, row in sel.iterrows())))
         for f in warm:
             try:
@@ -550,6 +550,23 @@ def parse_steps(text: str) -> pd.DataFrame:
     return df.sort_values(["sta", "date"], kind="stable").reset_index(drop=True)
 
 
+def _steps_text(max_age_days: float = INDEX_MAX_AGE_DAYS) -> str:
+    """Raw steps.txt through the disk cache — download only, NO parsing
+    (the I/O-only warmer :func:`fetch` runs concurrently; parsing 40 MB
+    of text inside the pool convoys the GIL against other sources)."""
+    local = cache_dir() / "ngl_steps.txt"
+    stale = (not local.exists()
+             or (time.time() - local.stat().st_mtime) > max_age_days * 86400)
+    if stale:
+        logger.info("downloading %s -> %s (large catalog; first run or "
+                    "stale cache — subsequent runs read the local copy)",
+                    STEPS_URL, local)
+        r = requests.get(STEPS_URL, timeout=120)
+        r.raise_for_status()
+        local.write_text(r.text)
+    return local.read_text()
+
+
 def read_steps(station: str | None = None,
                max_age_days: float = INDEX_MAX_AGE_DAYS) -> pd.DataFrame:
     """Station step (discontinuity) table — cached download (plan 1.5b/B10).
@@ -566,17 +583,7 @@ def read_steps(station: str | None = None,
     the data half; the step-aware window clipping in :func:`_select_window`
     remains TODO(1.5b).
     """
-    local = cache_dir() / "ngl_steps.txt"
-    stale = (not local.exists()
-             or (time.time() - local.stat().st_mtime) > max_age_days * 86400)
-    if stale:
-        logger.info("downloading %s -> %s (large catalog; first run or "
-                    "stale cache — subsequent runs read the local copy)",
-                    STEPS_URL, local)
-        r = requests.get(STEPS_URL, timeout=120)
-        r.raise_for_status()
-        local.write_text(r.text)
-    steps = parse_steps(local.read_text())
+    steps = parse_steps(_steps_text(max_age_days))
     if station is not None:
         sta = str(station).strip().upper()
         steps = steps[steps["sta"] == sta].reset_index(drop=True)
@@ -654,6 +661,13 @@ def read_midas(frame: str = "IGS14",
     frame = str(frame).strip()
     if not frame:
         raise ValueError("frame must be a non-empty MIDAS frame code, e.g. 'IGS14'")
+    return parse_midas(_midas_text(frame, max_age_days))
+
+
+def _midas_text(frame: str,
+                max_age_days: float = INDEX_MAX_AGE_DAYS) -> str:
+    """Raw MIDAS table text through the disk cache — download only (the
+    I/O-only warmer; see :func:`_steps_text`)."""
     local = cache_dir() / f"ngl_midas_{frame}.txt"
     stale = (not local.exists()
              or (time.time() - local.stat().st_mtime) > max_age_days * 86400)
@@ -663,7 +677,7 @@ def read_midas(frame: str = "IGS14",
         r = requests.get(url, timeout=300)
         r.raise_for_status()
         local.write_text(r.text)
-    return parse_midas(local.read_text())
+    return local.read_text()
 
 
 def _median_lon(lon: np.ndarray) -> float:

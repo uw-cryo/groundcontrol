@@ -534,6 +534,8 @@ def assess_products(control, products, target_crs, *, outdir, site_name,
         io.check_export_support(outdir / f"{site_name}_assessed.parquet")
         io.check_export_support(outdir / f"{site_name}_dz_stats.csv", sidecar=False)
 
+    import time as _time
+    _t0 = _time.monotonic()
     landed, tinfo = transform_control(control, target_crs,
                                       target_epoch=target_epoch,
                                       source_crs=source_crs)
@@ -542,6 +544,8 @@ def assess_products(control, products, target_crs, *, outdir, site_name,
     # accepts the header-vs-declaration datum reinterpretation (same grid)
     sampled = sample_products(landed, products, method=method, radius=radius,
                               declared_crs=target_crs)
+    logger.info("transform + sampling: %.1f s", _time.monotonic() - _t0)
+    _t0 = _time.monotonic()
     stats = summarize_dz(sampled, products=list(products))
 
     if write:
@@ -620,4 +624,5 @@ def assess_products(control, products, target_crs, *, outdir, site_name,
             artifacts["family_figures"] += family_dz_figures(
                 sampled, aoi_gdf, outdir / SOURCE_DIRS[fam], site_name,
                 products=list(products), hs_tif=hs, families=(fam,))
+        logger.info("figures: %.1f s", _time.monotonic() - _t0)
     return sampled, stats, artifacts

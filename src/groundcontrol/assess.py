@@ -232,7 +232,9 @@ def transform_control(control, target_crs, *, target_epoch=2010.0,
     # visibly unassessable, never silently wrong. Full per-frame vertical
     # landing is the D6/§5 work.
     n_vert_excluded = 0
+    n_vert_native = 0
     vert_note = None
+    incompat = None
     if "vertical_crs" in control.columns:
         src_obj2 = pyproj.CRS(src)
         src_vert = (src_obj2.sub_crs_list[1].to_epsg()
@@ -240,16 +242,7 @@ def transform_control(control, target_crs, *, target_epoch=2010.0,
         if src_vert is not None:
             vc = control["vertical_crs"].astype("string")
             incompat = vc.notna() & (vc != f"EPSG:{src_vert}")
-            n_vert_excluded = int(incompat.sum())
-            if n_vert_excluded:
-                bad = sorted(vc[incompat].unique())
-                vert_note = (
-                    f"{n_vert_excluded} row(s) carry vertical_crs {bad} != the "
-                    f"declared source vertical EPSG:{src_vert}: heights set to "
-                    "NaN (positions keep the horizontal leg). Assess those "
-                    "rows via their native-frame chain, or pass source_crs= "
-                    "matching them.")
-                logger.warning("transform_control: %s", vert_note)
+            if incompat.any():
                 H = H.copy()
                 H[incompat.to_numpy(dtype=bool)] = np.nan
     E, N, h_ell, _ = t.transform(
@@ -261,14 +254,92 @@ def transform_control(control, target_crs, *, target_epoch=2010.0,
     # horizontal leg is height-independent for these chains, and the
     # heights of masked rows are discarded below
     h_ell = np.where(np.isfinite(H), h_ell, np.nan)
+    acc_row = np.full(len(control), np.nan)
+    t_acc = t.accuracy if (t.accuracy is not None and t.accuracy > 0) else float("nan")
+    acc_row[np.isfinite(H)] = t_acc
+    # NATIVE RE-TARGET for vertically-mismatched rows (owner 2026-08-30:
+    # "I need to see the dz values" — for Rasuwa NGL may be ALL the control
+    # there is). The schema keeps native_x/y/h + native_crs for lossless
+    # re-targeting (§5): each mismatched subset is transformed from its
+    # NATIVE 3D coordinates through its own frame's chain — geodetically
+    # correct heights (the visible residual is then real: e.g. the NGL
+    # antenna-reference offset), never the wrong-chain geoid error. tt =
+    # per-row coord_epoch for dynamic native frames (the land_horizontal
+    # D6 provisional rule). Rows whose natives/epochs are unusable stay
+    # masked NaN — the honest fallback.
+    if incompat is not None and incompat.any():
+        from groundcontrol.crs import is_dynamic_frame
+        native_ok = incompat.copy()
+        for c in ("native_x", "native_y", "native_h"):
+            native_ok &= (pd.to_numeric(control.get(c), errors="coerce").notna()
+                          if c in control.columns else False)
+        if "native_crs" in control.columns:
+            native_ok &= control["native_crs"].notna()
+        else:
+            native_ok &= False
+        if native_ok.any():
+            for ncrs, idx in control.loc[native_ok].groupby(
+                    "native_crs").groups.items():
+                sub = control.loc[idx]
+                pos = control.index.get_indexer(idx)
+                nx = pd.to_numeric(sub["native_x"], errors="coerce").to_numpy("float64")
+                ny = pd.to_numeric(sub["native_y"], errors="coerce").to_numpy("float64")
+                nh = pd.to_numeric(sub["native_h"], errors="coerce").to_numpy("float64")
+                if is_dynamic_frame(str(ncrs)):
+                    tt2 = pd.to_numeric(sub.get("coord_epoch"),
+                                        errors="coerce").to_numpy("float64")
+                    usable = np.isfinite(tt2)
+                else:
+                    tt2 = np.full(len(sub), float(target_epoch))
+                    usable = np.ones(len(sub), dtype=bool)
+                if not usable.all():
+                    logger.warning(
+                        "transform_control: %d native %s row(s) lack a finite "
+                        "coord_epoch for the dynamic-frame chain; left masked",
+                        int((~usable).sum()), ncrs)
+                if not usable.any():
+                    continue
+                try:
+                    t2 = get_transformer(
+                        str(ncrs), target_crs,
+                        aoi_bounds_4326=(float(np.nanmin(nx)), float(np.nanmin(ny)),
+                                         float(np.nanmax(nx)), float(np.nanmax(ny))))
+                    E2, N2, h2, _ = t2.transform(nx[usable], ny[usable],
+                                                 nh[usable], tt2[usable],
+                                                 errcheck=True)
+                except Exception as exc:
+                    logger.warning("transform_control: native chain %s -> "
+                                   "target unavailable (%s); rows stay masked",
+                                   ncrs, exc)
+                    continue
+                p_use = pos[usable]
+                E[p_use], N[p_use], h_ell[p_use] = E2, N2, h2
+                a2 = t2.accuracy if (t2.accuracy is not None
+                                     and t2.accuracy > 0) else float("nan")
+                acc_row[p_use] = a2
+                n_vert_native += int(usable.sum())
+                logger.info("transform_control: %d row(s) re-targeted from "
+                            "native %s (chain: %s)", int(usable.sum()), ncrs,
+                            t2.description)
+        n_vert_excluded = int(incompat.sum()) - n_vert_native
+        if incompat.any():
+            bad = sorted(control.loc[incompat, "vertical_crs"]
+                         .astype("string").unique())
+            vert_note = (
+                f"{int(incompat.sum())} row(s) carry vertical_crs {bad} != "
+                f"the declared source vertical: {n_vert_native} re-targeted "
+                f"from native 3D coordinates through their own chain, "
+                f"{n_vert_excluded} left with h_ell=NaN (no usable natives).")
+            logger.warning("transform_control: %s", vert_note)
     out["h_ell"] = h_ell
     # per-point stated accuracy of the APPLIED operation (PROJ metadata, m).
     # Constant per call today; becomes genuinely per-point once B7 routes
     # each realization through its own chain. NaN = PROJ reports unknown
     # (e.g. defining Helmert ties) — never silently zero. This is the
     # transformation-budget term for partitioning observed dz biases.
-    acc = t.accuracy if (t.accuracy is not None and t.accuracy > 0) else float("nan")
-    out["xform_acc_m"] = np.full(len(out), acc)
+    # per-row: the declared chain's stated accuracy, or the native chain's
+    # for re-targeted rows; NaN where masked (never silently zero)
+    out["xform_acc_m"] = acc_row
     out = out.set_geometry(gpd.points_from_xy(E, N), crs=target_crs)
     dh = h_ell - H
     finite = np.isfinite(dh)
@@ -280,6 +351,7 @@ def transform_control(control, target_crs, *, target_epoch=2010.0,
         "pipeline": t.definition,
         "n_points": int(len(out)),
         "n_vertical_excluded": n_vert_excluded,
+        "n_vertical_native": n_vert_native,
         "vertical_note": vert_note,
         # h_ell - H == applied geoid undulation + frame tie; a gross-error tripwire
         "dh_stats": {k: float(v) for k, v in

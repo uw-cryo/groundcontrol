@@ -460,9 +460,21 @@ def test_figure_helpers_accept_raster_aoi_path(tmp_path):
     assert out and all(p.exists() for p in out)
 
 
+def caplog_at_info():
+    import contextlib
+    import logging as _lg
+
+    @contextlib.contextmanager
+    def _cm():
+        _lg.getLogger("groundcontrol.figures").setLevel(_lg.INFO)
+        yield
+    return _cm()
+
+
 def test_family_panels_share_one_frame_including_all_gap_panel(tmp_path, monkeypatch):
     """Round 2: per-panel framing drew side-by-side maps at different
-    scales, and an all-NaN (mosaic gap) panel fell back to the hillshade."""
+    scales; since 2026-08-30 an all-NaN (mosaic gap / vertically
+    unassessable) subclass panel is omitted entirely."""
     import matplotlib.pyplot as plt
     from groundcontrol.assess import sample_products
     from groundcontrol.figures import family_dz_figures
@@ -484,12 +496,17 @@ def test_family_panels_share_one_frame_including_all_gap_panel(tmp_path, monkeyp
         return real(fig, *a, **k)
 
     monkeypatch.setattr(plt.Figure, "savefig", spy)
-    family_dz_figures(sampled, None, tmp_path / "f", "s", products=("DSM",),
-                      families=("two",), extra_families=fams,
-                      hs_tif={"DSM": (np.ones((10, 10)), [390000, 420000, 3620000, 3660000])})
+    with caplog_at_info():
+        family_dz_figures(sampled, None, tmp_path / "f", "s", products=("DSM",),
+                          families=("two",), extra_families=fams,
+                          hs_tif={"DSM": (np.ones((10, 10)),
+                                          [390000, 420000, 3620000, 3660000])})
     assert "xlims" in seen, "family_dz_figures wrote no figure"
     xl = seen["xlims"]
-    assert len(xl) == 2 and xl[0] == pytest.approx(xl[1])
+    # the all-NaN (mosaic-gap) subclass panel is OMITTED with a log line
+    # (owner 2026-08-30: never render a blank map); the surviving panel
+    # still frames the points, not the product
+    assert len(xl) == 1
     assert xl[0][1] - xl[0][0] < 2000                     # points (~1 km), not the product
 
 
@@ -775,3 +792,43 @@ def test_web_placeholder_chroma_rule_scoped_to_basemap_sources(tmp_path, caplog)
             point_context_gallery(pts, [("rgb", [user_ortho, str(tmp_path / "color.tif")],
                                          "rgb")], tmp_path, "s2", subset_tag="w")
         assert "fallback source 1 used" not in caplog.text        # grayscale renders
+
+
+def test_gnss_timeseries_figures_from_fixture(tmp_path, monkeypatch):
+    """Standard TOP-LEVEL NGL series figures (owner 2026-08-30): the E/N/U
+    common panels and the per-station vertical small multiples (MIDAS-rate
+    fit, earthquake + equipment steps marked); both skip cleanly when a
+    station's series is unavailable."""
+    import json
+    from pathlib import Path as _P
+
+    from groundcontrol.figures import gnss_station_series, gnss_timeseries
+    from groundcontrol.sources import ngl as ngl_mod
+    fixture = _P("tests/data/ngl_CLV1_IGS14_sample.tenv3").read_text()
+
+    def fake_read(sid, frame="IGS14", **kw):
+        if sid == "GONE":
+            raise OSError("no cache, no network")
+        return ngl_mod.parse_tenv3(fixture)
+
+    monkeypatch.setattr(ngl_mod, "read_tenv3", fake_read)
+    st = gpd.GeoDataFrame({
+        "source": ["ngl", "ngl", "ngs"],
+        "id": ["CLV1", "GONE", "XX"],
+        "point_type": ["gnss_cont", "gnss_cont", "monument"],
+        "vel_e": [0.002, np.nan, np.nan],
+        "vel_n": [-0.003, np.nan, np.nan],
+        "vel_u": [-0.004, -0.001, np.nan],
+        "raw": [json.dumps({"eq_steps": [2017.9], "equip_steps": [2017.95]}),
+                json.dumps({}), None],
+    }, geometry=gpd.points_from_xy([-115.25, -115.2, -115.1], [36.2, 36.3, 36.1]),
+        crs="EPSG:9000")
+    fp = gnss_timeseries(st, tmp_path, "s")
+    assert fp is not None and fp.exists()
+    assert fp.name == "s_gnss_timeseries.png"
+    fp2 = gnss_station_series(st, tmp_path, "s")
+    assert fp2 is not None and fp2.exists()
+    assert fp2.name == "s_gnss_station_series.png"
+    # no NGL rows -> None, no file
+    assert gnss_timeseries(st[st.source == "ngs"], tmp_path, "t") is None
+    assert gnss_station_series(st[st.source == "ngs"], tmp_path, "t") is None

@@ -72,6 +72,8 @@ QUALITY_LOW_DENSITY = "low_density"     # too few stations in radius -> velocity
 RESULT_COLUMNS = (
     "vel_e", "vel_n", "vel_u",          # combined ENU velocity (m/yr)
     "vel_spread_h", "vel_spread_u",     # station-velocity spread (m/yr; NaN if <2 used)
+    "vel_spread_e", "vel_spread_n",     # per-component spread (additive, 2026-08-30:
+                                        # the velocity-map interp label prints E/N)
     "n_stations_used", "nearest_dist_km", "nearest_sta", "quality",
 )
 
@@ -236,6 +238,8 @@ def _lookup_block(tlon, tlat, slon, slat, sids, svel, radius_km, min_stations,
             "vel_e": np.full(n, np.nan), "vel_n": np.full(n, np.nan),
             "vel_u": np.full(n, np.nan), "vel_spread_h": np.full(n, np.nan),
             "vel_spread_u": np.full(n, np.nan),
+            "vel_spread_e": np.full(n, np.nan),
+            "vel_spread_n": np.full(n, np.nan),
             "n_stations_used": np.zeros(n, dtype="int64"),
             "nearest_dist_km": np.full(n, np.nan),
             "nearest_sta": pd.array([pd.NA] * n, dtype="string"),
@@ -281,6 +285,8 @@ def _lookup_block(tlon, tlat, slon, slat, sids, svel, radius_km, min_stations,
             comb = (w[:, :, None] * np.nan_to_num(sel_vel)).sum(axis=1) / w.sum(axis=1)[:, None]
         spread = np.nanstd(sel_vel, axis=1, ddof=1)               # (n, 3); NaN if < 2 used
     spread_h = np.hypot(spread[:, 0], spread[:, 1])
+    spread_e = spread[:, 0]
+    spread_n = spread[:, 1]
     spread_u = spread[:, 2]
 
     quality = np.full(n, QUALITY_OK, dtype=object)
@@ -294,6 +300,8 @@ def _lookup_block(tlon, tlat, slon, slat, sids, svel, radius_km, min_stations,
     comb[dropped] = np.nan
     spread_h[dropped] = np.nan
     spread_u[dropped] = np.nan
+    spread_e[dropped] = np.nan
+    spread_n[dropped] = np.nan
 
     found = n_used > 0
     nearest_dist = np.where(found, d[:, 0], np.nan)
@@ -304,6 +312,7 @@ def _lookup_block(tlon, tlat, slon, slat, sids, svel, radius_km, min_stations,
     return pd.DataFrame({
         "vel_e": comb[:, 0], "vel_n": comb[:, 1], "vel_u": comb[:, 2],
         "vel_spread_h": spread_h, "vel_spread_u": spread_u,
+        "vel_spread_e": spread_e, "vel_spread_n": spread_n,
         "n_stations_used": n_used,
         "nearest_dist_km": nearest_dist,
         "nearest_sta": pd.array(nearest_sta, dtype="string"),
@@ -320,6 +329,7 @@ def _lookup_one(tlon, tlat, slon, slat, svel, sids, radius_km, min_stations,
     asserts the two agree exactly, so this stays the specification.
     """
     empty = dict(vel_e=np.nan, vel_n=np.nan, vel_u=np.nan, vel_spread_h=np.nan,
+                 vel_spread_e=np.nan, vel_spread_n=np.nan,
                  vel_spread_u=np.nan, n_stations_used=0, nearest_dist_km=np.nan,
                  nearest_sta=pd.NA, quality=QUALITY_LOW_DENSITY)
     if slon.size == 0:
@@ -355,7 +365,9 @@ def _lookup_one(tlon, tlat, slon, slat, svel, sids, radius_km, min_stations,
         quality = QUALITY_OK
 
     return dict(vel_e=float(ve), vel_n=float(vn), vel_u=float(vu),
-                vel_spread_h=spread_h, vel_spread_u=spread_u, n_stations_used=n_used,
+                vel_spread_h=spread_h, vel_spread_u=spread_u,
+                vel_spread_e=spread_e, vel_spread_n=spread_n,
+                n_stations_used=n_used,
                 nearest_dist_km=nearest_dist, nearest_sta=nearest_sta, quality=quality)
 
 

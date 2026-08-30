@@ -75,9 +75,14 @@ def _heliport_marker():
 #: Values: (marker, color, size, zorder, label).
 POINT_STYLE = {
     "monument": ("+", "#111111", 30, 4, "NGS monument"),
+    # occupation-class ramp dark blue / light blue / WHITE (owner
+    # 2026-08-30: the three blues were too close). White is a MAP FILL
+    # only — it gets a dark edge on maps (see _edge_for) and a legible
+    # ink for text/histograms (class_ink); one source of truth, two
+    # renderings.
     "gnss_cont": ("*", "#0033A0", 90, 5, "GNSS continuous"),
-    "gnss_semicont": ("*", "#3B6FCB", 90, 5, "GNSS semi-continuous"),
-    "gnss_campaign": ("*", "#56B4E9", 90, 5, "GNSS campaign"),
+    "gnss_semicont": ("*", "#56B4E9", 90, 5, "GNSS semi-continuous"),
+    "gnss_campaign": ("*", "white", 90, 5, "GNSS campaign"),
     "gnss": ("*", "#888888", 90, 5, "GNSS (pre-split)"),
     "VVA": ("s", "#E69F00", 45, 6, "3DEP VVA"),
     "NVA": ("o", "#C00000", 55, 7, "3DEP NVA"),
@@ -172,6 +177,11 @@ WEB_BASEMAP_PROVIDERS = {
              "World_Imagery/MapServer/tile/${z}/${y}/${x}"),
     "google": ("(c) Google Satellite",
                "https://mt1.google.com/vt/lyrs=s&amp;x=${x}&amp;y=${y}&amp;z=${z}"),
+    # open terrain layer for MAP underlays (house style is shaded relief;
+    # AOI-only runs have no DEM to shade — owner 2026-08-30)
+    "esri_hillshade": ("(c) Esri World Hillshade",
+                       "https://server.arcgisonline.com/ArcGIS/rest/services/"
+                       "Elevation/World_Hillshade/MapServer/tile/${z}/${y}/${x}"),
 }
 
 _WMS_XML = """<GDAL_WMS>
@@ -902,10 +912,69 @@ def _aspect_panel_w(aoi_gdf, map_h, lo=0.5, hi=1.5):
     return float(np.clip(map_h / asp, lo * map_h, hi * map_h))
 
 
+#: too-pale-for-white-background fills -> the legible ink used for
+#: histogram fills/edges and stats text (class_ink); the GNSS-family hue
+#: keeps the campaign class visually in the family
+_PALE_INK = {"white": "#4477AA"}
+
+
+def class_ink(style_key_or_color):
+    """Text/histogram color for a POINT_STYLE key or raw color — the pale
+    map fills (white campaign stars) fall back to :data:`_PALE_INK` so
+    every white-background consumer agrees (owner 2026-08-30)."""
+    col = (POINT_STYLE[style_key_or_color][1]
+           if style_key_or_color in POINT_STYLE else style_key_or_color)
+    return _PALE_INK.get(col, col)
+
+
+def _edge_for(mk, col):
+    """Map-marker edge: white halo normally; pale fills flip to the dark
+    family edge so a white star stays visible on the hillshade."""
+    if col in _PALE_INK:
+        return "#0033A0"
+    return "white" if mk != "+" else col
+
+
+def _web_map_underlay(ax, crs, bounds, provider="esri_hillshade",
+                      max_px=2400):
+    """Web-tile underlay for a control map with no DEM (the AOI-only path,
+    owner 2026-08-30): fixed tile level sized to the map span (the chroma
+    probe cannot judge a grayscale hillshade layer), drawn gray with the
+    provider credited on-axes."""
+    import math
+
+    label, _ = WEB_BASEMAP_PROVIDERS[provider]
+    minx, miny, maxx, maxy = (float(v) for v in bounds)
+    span = max(maxx - minx, maxy - miny)
+    import pyproj
+    if pyproj.CRS.from_user_input(crs).is_geographic:
+        span *= 111320.0
+    z = int(np.clip(round(math.log2(156543.0 / max(span / max_px, 0.01))), 8, 16))
+    got = open_web_basemap(crs, bounds, provider=provider, tile_level=z,
+                           margin_m=0.0)
+    if got is None:
+        return
+    base, vrt = got
+    try:
+        dec = max(1, int(np.ceil(max(vrt.width, vrt.height) / max_px)))
+        arr = vrt.read(1, out_shape=(vrt.height // dec, vrt.width // dec)
+                       ).astype("f4")
+        hb = vrt.bounds
+    finally:
+        vrt.close()
+        base.close()
+    ax.imshow(arr, cmap="gray", vmin=0, vmax=255, alpha=0.9,
+              extent=[hb.left, hb.right, hb.bottom, hb.top], zorder=0,
+              interpolation="antialiased", interpolation_stage="rgba")
+    ax.text(0.995, 0.005, label, transform=ax.transAxes, ha="right",
+            va="bottom", fontsize=6.5, color="#555555")
+
+
 def control_map_figure(ctl, aoi_p, outdir, site_name, *, dem_tif=None,
                        hs_tif=None, cmap=None, dem_alpha=0.4,
                        clip_to_aoi=True, label_points=True,
-                       label_gnss_ids=False, fname=None, title=None, dpi=200):
+                       label_gnss_ids=False, fname=None, title=None,
+                       basemap="esri_hillshade", dpi=200):
     """ONE control map (the combined-map format/symbols): POINT_STYLE
     markers, rotated runway chevrons, sparse-class labels, legend with
     counts, hillshade underlay, scalebar. ``ctl`` must already be in the
@@ -927,14 +996,21 @@ def control_map_figure(ctl, aoi_p, outdir, site_name, *, dem_tif=None,
     outdir.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(10.5, 10))
     _relief(ax, dem_tif, hs_tif, cmap, dem_alpha, fig)
+    if dem_tif is None and hs_tif is None and basemap is not None:
+        # no DEM to shade (AOI-only): open web hillshade underlay, credited
+        try:
+            b = (aoi_p.total_bounds if aoi_p is not None else ctl.total_bounds)
+            _web_map_underlay(ax, ctl.crs, b, provider=basemap)
+        except Exception as exc:  # underlay is auxiliary — never fatal
+            logger.warning("map underlay skipped: %s", exc)
 
     by_type = {}
     for ptype, (mk, col, sz, zo, lab) in POINT_STYLE.items():
         sub = ctl[ctl.point_type == ptype]
         if not len(sub):
             continue
-        lw = 1.1 if mk == "+" else 0.5
-        ec = "white" if mk != "+" else col
+        lw = 1.4 if ptype == "helipad" else (1.1 if mk == "+" else 0.5)
+        ec = _edge_for(mk, col)
         if ptype in ("runway_end", "displaced_threshold"):
             # chevrons rotate to the published runway-end true alignment
             # (tips point inward along the runway; owner 2026-08-13)
@@ -947,8 +1023,19 @@ def control_map_figure(ctl, aoi_p, outdir, site_name, *, dem_tif=None,
         else:
             ax.scatter(sub.geometry.x, sub.geometry.y, marker=mk, s=sz,
                        c=col, linewidths=lw, edgecolors=ec, zorder=zo)
-        by_type[ptype] = Line2D([], [], marker=mk, ls="", color=col, ms=9,
-                                label=f"{lab} (n={len(sub)})")
+        # legend swatch: an UNFILLED marker (chevrons, the helipad H-ring)
+        # draws with its LINE color — a white markeredgecolor made the
+        # helipad row invisible (owner 2026-08-30); filled pale markers keep
+        # the dark family edge
+        if MarkerStyle(mk).is_filled():
+            by_type[ptype] = Line2D(
+                [], [], marker=mk, ls="", ms=9, markerfacecolor=col,
+                markeredgecolor=(ec if col in _PALE_INK else col),
+                color=class_ink(col), label=f"{lab} (n={len(sub)})")
+        else:
+            by_type[ptype] = Line2D(
+                [], [], marker=mk, ls="", ms=11, color=col,
+                markeredgewidth=1.4, label=f"{lab} (n={len(sub)})")
     if label_points and "source" in ctl.columns and "id" in ctl.columns:
         import matplotlib.patheffects as _pe
         halo = [_pe.withStroke(linewidth=2.2, foreground="white")]
@@ -1003,10 +1090,187 @@ def control_map_figure(ctl, aoi_p, outdir, site_name, *, dem_tif=None,
     return fp
 
 
+def _ngl_series(sid, frame):
+    """(decyear, E, N, U) full-value arrays for one station (cached tenv3)."""
+    from .sources import ngl as _ngl
+    ts = _ngl.read_tenv3(sid, frame=frame)
+    t = ts["decyear"].to_numpy(dtype="float64")
+    e = (ts["e0"].to_numpy(dtype="float64") + ts["east"].to_numpy(dtype="float64"))
+    n = (ts["n0"].to_numpy(dtype="float64") + ts["north"].to_numpy(dtype="float64"))
+    u = ts["height"].to_numpy(dtype="float64")
+    return t, e, n, u
+
+
+def _bin_medians(t, v, bin_yr):
+    bins = np.round(t / bin_yr) * bin_yr
+    bt = np.unique(bins)
+    bv = np.array([float(np.nanmedian(v[bins == b])) for b in bt])
+    return bt, bv
+
+
+def _row_steps(raw, key):
+    import json
+    try:
+        return [float(x) for x in ((json.loads(raw) or {}).get(key) or [])]
+    except (TypeError, ValueError):
+        return []
+
+
+def gnss_timeseries(control, outdir, site_name, *, frame="IGS14",
+                    bin_yr=0.05, dpi=200):
+    """TOP-LEVEL standard NGL component time series (owner 2026-08-30: the
+    complementary panel set to the MIDAS velocity maps): three stacked
+    panels — dE, dN, dU — every NGL station median-removed and reduced to
+    ``bin_yr`` bin medians, colored per panel by that component's MIDAS
+    rate on the RdYlBu ramp (RED = negative; for dU that is subsidence),
+    earthquake steps dashed. Returns the path or None (no NGL rows)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    if "source" not in control.columns:
+        return None
+    st = control[control["source"] == "ngl"]
+    if not len(st):
+        return None
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    comps = (("dE", "vel_e", 1), ("dN", "vel_n", 2), ("dU", "vel_u", 3))
+    series = {}
+    steps_all = set()
+    for _, r in st.iterrows():
+        sid = str(r["id"])
+        try:
+            series[sid] = _ngl_series(sid, frame)
+        except Exception as exc:
+            logger.warning("tenv3 for %s unavailable (%s); skipped", sid, exc)
+            continue
+        steps_all.update(_row_steps(r.get("raw"), "eq_steps"))
+    if not series:
+        return None
+    fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+    for ax, (lab, vcol, ci) in zip(axes, comps):
+        rates = pd.to_numeric(st.get(vcol), errors="coerce") * 1000.0
+        lim = max(float(np.nanpercentile(np.abs(rates), 98))
+                  if np.isfinite(rates).any() else 1.0, 0.5)
+        cmap = plt.get_cmap("RdYlBu")
+        norm = plt.Normalize(-lim, lim)
+        for (_, r) in st.iterrows():
+            sid = str(r["id"])
+            if sid not in series:
+                continue
+            t = series[sid][0]
+            v = (series[sid][ci] - np.nanmedian(series[sid][ci])) * 1000.0
+            bt, bv = _bin_medians(t, v, bin_yr)
+            rate = pd.to_numeric(pd.Series([r.get(vcol)]),
+                                 errors="coerce").iloc[0]
+            col = cmap(norm(rate * 1000.0)) if np.isfinite(rate) else "0.5"
+            ax.plot(bt, bv, ".-", ms=2.2, lw=0.7, color=col, alpha=0.85)
+            ax.annotate(sid, (bt[-1], bv[-1]), xytext=(4, 0),
+                        textcoords="offset points", fontsize=6.5, color=col,
+                        fontweight="bold")
+        for s_ in sorted(steps_all):
+            ax.axvline(s_, color="0.4", lw=0.9, ls="--", zorder=1)
+        ax.axhline(0, color=_INK, lw=0.6, alpha=0.5)
+        ax.set_ylabel(f"{lab} (mm, median-removed)", fontsize=9)
+        ax.grid(alpha=0.25, lw=0.5)
+        sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+        cb = fig.colorbar(sm, ax=ax, pad=0.01)
+        cb.set_label(f"MIDAS {vcol} (mm/yr)", fontsize=8)
+        cb.ax.tick_params(labelsize=7)
+    axes[-1].set_xlabel("year")
+    axes[0].set_title(f"{site_name} — n={len(series)} NGL stations, E/N/U series "
+                      f"({bin_yr:g}-yr bin medians); dashed = earthquake steps",
+                      fontsize=11, color=_INK)
+    fp = outdir / f"{site_name}_gnss_timeseries.png"
+    fig.savefig(fp, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+    return fp
+
+
+def gnss_station_series(control, outdir, site_name, *, frame="IGS14",
+                        bin_yr=0.05, ncols=3, dpi=200):
+    """TOP-LEVEL standard per-station vertical small multiples (owner
+    2026-08-30, the sandbox per-station figure formally included): one
+    panel per NGL station — vertical series (``bin_yr`` bin medians,
+    median-removed), the MIDAS rate line as the fit, earthquake steps
+    (red dashed) and antenna/equipment changes (gray dotted) marked from
+    the station's own steps.txt evidence. Titles carry n first, then the
+    MIDAS vertical rate. Returns the path or None (no NGL rows)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    if "source" not in control.columns:
+        return None
+    st = control[control["source"] == "ngl"]
+    if not len(st):
+        return None
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for _, r in st.iterrows():
+        sid = str(r["id"])
+        try:
+            t, _, _, u = _ngl_series(sid, frame)
+        except Exception as exc:
+            logger.warning("tenv3 for %s unavailable (%s); skipped", sid, exc)
+            continue
+        rows.append((sid, t, u, r))
+    if not rows:
+        return None
+    nrow = int(np.ceil(len(rows) / ncols))
+    fig, axes = plt.subplots(nrow, ncols, figsize=(4.2 * ncols, 2.4 * nrow),
+                             sharex=True, squeeze=False)
+    for k, (sid, t, u, r) in enumerate(rows):
+        ax = axes[k // ncols][k % ncols]
+        v = (u - np.nanmedian(u)) * 1000.0
+        bt, bv = _bin_medians(t, v, bin_yr)
+        ax.plot(bt, bv, ".", ms=2.0, color="#4477AA", alpha=0.8)
+        vu = pd.to_numeric(pd.Series([r.get("vel_u")]), errors="coerce").iloc[0]
+        if np.isfinite(vu):
+            tm = float(np.nanmedian(bt))
+            ax.plot([bt[0], bt[-1]],
+                    [vu * 1000.0 * (bt[0] - tm), vu * 1000.0 * (bt[-1] - tm)],
+                    color="#C00000", lw=1.3,
+                    label=f"MIDAS {vu * 1000.0:+.1f} mm/yr")
+        for s_ in _row_steps(r.get("raw"), "eq_steps"):
+            ax.axvline(s_, color="#C00000", lw=0.9, ls="--", alpha=0.8)
+        for s_ in _row_steps(r.get("raw"), "equip_steps"):
+            ax.axvline(s_, color="0.45", lw=0.9, ls=":", alpha=0.9)
+        ax.set_title(f"{sid} · n={len(t)} · MIDAS vel_u "
+                     f"{'nan' if not np.isfinite(vu) else f'{vu * 1000:+.1f}'} mm/yr",
+                     fontsize=8.5, loc="left")
+        ax.grid(alpha=0.25, lw=0.5)
+        ax.tick_params(labelsize=7)
+    for k in range(len(rows), nrow * ncols):
+        axes[k // ncols][k % ncols].set_axis_off()
+    for ax in axes[-1]:
+        ax.set_xlabel("year", fontsize=8)
+    for rrow in axes:
+        rrow[0].set_ylabel("dU (mm)", fontsize=8)
+    fig.suptitle(f"{site_name} — n={len(rows)} NGL stations, vertical series "
+                 "(red dashed = earthquake, gray dotted = antenna/equipment "
+                 "change; line = MIDAS rate)", fontsize=11, color=_INK,
+                 y=1.0)
+    fig.tight_layout()
+    fp = outdir / f"{site_name}_gnss_station_series.png"
+    fig.savefig(fp, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+    return fp
+
+
+def decyear_ts(ts):
+    """Decimal year of a timestamp (thin local wrapper; crs.decyear is the
+    canonical scalar converter)."""
+    from .crs import decyear as _dy
+    return _dy(ts)
+
+
 def standard_control_figures(control, aoi, outdir, site_name, *,
                              dem_tif=None, hs_tif=None, cmap=None,
                              dem_alpha=0.4, midas_frame="IGS14",
-                             midas_velocities=True,
+                             midas_velocities=True, map_basemap="esri_hillshade",
                              buffer_km=60.0, clip_to_aoi=True,
                              label_points=True, dpi=200):
     """Write the default control figure bundle for a site; returns paths.
@@ -1043,7 +1307,7 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
     out.append(control_map_figure(
         ctl, aoi_p, outdir, site_name, dem_tif=dem_tif, hs_tif=hs_tif,
         cmap=cmap, dem_alpha=dem_alpha, clip_to_aoi=clip_to_aoi,
-        label_points=label_points, dpi=dpi))
+        label_points=label_points, basemap=map_basemap, dpi=dpi))
 
     # ---- 1b. per-source maps, one per source subdir (owner 2026-08-30:
     # the locator for that source's contact sheets — same format/symbols
@@ -1066,7 +1330,7 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
             clip_to_aoi=clip_to_aoi, label_points=label_points,
             label_gnss_ids=True, fname=f"{site_name}_{dname}_map.png",
             title=f"{site_name} — {dname} control points (n={len(sub)})",
-            dpi=dpi))
+            basemap=map_basemap, dpi=dpi))
 
     # ---- 2. NGS monument-type facets (ngs/ subdir: source-specific) --------
     mon = (ctl[ctl.point_type == "monument"] if "raw" in ctl.columns
@@ -1111,22 +1375,44 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
         st = st[st.lon.between(b[0] - 3, b[2] + 3)
                 & st.lat.between(b[1] - 3, b[3] + 3)]
         # ONE combined figure (owner 2026-08-30): horizontal quiver |
-        # vertical-colored, over the DEM hillshade (dem_tif warps + shades
-        # in plot_velocity_vectors; a pre-rendered PATH hs_tif also works,
-        # but the in-memory auto-hillshade tuple cannot be reprojected)
-        fig2, (axh_, axv_) = plt.subplots(1, 2, figsize=(18, 9))
+        # vertical-colored, over the DEM hillshade, EQUAL-SIZE panels (the
+        # colorbar gets its own axis instead of shrinking the right map).
+        # The vertical panel drops the ref key and the interp annotation —
+        # horizontal numbers live on the horizontal panel, whose interp
+        # label now carries both H and U with their 1-sigma spreads.
+        fig2 = plt.figure(figsize=(18.6, 9))
+        gs2 = fig2.add_gridspec(1, 3, width_ratios=[1.0, 1.0, 0.03],
+                                wspace=0.14)
+        axh_ = fig2.add_subplot(gs2[0, 0])
+        axv_ = fig2.add_subplot(gs2[0, 1])
+        cax_ = fig2.add_subplot(gs2[0, 2])
         hs_path = hs_tif if isinstance(hs_tif, (str, Path)) else None
-        for ax_, cbv in ((axh_, False), (axv_, True)):
-            plot_velocity_vectors(
-                st, aoi=aoi_gdf, buffer_km=buffer_km, ax=ax_,
-                color_by_vertical=cbv, hs_tif=hs_path, dem_tif=dem_tif,
-                title=("vertical-colored" if cbv else "horizontal"))
+        plot_velocity_vectors(
+            st, aoi=aoi_gdf, buffer_km=buffer_km, ax=axh_,
+            color_by_vertical=False, hs_tif=hs_path, dem_tif=dem_tif,
+            title="horizontal")
+        plot_velocity_vectors(
+            st, aoi=aoi_gdf, buffer_km=buffer_km, ax=axv_,
+            color_by_vertical=True, hs_tif=hs_path, dem_tif=dem_tif,
+            cbar_ax=cax_, show_ref=False,
+            title="vertical-colored")
         fig2.suptitle(f"{site_name} — MIDAS ({midas_frame}) velocity field",
                       fontsize=13, color=_INK)
         fp = outdir / f"{site_name}_midas_velocity.png"
         fig2.savefig(fp, dpi=dpi, bbox_inches="tight")
         plt.close(fig2)
         out.append(fp)
+        # ---- 5+6. NGL time series, TOP LEVEL beside their complementary
+        # MIDAS maps (owner 2026-08-30): E/N/U common series + per-station
+        # vertical small multiples with the MIDAS-rate fit and steps marked
+        for fn in (gnss_timeseries, gnss_station_series):
+            try:
+                fp_ts = fn(control, outdir, site_name, frame=midas_frame,
+                           dpi=dpi)
+                if fp_ts is not None:
+                    out.append(fp_ts)
+            except Exception as exc:  # network etc. — the bundle still ships
+                logger.warning("%s skipped: %s", fn.__name__, exc)
     except Exception as exc:  # network etc. — the map figures still ship
         logger.warning("MIDAS velocity figures skipped: %s", exc)
 
@@ -1291,7 +1577,7 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
                 lw = 1.0 if mk in ("+", "x") else 0.35
                 axes[0].scatter(sub.geometry.x, sub.geometry.y, c=sub[col],
                                 cmap=DZ_CMAP, norm=norm, marker=mk,
-                                s=max(15, int(msz * 0.32)),
+                                s=max(11, int(msz * 0.24)),
                                 edgecolors="#333333", linewidths=lw, zorder=5)
                 handles.append(Line2D([], [], marker=mk, ls="", color="#333333",
                                       ms=6, label=f"{mlab} ({len(sub)})"))
@@ -1358,8 +1644,7 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         txt_lines = []
         for ax, seg_vals, seg_raw, _own in panels:
             for lab, v in seg_vals.items():
-                key = seg_defs[lab][1]  # POINT_STYLE key or raw hex
-                color = POINT_STYLE[key][1] if key in POINT_STYLE else key
+                color = class_ink(seg_defs[lab][1])  # centralized legible ink
                 ax.hist(np.clip(v, -lim, lim), bins=nbins, range=(-lim, lim),
                         histtype="stepfilled", alpha=0.45, color=color,
                         edgecolor=color, label=lab)
@@ -1424,8 +1709,11 @@ DZ_FAMILIES = {
     "3dep": ("3DEP CHECKPOINTS", [
         ("NVA", lambda d: (d["source"] == "3dep") & (d["point_type"] == "NVA"),
          "NVA", "o"),
+        # no products restriction (owner 2026-08-30): VVA renders on the DSM
+        # figure too — the canopy bias is informative, and `applies` in the
+        # stats CSV still says it does not validate a DSM
         ("VVA", lambda d: (d["source"] == "3dep") & (d["point_type"] == "VVA"),
-         "VVA", "s", ("DTM",)),
+         "VVA", "s"),
     ]),
     # GNSS by PER-ROW occupation class (owner taxonomy, 2026-08-22): each
     # station's own record earns its class (sources.ngl.occupation_class).
@@ -1597,6 +1885,21 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
             keep = [i for i, m in enumerate(sub_masks) if m.any()]
             subs = [subs[i] for i in keep]
             sub_masks = [sub_masks[i] for i in keep]
+            # per-PRODUCT: a subclass whose dz is entirely non-finite draws
+            # an empty panel (owner 2026-08-30: NGL rows carry NaN dz by
+            # design until the per-frame vertical landing) — skip it and
+            # say so, never render a blank map
+            keep2 = [i for i, m in enumerate(sub_masks)
+                     if np.isfinite(sampled.loc[np.asarray(m, dtype=bool),
+                                                col].to_numpy(dtype="float64")).any()]
+            if len(keep2) < len(subs):
+                dropped = [subs[i][0] for i in range(len(subs))
+                           if i not in keep2]
+                logger.info("family %s/%s: subclass(es) %s have no finite dz "
+                            "(e.g. vertically-unassessable rows) — panels "
+                            "omitted", fam, prod, dropped)
+            subs = [subs[i] for i in keep2]
+            sub_masks = [sub_masks[i] for i in keep2]
             if not subs:
                 continue
             # empirical, tier-snapped color/hist limits from THIS figure's
@@ -1651,13 +1954,13 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                 v = seg[col].to_numpy(dtype="float64")
                 fin = np.isfinite(v)
                 n_gap += int((~fin).sum())
-                color = POINT_STYLE[style][1] if style in POINT_STYLE else style
+                color = class_ink(style)   # centralized legible ink
                 # NEUTRAL point outlines — class colors clash with the dz ramp
                 # (owner 2026-07-16); subclass identity = per-map panel title
                 sc = axm.scatter(seg.geometry.x[fin], seg.geometry.y[fin],
                                  c=v[fin], cmap=DZ_CMAP, vmin=-map_lim,
-                                 vmax=map_lim, s=52, marker=mk,
-                                 edgecolors="#404040", linewidths=0.8, zorder=5)
+                                 vmax=map_lim, s=34, marker=mk,
+                                 edgecolors="#404040", linewidths=0.6, zorder=5)
                 _finish_map(axm, aoi_gdf, points=fig_pts)
                 axm.set_title(f"{lab} (n={int(fin.sum())})", fontsize=10.5,
                               color=_INK)

@@ -86,10 +86,13 @@ def fetch_control_main(argv=None) -> int:
                                  basemap=None if args.basemap == "none"
                                  else args.basemap):
             print(f"wrote {fp}", file=sys.stderr)
-        # the labeled all-sources control map that locates each sheet cell
+        # the labeled all-sources control map that locates each sheet cell,
+        # plus the MIDAS velocity + NGL time-series figures (owner
+        # 2026-08-30: the AOI-only path gets the full standard set too)
         for fp in standard_control_figures(
                 gdf, aoi if not isinstance(aoi, tuple) else None,
-                Path(out).parent, Path(out).stem, midas_velocities=False):
+                Path(out).parent, Path(out).stem, midas_velocities=True,
+                map_basemap=None if args.basemap == "none" else "esri_hillshade"):
             print(f"wrote {fp}", file=sys.stderr)
     return 0
 

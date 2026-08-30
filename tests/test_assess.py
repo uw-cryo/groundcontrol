@@ -610,3 +610,57 @@ def test_transform_control_masks_mismatched_vertical_rows():
     np.testing.assert_allclose(out["h_ell"].iloc[ok], ref["h_ell"].iloc[ok])
     # the horizontal leg still lands the excluded row (maps/sheets valid)
     assert out.geometry.iloc[2].x == ref.geometry.iloc[2].x
+
+
+def test_transform_control_native_retarget_for_mismatched_vertical():
+    """Owner 2026-08-30 ("I need to see the dz values"): a vertically-
+    mismatched row WITH native 3D coordinates is re-targeted through its
+    NATIVE frame's chain (per-row coord_epoch tt for a dynamic frame);
+    rows without natives stay masked. Routing proven via a recording
+    transformer fake."""
+    import warnings as _w
+
+    import groundcontrol.assess as A
+    calls = []
+
+    class _T:
+        def __init__(self, src):
+            self.src = src
+            self.accuracy = 0.02
+            self.description = f"fake {src}"
+            self.definition = "fake"
+
+        def transform(self, x, y, z, t, errcheck=True):
+            calls.append((self.src, np.asarray(t).copy()))
+            return (np.asarray(x) + 1.0, np.asarray(y) + 1.0,
+                    np.asarray(z) + 100.0, np.asarray(t))
+
+    real = A.get_transformer
+    A.get_transformer = lambda src, tgt, aoi_bounds_4326=None: _T(str(src))
+    try:
+        pts = _control_6319(4).rename(columns={"h_ell": "height"},
+                                      errors="ignore")
+        pts = pts.set_crs("EPSG:6318", allow_override=True)
+        pts["vertical_crs"] = ["EPSG:5703", "EPSG:7912", "EPSG:7912", "EPSG:5703"]
+        pts["native_x"] = pts.geometry.x
+        pts["native_y"] = pts.geometry.y
+        pts["native_h"] = [np.nan, 500.0, 510.0, np.nan]
+        pts["native_crs"] = [None, "EPSG:7912", "EPSG:7912", None]
+        pts["coord_epoch"] = [np.nan, 2022.3, np.nan, np.nan]  # row 2: no epoch
+        with _w.catch_warnings():
+            _w.simplefilter("ignore")
+            out, info = A.transform_control(pts, "EPSG:6341+5703",
+                                            source_crs="EPSG:6318+5703")
+    finally:
+        A.get_transformer = real
+    # row 1: dynamic native chain, tt = its coord_epoch, h from native+100
+    assert info["n_vertical_native"] == 1
+    assert info["n_vertical_excluded"] == 1        # row 2: no coord_epoch
+    assert out["h_ell"].iloc[1] == 600.0
+    assert np.isnan(out["h_ell"].iloc[2])
+    assert out["xform_acc_m"].iloc[1] == 0.02
+    srcs = [c[0] for c in calls]
+    assert "EPSG:7912" in srcs                     # the native chain ran
+    tt_native = calls[[i for i, s in enumerate(srcs)
+                       if s == "EPSG:7912"][0]][1]
+    assert tt_native.tolist() == [2022.3]          # per-row epoch, not 2010

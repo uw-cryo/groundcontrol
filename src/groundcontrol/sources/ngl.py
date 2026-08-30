@@ -300,6 +300,9 @@ def _attach_steps(stations) -> None:
         eq = steps[steps["type"] == 2]
         per_sta = {sta: sorted(decyear(d) for d in grp["date"])
                    for sta, grp in eq.groupby("sta")}
+        equip = steps[steps["type"] == 1]
+        per_sta_eqp = {sta: sorted(decyear(d) for d in grp["date"])
+                       for sta, grp in equip.groupby("sta")}
         through = decyear(eq["date"].max()) if len(eq) else None
     except Exception as e:
         logger.warning("NGL steps.txt unavailable (%s: %s): eq_steps not "
@@ -309,6 +312,10 @@ def _attach_steps(stations) -> None:
     for s in stations:
         s["meta"]["eq_steps"] = per_sta.get(s["meta"]["sta"], [])
         s["meta"]["eq_steps_through"] = through
+        # type-1 EQUIPMENT steps (antenna/radome changes): instrumental
+        # height jumps — figure annotation evidence, never a propagation
+        # guard input (owner 2026-08-30 station-series figure)
+        s["meta"]["equip_steps"] = per_sta_eqp.get(s["meta"]["sta"], [])
 
 
 def fetch(aoi_bounds_4326, frame: str = "IGS14", epoch=None, time_range=None,
@@ -849,6 +856,7 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
                 # evidence for propagate_epoch (owner 2026-08-30)
                 "eq_steps": meta.get("eq_steps"),
                 "eq_steps_through": meta.get("eq_steps_through"),
+                "equip_steps": meta.get("equip_steps"),
                 "n_solutions_used": pos["n_solutions_used"],
                 "window": window_desc,
                 "sig_e_m": pos["sig_e_m"],

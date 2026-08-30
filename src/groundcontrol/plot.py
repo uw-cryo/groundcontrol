@@ -161,7 +161,8 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
                           vel_cols=("vel_e", "vel_n", "vel_u"), id_col=None,
                           n_labels: int = 5, vel_to_mm: float = 1000.0,
                           overlay_interp: bool = True, ref_frac: float = 0.12,
-                          hs_tif=None, dem_tif=None):
+                          hs_tif=None, dem_tif=None, cbar_ax=None,
+                          show_ref: bool = True, annotate_interp: bool = True):
     """Horizontal velocity-vector (quiver) map for a GNSS station network.
 
     The horizontal companion to the sandbox NGL vertical-*rate* maps
@@ -312,12 +313,19 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
         q_ref = ax.quiver(lon[sel], lat[sel], ve[sel] * vel_to_mm, vn[sel] * vel_to_mm,
                           np.where(np.isfinite(vals), vals, 0.0), cmap=cmap, norm=norm,
                           **qkw)
-        # rings mark stations inside the AOI (color already spoken for by vel_u)
+        # in-AOI station markers carry the SAME RdYlBu vel_u color as their
+        # arrows (owner 2026-08-30), black-edged so they read on the ramp
         if inside.any():
-            ax.scatter(lon[inside], lat[inside], s=46, facecolors="none",
+            ax.scatter(lon[inside], lat[inside], s=52,
+                       c=np.where(np.isfinite(vu_mm[inside]), vu_mm[inside], 0.0),
+                       cmap=cmap, norm=norm,
                        edgecolors="k", linewidths=1.1, zorder=4)
-        fig.colorbar(q_ref, ax=ax, shrink=0.72, pad=0.02,
-                     label="vertical velocity vel_u (mm/yr)  [RED = SUBSIDENCE]")
+        if cbar_ax is not None:  # dedicated cax -> both panels stay equal-size
+            fig.colorbar(q_ref, cax=cbar_ax,
+                         label="vertical velocity vel_u (mm/yr)  [RED = SUBSIDENCE]")
+        else:
+            fig.colorbar(q_ref, ax=ax, shrink=0.72, pad=0.02,
+                         label="vertical velocity vel_u (mm/yr)  [RED = SUBSIDENCE]")
     else:
         if buffered.any():
             qb = ax.quiver(lon[buffered], lat[buffered], ve[buffered] * vel_to_mm,
@@ -331,13 +339,35 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
                        edgecolors="k", linewidths=0.4, zorder=4)
             q_ref = qi
 
-    if q_ref is not None:
+    if q_ref is not None and show_ref:
         ax.quiverkey(q_ref, 0.87, 0.07, ref_mm_yr, f"{ref_mm_yr:g} mm/yr",
                      labelpos="N", coordinates="axes", color="k",
                      fontproperties={"size": 8})
 
-    # optional interpolated AOI-centroid velocity (a distinct heavy arrow)
-    if poly is not None and overlay_interp:
+    # combined AOI-centroid VERTICAL on the vertical panel (owner
+    # 2026-08-30): green star + U ± spread, no arrow, no horizontal numbers
+    if poly is not None and overlay_interp and annotate_interp and color_by_vertical:
+        from groundcontrol.velocity import interpolate_velocity
+        res = interpolate_velocity(clon, clat, stations, lon_col=lon_col,
+                                   lat_col=lat_col, vel_cols=vel_cols).iloc[0]
+        vui = res.get("vel_u", np.nan)
+        if np.isfinite(vui):
+            ax.scatter([clon], [clat], marker="*", s=210, c="tab:green",
+                       edgecolors="k", linewidths=0.6, zorder=7)
+            su = res.get("vel_spread_u", np.nan)
+            su_s = "nan" if not np.isfinite(su) else f"{su * vel_to_mm:.1f}"
+            ann = (f"AOI interp: n={int(res['n_stations_used'])}\n"
+                   f"U {vui * vel_to_mm:+.1f} ± {su_s} mm/yr")
+            if res["quality"] not in ("ok", None):
+                ann += f"\n[{res['quality']}]"
+            ax.annotate(ann, (clon, clat), xytext=(9, -14),
+                        textcoords="offset points", fontsize=7.6,
+                        color="darkgreen", fontweight="bold",
+                        path_effects=halo, zorder=8)
+
+    # interpolated AOI-centroid horizontal velocity (a distinct heavy arrow)
+    if (poly is not None and overlay_interp and annotate_interp
+            and not color_by_vertical):
         from groundcontrol.velocity import interpolate_velocity
         res = interpolate_velocity(clon, clat, stations, lon_col=lon_col,
                                    lat_col=lat_col, vel_cols=vel_cols).iloc[0]
@@ -350,12 +380,27 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
                       linewidth=0.6, **{**qkw, "width": 0.007, "zorder": 6})
             ax.scatter([clon], [clat], marker="*", s=210, c="tab:green",
                        edgecolors="k", linewidths=0.6, zorder=7)
-            sh = res.get("vel_spread_h", np.nan)
-            sh_mm = sh * vel_to_mm if np.isfinite(sh) else np.nan
-            ann = (f"AOI interp: {mag:.1f} mm/yr @ {az:.0f}°N\n"
-                   f"{res['quality']} (spread_h "
-                   f"{'nan' if not np.isfinite(sh_mm) else f'{sh_mm:.1f}'} mm/yr, "
-                   f"n={int(res['n_stations_used'])})")
+            # label spec (owner 2026-08-30): n FIRST; per-component E/N and
+            # the combined H on the HORIZONTAL panel; bare value ± spread —
+            # the statistic (1σ station spread) is named ONCE in the title,
+            # never in the label. The quality flag prints only when it is a
+            # WARNING, never a reassuring "ok".
+            def _mm(v):
+                v = v * vel_to_mm if np.isfinite(v) else np.nan
+                return "nan" if not np.isfinite(v) else f"{v:.1f}"
+
+            def _pm(v):
+                v = v * vel_to_mm if np.isfinite(v) else np.nan
+                return "nan" if not np.isfinite(v) else f"{v:+.1f}"
+            ann = (f"AOI interp: n={int(res['n_stations_used'])}\n"
+                   f"E {_pm(res.get('vel_e', np.nan))} ± "
+                   f"{_mm(res.get('vel_spread_e', np.nan))}, "
+                   f"N {_pm(res.get('vel_n', np.nan))} ± "
+                   f"{_mm(res.get('vel_spread_n', np.nan))} mm/yr\n"
+                   f"H {mag:.1f} ± {_mm(res.get('vel_spread_h', np.nan))} "
+                   f"mm/yr @ {az:.0f}°N")
+            if res["quality"] not in ("ok", None):
+                ann += f"\n[{res['quality']}]"
             ax.annotate(ann, (clon, clat), xytext=(9, -14),
                         textcoords="offset points", fontsize=7.6, color="darkgreen",
                         fontweight="bold", path_effects=halo, zorder=8)
@@ -390,8 +435,12 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
     n_buf = int(buffered.sum())
     if title is None:
         title = "MIDAS horizontal velocities"
-    ax.set_title(f"{title}\n{n_in} inside AOI + {n_buf} within {buffer_km:g} km "
-                 f"buffer  |  ref {ref_mm_yr:g} mm/yr", fontsize=10)
+    ref_note = f"  |  ref {ref_mm_yr:g} mm/yr" if show_ref else ""
+    pm_note = ("  |  ± = 1σ station spread"
+               if (poly is not None and overlay_interp and annotate_interp)
+               else "")
+    ax.set_title(f"{title}\nn={n_in} inside AOI + n={n_buf} within "
+                 f"{buffer_km:g} km buffer{ref_note}{pm_note}", fontsize=10)
 
     fig.tight_layout()
     if out_fn:

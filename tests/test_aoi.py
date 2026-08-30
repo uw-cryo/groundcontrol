@@ -52,7 +52,7 @@ def test_resolve_vector_file_formats(tmp_path):
 
 def test_raster_footprint_is_valid_data_only(tmp_path):
     dem = _dem(tmp_path / "dem.tif")
-    fp = aoi_mod.raster_footprint(dem)
+    fp = aoi_mod.raster_footprint(dem, exact=True)
     assert fp.crs.to_epsg() == 4326 and len(fp) == 1
     # valid data = right 75% of the grid: compare areas in the raster CRS
     poly_utm = fp.to_crs(CRS).geometry.iloc[0]
@@ -61,14 +61,14 @@ def test_raster_footprint_is_valid_data_only(tmp_path):
     assert b[0] == pytest.approx(400000 + 10 * 30, abs=1e-3) and b[2] == pytest.approx(401200)
     # no nodata tag -> the whole grid is the footprint
     full = _dem(tmp_path / "full.tif", hole=False)
-    assert aoi_mod.raster_footprint(full).to_crs(CRS).geometry.iloc[0].area \
+    assert aoi_mod.raster_footprint(full, exact=True).to_crs(CRS).geometry.iloc[0].area \
         == pytest.approx(1200 * 1200, rel=1e-6)
 
 
 def test_raster_footprint_decimated_read_matches_full(tmp_path):
     dem = _dem(tmp_path / "dem.tif", n=200)
-    coarse = aoi_mod.raster_footprint(dem, max_px=50).to_crs(CRS).geometry.iloc[0]
-    fine = aoi_mod.raster_footprint(dem, max_px=200).to_crs(CRS).geometry.iloc[0]
+    coarse = aoi_mod.raster_footprint(dem, max_px=50, exact=True).to_crs(CRS).geometry.iloc[0]
+    fine = aoi_mod.raster_footprint(dem, max_px=200, exact=True).to_crs(CRS).geometry.iloc[0]
     # 1/4 decimation: the nodata edge lands on a coarse-cell boundary (<= 1
     # coarse column = 2% of the width); the footprint is a fetch extent, not
     # a survey boundary, and the docs say so
@@ -82,13 +82,13 @@ def test_raster_footprint_refuses_no_crs_and_no_data(tmp_path):
                        transform=from_origin(0, 4, 1, 1)) as d:
         d.write(arr, 1)
     with pytest.raises(ValueError, match="no CRS"):
-        aoi_mod.raster_footprint(p)
+        aoi_mod.raster_footprint(p, exact=True)
     p2 = tmp_path / "empty.tif"
     with rasterio.open(p2, "w", driver="GTiff", height=4, width=4, count=1, dtype="float32",
                        crs=CRS, nodata=0.0, transform=from_origin(0, 4, 1, 1)) as d:
         d.write(np.zeros((4, 4), "float32"), 1)
     with pytest.raises(ValueError, match="no valid pixels"):
-        aoi_mod.raster_footprint(p2)
+        aoi_mod.raster_footprint(p2, exact=True)
 
 
 def test_read_aoi_dispatches_and_reports_both_readers(tmp_path):
@@ -129,7 +129,7 @@ def test_fetch_control_accepts_raster_aoi(tmp_path, monkeypatch):
 
     monkeypatch.setitem(sources.PROVIDERS, "fake", (fake_fetch, fake_parse))
     gdf, status = sources.fetch_control(dem, sources=("fake",))
-    fp = aoi_mod.raster_footprint(dem).total_bounds
+    fp = aoi_mod.raster_footprint(dem).total_bounds   # grid-extent default
     assert seen["bounds"] == pytest.approx(tuple(fp))
     assert status["fake"]["n_rows"] == 0 and status["fake"]["error"] is None
 
@@ -171,7 +171,7 @@ def test_assess_byod_needs_only_the_product(tmp_path, monkeypatch):
                           "--outdir", str(tmp_path / "out")])
     assert rc == 0
     assert isinstance(seen["aoi"], gpd.GeoDataFrame)  # the footprint, not a bbox
-    fp = aoi_mod.raster_footprint(dem)
+    fp = aoi_mod.raster_footprint(dem)                # grid-extent default
     assert seen["aoi"].geometry.iloc[0].equals(fp.geometry.iloc[0])
     out = tmp_path / "out"
     assert (out / "my_site_dsm_control.parquet").exists()
@@ -221,7 +221,7 @@ def test_assess_explicit_aoi_raster_and_site_name_still_win(tmp_path, monkeypatc
                           "--no-figures"])
     assert rc == 0
     assert seen["aoi"].geometry.iloc[0].equals(
-        aoi_mod.raster_footprint(other).geometry.iloc[0])
+        aoi_mod.raster_footprint(other, exact=True).geometry.iloc[0])
     assert (tmp_path / "out" / "named_assessed.parquet").exists()
 
 
@@ -302,7 +302,7 @@ def test_raster_footprint_rotated_and_untagged_nan(tmp_path):
         with rasterio.open(p, "w", driver="GTiff", height=n, width=n, count=1,
                            dtype="float32", crs=CRS, transform=t) as d:
             d.write(np.ones((n, n), "float32"), 1)
-        fp = aoi_mod.raster_footprint(p, max_px=20).to_crs(CRS).geometry.iloc[0]
+        fp = aoi_mod.raster_footprint(p, max_px=20, exact=True).to_crs(CRS).geometry.iloc[0]
         assert fp.area == pytest.approx((n * 30) ** 2, rel=1e-6)
         assert len(fp.exterior.coords) < 2000
     p = tmp_path / "nan_untagged.tif"
@@ -311,11 +311,11 @@ def test_raster_footprint_rotated_and_untagged_nan(tmp_path):
     with rasterio.open(p, "w", driver="GTiff", height=n, width=n, count=1, dtype="float32",
                        crs=CRS, transform=from_origin(400000.0, 3650000.0, 30.0, 30.0)) as d:
         d.write(arr, 1)
-    assert aoi_mod.raster_footprint(p).to_crs(CRS).geometry.iloc[0].area \
+    assert aoi_mod.raster_footprint(p, exact=True).to_crs(CRS).geometry.iloc[0].area \
         == pytest.approx((n * 30) ** 2, rel=1e-6)
     with rasterio.open(p, "r+") as d:  # the tag is what excludes the hole
         d.nodata = np.nan
-    assert aoi_mod.raster_footprint(p).to_crs(CRS).geometry.iloc[0].area \
+    assert aoi_mod.raster_footprint(p, exact=True).to_crs(CRS).geometry.iloc[0].area \
         == pytest.approx((n * 30) ** 2 / 2, rel=1e-6)
 
 
@@ -329,7 +329,7 @@ def test_raster_footprint_uses_band_1_mask(tmp_path):
         b1[:, : n // 2] = -9999.0
         d.write(b1, 1)
         d.write(np.full((n, n), 1.0, "float32"), 2)
-    assert aoi_mod.raster_footprint(p).to_crs(CRS).geometry.iloc[0].area \
+    assert aoi_mod.raster_footprint(p, exact=True).to_crs(CRS).geometry.iloc[0].area \
         == pytest.approx((n * 30) ** 2 / 2, rel=1e-6)
 
 
@@ -555,14 +555,14 @@ def test_raster_footprint_small_patch_survives_decimation(tmp_path):
                        crs=CRS, nodata=-9999.0,
                        transform=from_origin(400000.0, 3650000.0, 30.0, 30.0)) as d:
         d.write(arr, 1)
-    fp = aoi_mod.raster_footprint(p, max_px=8).to_crs(CRS).geometry.iloc[0]
-    assert fp.area > 0 and fp.covers(aoi_mod.raster_footprint(p, max_px=256)
+    fp = aoi_mod.raster_footprint(p, max_px=8, exact=True).to_crs(CRS).geometry.iloc[0]
+    assert fp.area > 0 and fp.covers(aoi_mod.raster_footprint(p, max_px=256, exact=True)
                                      .to_crs(CRS).geometry.iloc[0])
     arr[:] = -9999.0
     with rasterio.open(p, "r+") as d:
         d.write(arr, 1)
     with pytest.raises(ValueError, match="no valid pixels at 1/32 decimation"):
-        aoi_mod.raster_footprint(p, max_px=8)
+        aoi_mod.raster_footprint(p, max_px=8, exact=True)
 
 
 def test_raster_footprint_warns_when_mask_comes_from_overviews(tmp_path, caplog):
@@ -580,7 +580,7 @@ def test_raster_footprint_warns_when_mask_comes_from_overviews(tmp_path, caplog)
     with rasterio.open(p, "r+") as d:
         d.build_overviews([2, 4, 8], Resampling.nearest)
     with caplog.at_level("WARNING", logger="groundcontrol.aoi"):
-        fp = aoi_mod.raster_footprint(p, max_px=32)
+        fp = aoi_mod.raster_footprint(p, max_px=32, exact=True)
     assert "overview pyramid" in caplog.text
     assert fp.to_crs(CRS).geometry.iloc[0].area == pytest.approx((n * 30) ** 2 / 2, rel=0.05)
 
@@ -862,7 +862,7 @@ def test_raster_footprint_caps_fragmented_mosaics(tmp_path, monkeypatch, caplog)
         dst.write(arr, 1)
     monkeypatch.setattr(A, "FOOTPRINT_MAX_PIECES", 8)
     with caplog.at_level("WARNING", logger="groundcontrol.aoi"):
-        gdf = A.raster_footprint(path)
+        gdf = A.raster_footprint(path, exact=True)
     assert "simplified to the valid-data bounds box" in caplog.text
     geom = gdf.to_crs("EPSG:32612").geometry.iloc[0]
     # one simple box spanning the valid block (rows/cols 0..14 inclusive)
@@ -872,6 +872,23 @@ def test_raster_footprint_caps_fragmented_mosaics(tmp_path, monkeypatch, caplog)
                                atol=1e-4)
     # under the cap the exact multipart footprint is kept
     monkeypatch.setattr(A, "FOOTPRINT_MAX_PIECES", 2000)
-    exact = A.raster_footprint(path).to_crs("EPSG:32612").geometry.iloc[0]
+    exact = A.raster_footprint(path, exact=True).to_crs("EPSG:32612").geometry.iloc[0]
     assert exact.geom_type == "MultiPolygon"
     assert len(exact.geoms) == 64
+
+
+def test_raster_footprint_default_is_grid_extent(tmp_path):
+    """Default (owner 2026-09-01): the grid extent, NO mask read — nodata
+    areas fetch harmlessly and NaN out at sampling. exact=True keeps the
+    valid-data polygon."""
+    from groundcontrol import aoi as aoi_mod
+    dem = _dem(tmp_path / "holey.tif", hole=True)   # nodata-tagged, with a hole
+    fast = aoi_mod.raster_footprint(dem)
+    exact = aoi_mod.raster_footprint(dem, exact=True)
+    import rasterio
+    from shapely.geometry import box
+    with rasterio.open(dem) as src:
+        full = box(*src.bounds).area
+        crs = src.crs
+    assert fast.to_crs(crs).geometry.iloc[0].area == pytest.approx(full, rel=1e-6)
+    assert exact.to_crs(crs).geometry.iloc[0].area < full   # the hole is real

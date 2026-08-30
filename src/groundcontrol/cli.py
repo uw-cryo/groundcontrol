@@ -39,8 +39,8 @@ def fetch_control_main(argv=None) -> int:
                    help="AOI: 'minx,miny,maxx,maxy' bbox in EPSG:4326 lon/lat "
                         "(use --aoi=-112,32.6,... for negative longitudes), a "
                         "vector file (GeoJSON preferred; any OGR format), or a "
-                        "DEM/DSM/DTM raster whose valid-data footprint becomes "
-                        "the AOI")
+                        "DEM/DSM/DTM raster whose grid extent becomes the AOI "
+                        "(--exact-footprint for the valid-data polygon)")
     p.add_argument("--sources", default="3dep,ngs,opus,ngl,faa",
                    help="comma-separated sources (default: every provider — "
                         "3dep,ngs,opus,ngl,faa; owner 2026-08-30: NGL is "
@@ -65,6 +65,10 @@ def fetch_control_main(argv=None) -> int:
     p.add_argument("--basemap", default="esri", choices=("esri", "google", "none"),
                    help="web-imagery provider for the figures (default: esri; "
                         "'none' for offline runs)")
+    p.add_argument("--exact-footprint", action="store_true",
+                   help="for a raster --aoi: polygonize the valid-data "
+                        "footprint instead of the default grid extent "
+                        "(costly on large rasters without overviews)")
     p.add_argument("--quiet", action="store_true",
                    help="suppress the package's INFO progress logging")
     args = p.parse_args(argv)
@@ -85,7 +89,7 @@ def fetch_control_main(argv=None) -> int:
         from groundcontrol.sources import validate_landing_crs
         _validate_crs(args.landing_crs, "--landing-crs")
         _preflight(validate_landing_crs, args.landing_crs)
-    aoi = _load_aoi(aoi)
+    aoi = _load_aoi(aoi, exact_footprint=args.exact_footprint)
 
     print(f"querying sources: {', '.join(sources)} ...", file=sys.stderr)
     gdf, status = fetch_control(aoi, sources=sources,
@@ -225,16 +229,17 @@ def _parse_aoi_path(spec):
     return spec
 
 
-def _load_aoi(aoi):
+def _load_aoi(aoi, exact_footprint=False):
     """A parsed --aoi -> what fetch_control/figures consume: the bbox tuple
     as-is, else the file read up front (vector -> its features; DEM/DSM/DTM
-    raster -> its valid-data footprint; both EPSG:4326) so an unreadable
-    file fails here, before the fetch, naming the flag."""
+    raster -> its grid extent, or its valid-data footprint with
+    ``exact_footprint``; both EPSG:4326) so an unreadable file fails here,
+    before the fetch, naming the flag."""
     if isinstance(aoi, tuple):
         return aoi
     from groundcontrol.aoi import read_aoi
     try:
-        return read_aoi(aoi)
+        return read_aoi(aoi, exact_footprint=exact_footprint)
     except (ValueError, OSError) as e:  # both readers failed, or no CRS / no data
         raise SystemExit(f"error: --aoi {e}") from e
 
@@ -566,8 +571,9 @@ def assess_dem_main(argv=None) -> int:
     p.add_argument("--aoi", default=None,
                    help="AOI: 'minx,miny,maxx,maxy' bbox (EPSG:4326 lon/lat), a vector "
                         "file (GeoJSON preferred; any OGR format), or a raster whose "
-                        "valid-data footprint is used. Default: the union of the "
-                        "--product footprints")
+                        "grid extent is used (--exact-footprint for the "
+                        "valid-data polygon). Default: the union of the "
+                        "--product extents")
     p.add_argument("--target-crs", default=None,
                    help="product 3D CRS: EPSG/authority string ('EPSG:6341+5703'), WKT, "
                         "or a .wkt file. Default: the product's own embedded CRS, "
@@ -633,6 +639,12 @@ def assess_dem_main(argv=None) -> int:
                    help="pin the survey-grade histogram limit (m); default empirical")
     p.add_argument("--wide-lim", type=float, default=None,
                    help="pin the NGS-monument histogram limit (m); default empirical")
+    p.add_argument("--exact-footprint", action="store_true",
+                   help="polygonize each raster's VALID-DATA footprint for "
+                        "the AOI instead of the default grid extent (costly "
+                        "on large rasters without overviews; the default is "
+                        "safe — points over nodata NaN out at sampling and "
+                        "are reported as gaps)")
     p.add_argument("--quiet", action="store_true",
                    help="suppress the package's INFO progress logging")
     args = p.parse_args(argv)
@@ -774,12 +786,14 @@ def assess_dem_main(argv=None) -> int:
     # reads every product's mask, the one costly input step.
     if aoi is None:
         from groundcontrol.aoi import union_footprints
-        print("deriving the AOI from the product valid-data footprint "
-              "(a large raster without overviews is read in full here — "
-              "gdaladdo, or pass --aoi, to skip)", file=sys.stderr)
-        aoi = _preflight(union_footprints, list(products.values()))
+        if args.exact_footprint:
+            print("deriving the AOI from the product valid-data footprint "
+                  "(--exact-footprint: a large raster without overviews is "
+                  "read in full here)", file=sys.stderr)
+        aoi = _preflight(union_footprints, list(products.values()),
+                         exact=args.exact_footprint)
     else:
-        aoi = _load_aoi(aoi)
+        aoi = _load_aoi(aoi, exact_footprint=args.exact_footprint)
     if isinstance(aoi, tuple):  # bbox: fetch by bounds, but clip/outline the maps to it
         import geopandas as gpd
         from shapely.geometry import box

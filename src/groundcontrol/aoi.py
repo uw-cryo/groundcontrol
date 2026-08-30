@@ -40,7 +40,27 @@ FOOTPRINT_MAX_PX = 1024
 FOOTPRINT_MAX_PIECES = 2000
 
 
-def raster_footprint(path, *, max_px: int = FOOTPRINT_MAX_PX):
+def _grid_extent_gdf(src, path):
+    """The raster's grid extent as an EPSG:4326 GeoDataFrame — the
+    transform-mapped corner quadrilateral (correct for rotated grids),
+    densified so straight projected edges curve in lon/lat."""
+    import geopandas as gpd
+    from shapely.geometry import Polygon
+
+    corners = [(0, 0), (src.width, 0), (src.width, src.height),
+               (0, src.height)]
+    quad = Polygon([src.transform * c for c in corners])
+    bx = quad.bounds
+    span = max(bx[2] - bx[0], bx[3] - bx[1])
+    if span > 0:
+        quad = quad.segmentize(span / 200.0)
+    gdf = gpd.GeoDataFrame({"source_raster": [os.fspath(path)]},
+                           geometry=[quad], crs=src.crs)
+    return gdf.to_crs(4326)
+
+
+def raster_footprint(path, *, max_px: int = FOOTPRINT_MAX_PX,
+                     exact: bool = False):
     """Valid-data footprint of a raster as a one-row GeoDataFrame in EPSG:4326.
 
     Band 1's mask (nodata / alpha / internal mask, per GDAL — the band the
@@ -78,30 +98,27 @@ def raster_footprint(path, *, max_px: int = FOOTPRINT_MAX_PX):
             raise ValueError(
                 f"raster {os.fspath(path)} has no CRS; an AOI needs one "
                 "(gdal_edit -a_srs, or pass a vector AOI / bbox instead)")
+        if not exact:
+            # DEFAULT (owner 2026-09-01): the grid extent, no mask read.
+            # The AOI only scopes the fetch and frames the figures —
+            # points over nodata NaN out at sampling and are reported as
+            # gaps, never propagated — so the (potentially full-raster)
+            # valid-data polygonization is opt-in (exact=True /
+            # --exact-footprint) rather than a default cost.
+            logger.info("raster footprint %s: grid extent (default; "
+                        "exact=True polygonizes valid data)",
+                        os.fspath(path))
+            return _grid_extent_gdf(src, path)
         f = max(1, math.ceil(max(src.width, src.height) / max_px))
         h, w = math.ceil(src.height / f), math.ceil(src.width / f)
-        # untagged raster: the mask is all-valid by definition, so the
-        # footprint IS the bounds — skip the (potentially full-raster)
-        # mask read entirely (owner 2026-09-01: a large no-overview
-        # raster sat at 100% CPU for minutes here)
+        # untagged raster: the mask is all-valid by definition — the
+        # footprint IS the grid extent, skip the mask read
         from rasterio.enums import MaskFlags
         if all(fl == MaskFlags.all_valid for fl in src.mask_flag_enums[0]):
-            # the corner quadrilateral, not bounds: a ROTATED grid's
-            # axis-aligned bounds overstate the footprint
-            from shapely.geometry import Polygon
-            corners = [(0, 0), (src.width, 0), (src.width, src.height),
-                       (0, src.height)]
-            quad = Polygon([src.transform * c for c in corners])
-            bx = quad.bounds
-            span = max(bx[2] - bx[0], bx[3] - bx[1])
-            if span > 0:   # densify: straight edges curve in lon/lat
-                quad = quad.segmentize(span / 200.0)
             logger.info("raster footprint %s: no nodata/mask tagged — "
                         "footprint = grid extent (no mask read)",
                         os.fspath(path))
-            gdf = gpd.GeoDataFrame({"source_raster": [os.fspath(path)]},
-                                   geometry=[quad], crs=src.crs)
-            return gdf.to_crs(4326)
+            return _grid_extent_gdf(src, path)
         logger.info("raster footprint %s: reading valid-data mask "
                     "(%dx%d px at 1/%d)%s", os.fspath(path), src.width,
                     src.height, f,
@@ -180,7 +197,7 @@ def _read_vector(path):
     return gdf.to_crs(4326)
 
 
-def read_aoi(path):
+def read_aoi(path, *, exact_footprint: bool = False):
     """AOI file -> GeoDataFrame in EPSG:4326: a vector file (by suffix, or
     whatever :func:`geopandas.read_file` opens; GeoParquet via
     ``read_parquet``) or a raster via :func:`raster_footprint`. A path
@@ -204,7 +221,7 @@ def read_aoi(path):
             raise ValueError(
                 f"{p}: not a readable vector AOI ({e}) nor a raster "
                 f"({raster_err})") from e
-    return raster_footprint(p)
+    return raster_footprint(p, exact=exact_footprint)
 
 
 def resolve_aoi(aoi):
@@ -240,14 +257,15 @@ def resolve_aoi(aoi):
     raise TypeError(f"unsupported AOI type: {type(aoi)!r}")
 
 
-def union_footprints(paths):
-    """One EPSG:4326 GeoDataFrame covering the valid data of every raster
-    in ``paths`` (the default AOI of ``groundcontrol-assess`` when none is
-    given: control is fetched wherever ANY assessed product has data)."""
+def union_footprints(paths, *, exact: bool = False):
+    """One EPSG:4326 GeoDataFrame covering every raster in ``paths`` (the
+    default AOI of ``groundcontrol-assess`` when none is given). Default:
+    grid extents; ``exact=True`` polygonizes each raster's valid data
+    (costly on large no-overview rasters)."""
     import geopandas as gpd
     import pandas as pd
 
-    parts = [raster_footprint(p) for p in paths]
+    parts = [raster_footprint(p, exact=exact) for p in paths]
     if len(parts) == 1:
         return parts[0]
     merged = gpd.GeoDataFrame(pd.concat(parts, ignore_index=True), crs=4326)

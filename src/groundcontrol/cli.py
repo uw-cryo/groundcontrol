@@ -303,22 +303,53 @@ def _embedded_target_crs(products):
                              "has no CRS")
         crs = pyproj.CRS.from_user_input(crs)
         from groundcontrol.assess import has_vertical_axis
+        from groundcontrol.geodesy import is_wgs84_ensemble
         if not has_vertical_axis(crs):
             code = crs.to_epsg()
             hz = f"EPSG:{code}" if code else "<horizontal EPSG>"
+            if is_wgs84_ensemble(crs):
+                # EPSG:326xx/327xx: the bare-ellipsoid form is itself
+                # refused (ensemble ambiguity) — suggest realizations
+                choices = (
+                    "  --vdatum ellipsoid:itrf2014   ITRF2014 ellipsoidal "
+                    "heights (SETSM EarthDEM/ArcticDEM/REMA,\n"
+                    "                                most modern satellite "
+                    "photogrammetry)\n"
+                    "  --vdatum ellipsoid:itrf2020   ITRF2020 ellipsoidal "
+                    "heights\n"
+                    "  --vdatum ellipsoid:g2139      WGS 84 (G2139) "
+                    "ellipsoidal heights\n"
+                    "  --vdatum EPSG:3855            EGM2008 orthometric\n"
+                    "note: this horizontal names the WGS 84 ENSEMBLE "
+                    "(~2 m ambiguity, not a realization),\n"
+                    "so a bare '--vdatum ellipsoid' is refused")
+            else:
+                choices = (
+                    f"  --vdatum ellipsoid       heights on the "
+                    f"{crs.name.split(' / ')[0]} ellipsoid\n"
+                    "  --vdatum EPSG:5703       NAVD88 orthometric "
+                    "(CONUS lidar/3DEP)\n"
+                    "  --vdatum EPSG:3855       EGM2008 orthometric\n"
+                    f"  --target-crs {hz}+5703   the equivalent compound "
+                    "form")
             raise SystemExit(
                 f"error: --target-crs or --vdatum is required: product {name}={path} "
                 f"declares a CRS without a height axis ({crs.name}"
                 + (f", {hz}" if code else "") + "), which says nothing "
                 "about its height datum — that lives in the product report, "
                 "never guessed here. Common choices for this horizontal:\n"
-                f"  --vdatum ellipsoid       heights on the {crs.name.split(' / ')[0]} "
-                "ellipsoid\n"
-                "  --vdatum EPSG:5703       NAVD88 orthometric (CONUS lidar/3DEP)\n"
-                "  --vdatum EPSG:3855       EGM2008 orthometric\n"
-                f"  --target-crs {hz}+5703   the equivalent compound form\n"
+                + choices + "\n"
                 "(a .wkt file with a vertical member also works; "
                 "groundcontrol.geodesy.with_vdatum/build_utm_* construct these)")
+        elif is_wgs84_ensemble(crs):
+            raise SystemExit(
+                f"error: product {name}={path} declares 3D heights on the "
+                f"WGS 84 ENSEMBLE ({crs.name}) — ~2 m of deliberate "
+                "ambiguity, not a realization; transforms to it inherit a "
+                "meter-class member-agnostic chain. State the realization "
+                "the heights are actually on: --vdatum ellipsoid:itrf2014 "
+                "(SETSM EarthDEM/ArcticDEM/REMA), ellipsoid:itrf2020, "
+                "ellipsoid:g2139, ... or pass --target-crs")
         seen[name] = crs
     first = next(iter(seen.values()))
     for name, crs in seen.items():
@@ -479,7 +510,10 @@ def assess_dem_main(argv=None) -> int:
     p.add_argument("--vdatum", default=None,
                    help="vertical datum of the product heights, combined with the "
                         "product's own 2D horizontal CRS into the full 3D target: "
-                        "'ellipsoid' (heights on the horizontal datum's ellipsoid) "
+                        "'ellipsoid' (heights on the horizontal datum's ellipsoid), "
+                        "'ellipsoid:<realization>' (itrf2020/itrf2014/itrf2008/"
+                        "g2139/g1674 — REQUIRED for WGS84-ensemble horizontals "
+                        "like EPSG:326xx, e.g. EarthDEM/ArcticDEM/REMA), "
                         "or any vertical CRS ('EPSG:5703' NAVD88, 'EPSG:3855' "
                         "EGM2008, 'NAVD88 height', ...). Mutually exclusive with "
                         "--target-crs; a geoid model name (GEOID18) is not a CRS — "

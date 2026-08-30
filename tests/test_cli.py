@@ -650,17 +650,30 @@ def test_assess_source_crs_accepts_wkt_file_like_target_crs(tmp_path, monkeypatc
 
 # ------------------------------------- positional inputs, --vdatum (2026-08-31)
 
+def _plane_tif_nad83(tmp_path, name="plane_n83.tif"):
+    """The _plane_tif grid stamped EPSG:6339 (NAD83(2011) UTM 10N — a
+    REALIZED datum; the default fixture's EPSG:32611 is the WGS84
+    ensemble, which --vdatum deliberately refuses)."""
+    import shutil
+    src = _plane_tif(tmp_path)
+    path = str(tmp_path / name)
+    shutil.copy(src, path)
+    with rasterio.open(path, "r+") as dst:
+        dst.crs = rasterio.crs.CRS.from_epsg(6339)
+    return path
+
+
 def test_vdatum_target_crs_helper(tmp_path):
     """--vdatum resolver: product 2D horizontal + vertical spec -> 3D target."""
     import pyproj
 
     from groundcontrol.cli import _vdatum_target_crs
-    dsm = _plane_tif(tmp_path)
+    dsm = _plane_tif_nad83(tmp_path)
     c = pyproj.CRS(_vdatum_target_crs({"DSM": dsm}, "ellipsoid"))
     assert len(c.axis_info) == 3
     assert [a.direction for a in c.axis_info] == ["east", "north", "up"]
     c2 = pyproj.CRS(_vdatum_target_crs({"DSM": dsm}, "EPSG:5703"))
-    assert c2.equals(pyproj.CRS("EPSG:32611+5703"))
+    assert c2.equals(pyproj.CRS("EPSG:6339+5703"))
     with pytest.raises(ValueError, match="not a vertical CRS"):
         _vdatum_target_crs({"DSM": dsm}, "EPSG:4326")
     with pytest.raises(ValueError, match="does not\nresolve as a CRS|does not "):
@@ -679,14 +692,14 @@ def test_assess_2d_refusal_suggests_vdatum_choices(tmp_path, monkeypatch):
     """The 2D-CRS refusal names concrete completions with the product's own
     EPSG (owner 2026-08-31: give people the common choices)."""
     _forbid_fetch(monkeypatch)
-    dsm = _plane_tif(tmp_path)
+    dsm = _plane_tif_nad83(tmp_path)
     with pytest.raises(SystemExit) as exc:
         _assess([BBOX, "--product", f"DSM={dsm}",
                  "--outdir", str(tmp_path / "out"), "--no-figures"])
     msg = str(exc.value)
     assert "--vdatum ellipsoid" in msg
     assert "--vdatum EPSG:5703" in msg
-    assert "EPSG:32611+5703" in msg
+    assert "EPSG:6339+5703" in msg
 
 
 def test_assess_positional_raster_names_and_default_outdir(tmp_path, monkeypatch, capsys):
@@ -736,3 +749,43 @@ def test_assess_positional_rejections(tmp_path, monkeypatch, capsys):
         _assess([str(junk)])
     with pytest.raises(SystemExit, match="--vdatum needs a raster"):
         _assess([str(aoi), "--vdatum", "ellipsoid"])
+
+
+def _plane_tif_wgs84(tmp_path, name="ens.tif"):
+    """The _plane_tif grid stamped EPSG:32610 (WGS 84 ensemble UTM)."""
+    import shutil
+    src = _plane_tif(tmp_path)
+    path = str(tmp_path / name)
+    shutil.copy(src, path)
+    import rasterio
+    with rasterio.open(path, "r+") as dst:
+        dst.crs = rasterio.crs.CRS.from_epsg(32610)
+    return path
+
+
+def test_vdatum_refuses_wgs84_ensemble_and_offers_realizations(tmp_path, monkeypatch):
+    """EPSG:326xx products (EarthDEM et al.): bare ellipsoid is refused —
+    the ensemble is ~2 m ambiguity and PROJ's best chain to it is
+    meter-class — and ellipsoid:<realization> is the sanctioned path."""
+    import pyproj
+
+    from groundcontrol.cli import _vdatum_target_crs
+    from groundcontrol.geodesy import build_utm_itrf2014_3d
+    ens = _plane_tif_wgs84(tmp_path)
+    with pytest.raises(ValueError, match="ENSEMBLE.*realization"):
+        _vdatum_target_crs({"DSM": ens}, "ellipsoid")
+    with pytest.raises(ValueError, match="ENSEMBLE"):
+        _vdatum_target_crs({"DSM": ens}, "EPSG:5703")
+    wkt = _vdatum_target_crs({"DSM": ens}, "ellipsoid:itrf2014")
+    assert pyproj.CRS(wkt).equals(build_utm_itrf2014_3d(32610))
+
+
+def test_assess_2d_ensemble_refusal_suggests_realizations(tmp_path, monkeypatch):
+    _forbid_fetch(monkeypatch)
+    ens = _plane_tif_wgs84(tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        _assess([ens, "--outdir", str(tmp_path / "out")])
+    msg = str(exc.value)
+    assert "ellipsoid:itrf2014" in msg
+    assert "ENSEMBLE" in msg
+    assert "--vdatum ellipsoid\n" not in msg      # the refused bare form

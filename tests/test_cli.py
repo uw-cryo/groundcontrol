@@ -939,13 +939,24 @@ def test_assess_derives_landing_for_non_nad83_target(tmp_path, monkeypatch):
 
     monkeypatch.setattr("groundcontrol.sources.fetch_control", fake_fetch)
     ens = _plane_tif_wgs84(tmp_path)
+    # CONUS AOI: the CONUS landing stands even for an ITRF target — the
+    # landing keys on WHERE the AOI is, never the target frame
+    # (regression 2026-09-01: a target-keyed landing masked every
+    # orthometric CONUS row under EPSG:7912)
+    with pytest.raises(AssertionError, match="captured"):
+        _assess([ens, "--vdatum", "ellipsoid:itrf2014", BBOX,
+                 "--outdir", str(tmp_path / "out")])
+    assert seen["landing"] is None
+    # an AOI outside the NAD83 area of use (the fixture grid itself sits
+    # on the equator; also the Nepal pattern) derives the landing from
+    # the realized target base
     with pytest.raises(AssertionError, match="captured"):
         _assess([ens, "--vdatum", "ellipsoid:itrf2014",
-                 "--outdir", str(tmp_path / "out")])
+                 "--outdir", str(tmp_path / "out2")])
     assert seen["landing"] == "EPSG:7912"
-    # NAD83-family target: the CONUS contract stands (landing None)
+    # NAD83-family target, CONUS AOI: contract stands
     n83 = _plane_tif_nad83(tmp_path)
     with pytest.raises(AssertionError, match="captured"):
-        _assess([n83, "--vdatum", "ellipsoid",
-                 "--outdir", str(tmp_path / "out2")])
+        _assess([n83, "--vdatum", "ellipsoid", BBOX,
+                 "--outdir", str(tmp_path / "out3")])
     assert seen["landing"] is None

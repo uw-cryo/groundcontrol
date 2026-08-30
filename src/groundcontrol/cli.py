@@ -776,32 +776,13 @@ def assess_dem_main(argv=None) -> int:
         target_crs = _preflight(_vdatum_target_crs, products, args.vdatum)
     if target_crs is None:
         target_crs = _embedded_target_crs(products)
-    # landing derivation (owner 2026-09-01, Nepal EarthDEM: the assess CLI
-    # had no landing override, so every fetch tried the interim CONUS
-    # NAD83 landing and the fail-loud guard refused ITRF->6318 outside its
-    # area of use): a non-NAD83 target datum lands the fetch on its own
-    # geographic base, and the control source frame follows
+    # explicit landing override (the fetch CLI's flag): validated here;
+    # the AUTO derivation happens after the AOI is resolved — the landing
+    # is a property of WHERE the AOI is, never of the target frame (a
+    # CONUS AOI keeps the NAD83/NAVD88 contract even for an ITRF target:
+    # regression 2026-09-01, orthometric rows masked under a 7912 landing)
     auto_source = None
     landing = args.landing_crs
-    if landing is None and target_crs is not None:
-        import pyproj as _pp
-
-        from groundcontrol.geodesy import (NAD83_FAMILY_GEOGRAPHIC,
-                                           is_wgs84_ensemble)
-        _tgt = _pp.CRS.from_user_input(target_crs)
-        _h = _pp.CRS(_tgt.sub_crs_list[0]) if _tgt.is_compound else _tgt
-        _base = _h.geodetic_crs
-        # only a REALIZED non-NAD83 base re-lands the fetch: an ensemble
-        # base (the 2D identity expert path) cannot be a landing, and
-        # NAD83-family keeps the CONUS contract
-        if _base is not None and not is_wgs84_ensemble(_base):
-            _c2 = _base.to_2d().to_epsg()
-            if _c2 is not None and _c2 not in NAD83_FAMILY_GEOGRAPHIC:
-                _c3 = _base.to_3d().to_epsg()
-                landing = f"EPSG:{_c3 or _c2}"
-                print(f"landing (auto): {landing} — the target datum is "
-                      "outside the NAD83/NAVD88 interim contract",
-                      file=sys.stderr)
     if landing is not None:
         from groundcontrol.sources import validate_landing_crs
         _validate_crs(landing, "--landing-crs")
@@ -864,6 +845,44 @@ def assess_dem_main(argv=None) -> int:
                   f"{sorted(set(sources) - have)} (cache has {sorted(have)}); "
                   f"delete {cache} to re-fetch", file=sys.stderr)
     else:
+        if landing is None:
+            # AOI outside the NAD83 landing's area of use (Nepal, not CONUS):
+            # fall back to the target's own realized geographic base; a CONUS
+            # AOI keeps the default contract regardless of target
+            b4326 = (aoi if isinstance(aoi, tuple)
+                     else tuple(aoi.to_crs(4326).total_bounds))
+            import pyproj as _pp
+            _aou = _pp.CRS.from_epsg(6318).area_of_use
+            lat_ok = not (b4326[3] < _aou.south or b4326[1] > _aou.north)
+            if _aou.west <= _aou.east:
+                lon_ok = not (b4326[2] < _aou.west or b4326[0] > _aou.east)
+            else:   # NAD83's area of use WRAPS the antimeridian (Alaska)
+                lon_ok = (b4326[2] >= _aou.west) or (b4326[0] <= _aou.east)
+            inside = lat_ok and lon_ok
+            if not inside:
+                from groundcontrol.geodesy import (NAD83_FAMILY_GEOGRAPHIC,
+                                                   is_wgs84_ensemble)
+                _tgt = _pp.CRS.from_user_input(target_crs)
+                _h = _pp.CRS(_tgt.sub_crs_list[0]) if _tgt.is_compound else _tgt
+                _base = _h.geodetic_crs
+                _c2 = (_base.to_2d().to_epsg()
+                       if _base is not None and not is_wgs84_ensemble(_base)
+                       else None)
+                if _c2 is None or _c2 in NAD83_FAMILY_GEOGRAPHIC:
+                    raise SystemExit(
+                        "error: the AOI lies outside the NAD83/NAVD88 interim "
+                        "landing's area of use and no landing can be derived "
+                        "from the target — pass --landing-crs (e.g. EPSG:7912 "
+                        "for ITRF2014 control)")
+                _c3 = _base.to_3d().to_epsg()
+                landing = f"EPSG:{_c3 or _c2}"
+                from groundcontrol.sources import validate_landing_crs
+                _preflight(validate_landing_crs, landing)
+                if args.source_crs is None:
+                    auto_source = landing
+                print(f"landing (auto): {landing} — the AOI is outside the "
+                      "NAD83/NAVD88 interim contract's area of use",
+                      file=sys.stderr)
         from groundcontrol.sources import fetch_control
         print(f"querying sources: {', '.join(sources)} ...", file=sys.stderr)
         control, status = fetch_control(aoi, sources=sources,

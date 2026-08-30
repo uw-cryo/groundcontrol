@@ -59,11 +59,45 @@ def _grid_extent_gdf(src, path):
     return gdf.to_crs(4326)
 
 
-def raster_footprint(path, *, max_px: int = FOOTPRINT_MAX_PX,
-                     exact: bool = False):
-    """Valid-data footprint of a raster as a one-row GeoDataFrame in EPSG:4326.
+def _cap_ring_points(poly, tol0: float, max_points):
+    """Simplify a footprint polygon until no ring exceeds ``max_points``
+    vertices — the ``gdal_footprint -max_points`` behavior (its default is
+    100 per ring): Douglas-Peucker at doubling tolerance, starting from
+    the decimated pixel size (sub-pixel staircase detail is noise)."""
+    if max_points is None:
+        return poly
+    from shapely.geometry import MultiPolygon
 
-    Band 1's mask (nodata / alpha / internal mask, per GDAL — the band the
+    def rings(g):
+        parts = g.geoms if isinstance(g, MultiPolygon) else [g]
+        for part in parts:
+            yield part.exterior
+            yield from part.interiors
+
+    out, tol = poly, tol0
+    for _ in range(24):
+        if all(len(r.coords) <= max_points for r in rings(out)):
+            break   # under the cap already: no simplification at all
+        out = poly.simplify(tol, preserve_topology=True)
+        tol *= 2.0
+    return out if not out.is_empty else poly
+
+
+def raster_footprint(path, *, max_px: int = FOOTPRINT_MAX_PX,
+                     valid: bool = False, simplify: float | None = None,
+                     max_points: int | None = 100):
+    """Footprint of a raster as a one-row GeoDataFrame in EPSG:4326.
+
+    Default: the GRID EXTENT (transform-mapped corner quadrilateral; no
+    mask read — instant on any raster). ``valid=True`` removes nodata and
+    polygonizes the VALID pixels instead, following the conventions of
+    GDAL's ``gdal_footprint`` utility: ``simplify`` is a Douglas-Peucker
+    tolerance in georeferenced units (like ``-simplify``), and
+    ``max_points`` caps the vertices per ring (like ``-max_points``,
+    same default 100; ``None`` = unlimited) — a staircase mask edge is
+    pixel noise, not signal.
+
+    In valid mode, band 1's mask (nodata / alpha / internal mask, per GDAL — the band the
     assessment samples) is read decimated to at most ``max_px`` on the
     longest side (average resampling: for a NODATA-derived mask read at
     full resolution GDAL keeps a coarse cell valid when any source pixel
@@ -98,15 +132,15 @@ def raster_footprint(path, *, max_px: int = FOOTPRINT_MAX_PX,
             raise ValueError(
                 f"raster {os.fspath(path)} has no CRS; an AOI needs one "
                 "(gdal_edit -a_srs, or pass a vector AOI / bbox instead)")
-        if not exact:
+        if not valid:
             # DEFAULT (owner 2026-09-01): the grid extent, no mask read.
             # The AOI only scopes the fetch and frames the figures —
             # points over nodata NaN out at sampling and are reported as
             # gaps, never propagated — so the (potentially full-raster)
-            # valid-data polygonization is opt-in (exact=True /
-            # --exact-footprint) rather than a default cost.
+            # valid-pixel polygonization is opt-in (valid=True /
+            # --valid-footprint) rather than a default cost.
             logger.info("raster footprint %s: grid extent (default; "
-                        "exact=True polygonizes valid data)",
+                        "valid=True polygonizes the valid pixels)",
                         os.fspath(path))
             return _grid_extent_gdf(src, path)
         f = max(1, math.ceil(max(src.width, src.height) / max_px))
@@ -166,6 +200,15 @@ def raster_footprint(path, *, max_px: int = FOOTPRINT_MAX_PX,
                 FOOTPRINT_MAX_PIECES)
         else:
             poly = unary_union(geoms)
+            # simplification, gdal_footprint conventions: an explicit
+            # -simplify tolerance (georeferenced units) wins; else rings
+            # are capped at max_points vertices (gdal_footprint default
+            # 100) — a staircase mask edge is pixel noise, not signal
+            if simplify is not None:
+                poly = poly.simplify(simplify, preserve_topology=True) or poly
+            else:
+                poly = _cap_ring_points(poly, max(abs(t.a), abs(t.e)),
+                                        max_points)
         # densify so straight projected edges curve correctly in lon/lat;
         # tolerance from the geometry itself (affine coefficients are not
         # pixel sizes under rotation: review round 1, 90 deg -> crash)
@@ -197,7 +240,7 @@ def _read_vector(path):
     return gdf.to_crs(4326)
 
 
-def read_aoi(path, *, exact_footprint: bool = False):
+def read_aoi(path, *, valid_footprint: bool = False):
     """AOI file -> GeoDataFrame in EPSG:4326: a vector file (by suffix, or
     whatever :func:`geopandas.read_file` opens; GeoParquet via
     ``read_parquet``) or a raster via :func:`raster_footprint`. A path
@@ -221,7 +264,7 @@ def read_aoi(path, *, exact_footprint: bool = False):
             raise ValueError(
                 f"{p}: not a readable vector AOI ({e}) nor a raster "
                 f"({raster_err})") from e
-    return raster_footprint(p, exact=exact_footprint)
+    return raster_footprint(p, valid=valid_footprint)
 
 
 def resolve_aoi(aoi):
@@ -257,15 +300,15 @@ def resolve_aoi(aoi):
     raise TypeError(f"unsupported AOI type: {type(aoi)!r}")
 
 
-def union_footprints(paths, *, exact: bool = False):
+def union_footprints(paths, *, valid: bool = False):
     """One EPSG:4326 GeoDataFrame covering every raster in ``paths`` (the
     default AOI of ``groundcontrol-assess`` when none is given). Default:
-    grid extents; ``exact=True`` polygonizes each raster's valid data
-    (costly on large no-overview rasters)."""
+    grid extents; ``valid=True`` polygonizes each raster's valid pixels,
+    nodata removed (costly on large no-overview rasters)."""
     import geopandas as gpd
     import pandas as pd
 
-    parts = [raster_footprint(p, exact=exact) for p in paths]
+    parts = [raster_footprint(p, valid=valid) for p in paths]
     if len(parts) == 1:
         return parts[0]
     merged = gpd.GeoDataFrame(pd.concat(parts, ignore_index=True), crs=4326)

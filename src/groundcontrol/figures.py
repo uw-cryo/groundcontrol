@@ -1742,18 +1742,23 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         map_h = 7.4
         title_cb = 0.55                       # title strip above the map
         asp_w = _aspect_panel_w(aoi, map_h - title_cb, lo=0.4, hi=2.0)
-        mcol = asp_w + 1.15                   # + colorbar column
+        mcol = asp_w + 0.15
         hist_w = 4.2
-        fig = plt.figure(figsize=(mcol + hist_w, map_h))
-        # hist rows squished slightly so the dual-track stats block
-        # breathes (owner 2026-08-31: 12+ lines were too compressed)
-        gs = fig.add_gridspec(3, 2, width_ratios=[mcol, hist_w],
+        # the colorbar gets its OWN slim column (owner 2026-08-31, tall SF
+        # AOI: attached to the map axes it landed against the histograms
+        # and its label overprinted their spines); hist rows squished so
+        # the dual-track stats block breathes (2026-08-31)
+        cb_w = 0.28
+        fig = plt.figure(figsize=(mcol + cb_w + hist_w + 0.6, map_h))
+        gs = fig.add_gridspec(3, 3, width_ratios=[mcol, cb_w, hist_w],
                               height_ratios=[0.82, 0.82, 0.98],
-                              hspace=0.3, wspace=0.08)
+                              hspace=0.3, wspace=0.35)
         ax_map = fig.add_subplot(gs[:, 0])
-        ax_s = fig.add_subplot(gs[0, 1])
-        ax_n = fig.add_subplot(gs[1, 1], sharex=ax_s)
-        ax_t = fig.add_subplot(gs[2, 1])
+        ax_map.set_anchor("W")   # aspect slack goes right, never a left gulf
+        cax = fig.add_subplot(gs[0:2, 1])
+        ax_s = fig.add_subplot(gs[0, 2])
+        ax_n = fig.add_subplot(gs[1, 2], sharex=ax_s)
+        ax_t = fig.add_subplot(gs[2, 2])
         ax_t.set_axis_off()
         axes = [ax_map, ax_s, ax_n]
         hs_prod = hs_tif.get(prod) if isinstance(hs_tif, dict) else hs_tif
@@ -1795,13 +1800,19 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
             axes[0].legend(handles=handles, loc="lower left", fontsize=7,
                            framealpha=0.85, borderpad=0.4, handletextpad=0.4)
         sc = _mpl.cm.ScalarMappable(norm=norm, cmap=DZ_CMAP)
-        cb = fig.colorbar(sc, ax=axes[0], shrink=0.75, pad=0.02, extend="both")
+        cb = fig.colorbar(sc, cax=cax, extend="both")
+        # ticks + label LEFT of the bar: the right side faces the
+        # histograms and the label overprinted their y-ticks
+        cb.ax.yaxis.set_ticks_position("left")
+        cb.ax.yaxis.set_label_position("left")
         cb.set_label(f"dz = {prod} − control (m)", fontsize=9, color=_INK)
         cb.ax.tick_params(labelsize=8, colors=_MUT)
         _finish_map(axes[0], aoi, points=use)
-        axes[0].set_title(f"Vertical difference (m, {prod} minus control), "
+        # two lines, anchored over the MAP (loc left): one long line on a
+        # narrow-aspect AOI overflowed into the histogram column
+        axes[0].set_title(f"Vertical difference (m, {prod} minus control)\n"
                           f"n={len(use)}: {site_name}", fontsize=11,
-                          color=_INK)
+                          color=_INK, loc="left")
 
         is_dtm = is_dtm_product(prod)  # the ONE DSM/DTM classifier (round 4)
         panels = []                       # (ax, seg_vals, seg_raw, own_lim)

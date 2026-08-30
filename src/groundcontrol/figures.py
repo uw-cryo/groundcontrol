@@ -2001,9 +2001,13 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         # 0.28-in bar flush right in its column (the column slack holds
         # the left-side ticks + label)
         fig.canvas.draw()
-        pm, pc = ax_map.get_position(), cax.get_position()
-        bw = 0.28 / fig.get_size_inches()[0]
-        cax.set_position([pc.x1 - bw, pm.y0, bw, pm.height])
+        pm = ax_map.get_position()
+        figw = fig.get_size_inches()[0]
+        bw = 0.28 / figw
+        # anchored to the DRAWN map edge + room for the left-side
+        # ticks/label (owner 2026-09-01: flush-right in the column left
+        # the slack between map and bar — a floating colorbar)
+        cax.set_position([pm.x1 + 0.85 / figw, pm.y0, bw, pm.height])
         # bbox_inches trims the residual outer margin (tight_layout fights
         # the colorbar + spanning-gridspec combination)
         fig.savefig(fp, dpi=dpi, bbox_inches="tight")
@@ -2385,9 +2389,10 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
             fig.canvas.draw()
             pos = [a.get_position() for a in _axm]
             y0, y1 = min(p.y0 for p in pos), max(p.y1 for p in pos)
-            pc = cax.get_position()
+            x1m = max(p.x1 for p in pos)
             bw = 0.28 / fig_w
-            cax.set_position([pc.x1 - bw, y0, bw, y1 - y0])
+            # anchored to the drawn maps' right edge + tick/label room
+            cax.set_position([x1m + 0.85 / fig_w, y0, bw, y1 - y0])
             fig.savefig(fp, dpi=dpi, bbox_inches="tight")
             plt.close(fig)
             out.append(fp)

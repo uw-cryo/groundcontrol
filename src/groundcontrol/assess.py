@@ -366,7 +366,7 @@ def transform_control(control, target_crs, *, target_epoch=2010.0,
 
 
 def sample_products(gdf, products, *, method="linear", radius=None, block=4096,
-                    check_crs=True):
+                    check_crs=True, declared_crs=None):
     """Sample each product raster at the control points; standardized columns.
 
     ``products`` maps a short product name (e.g. ``"DSM"``) to a raster path
@@ -392,7 +392,8 @@ def sample_products(gdf, products, *, method="linear", radius=None, block=4096,
                 "those columns or use a different product name.")
         before = set(out.columns)
         out = sample_raster(out, r, col="h_ell", method=method, diff=True,
-                            block=block, check_crs=check_crs, radius=radius)
+                            block=block, check_crs=check_crs, radius=radius,
+                            declared_crs=declared_crs)
         new = [c for c in out.columns if c not in before]
         try:
             raster_col = next(c for c in new if not c.endswith(("_nmad", "_n"))
@@ -537,7 +538,10 @@ def assess_products(control, products, target_crs, *, outdir, site_name,
                                       target_epoch=target_epoch,
                                       source_crs=source_crs)
     artifacts["transform"] = tinfo
-    sampled = sample_products(landed, products, method=method, radius=radius)
+    # target_crs IS the declaration of the products' true frame: sampling
+    # accepts the header-vs-declaration datum reinterpretation (same grid)
+    sampled = sample_products(landed, products, method=method, radius=radius,
+                              declared_crs=target_crs)
     stats = summarize_dz(sampled, products=list(products))
 
     if write:

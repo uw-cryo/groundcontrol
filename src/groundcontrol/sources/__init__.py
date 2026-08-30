@@ -172,6 +172,7 @@ def fetch_control(aoi, sources=("3dep", "ngs", "opus", "ngl", "faa"),
             status[name] = {"n_rows": 0, "error": f"unknown source {name!r}"}
             continue
         fetch, parse = PROVIDERS[name]
+        logger.info("querying %s ...", name)
         try:
             gdf = parse(fetch(bounds))
             # per-row quarantine report (e.g. #21 unmapped NGS realizations)

@@ -7,10 +7,25 @@ Entry points live inside the package (a console script cannot live outside
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import re
 import sys
 from pathlib import Path
+
+
+def _setup_logging(quiet: bool = False) -> None:
+    """Route the package's own INFO logs to stderr (owner 2026-09-01: a
+    large run sat silent for minutes while the footprint/fetch worked —
+    the pipeline narrates itself at INFO, but nothing configured a
+    handler). Third-party loggers (botocore, rasterio) stay untouched."""
+    lg = logging.getLogger("groundcontrol")
+    if not lg.handlers:
+        h = logging.StreamHandler(sys.stderr)
+        h.setFormatter(logging.Formatter("%(levelname).1s %(name)s: %(message)s"))
+        lg.addHandler(h)
+    lg.setLevel(logging.WARNING if quiet else logging.INFO)
+    lg.propagate = False
 
 
 def fetch_control_main(argv=None) -> int:
@@ -50,7 +65,10 @@ def fetch_control_main(argv=None) -> int:
     p.add_argument("--basemap", default="esri", choices=("esri", "google", "none"),
                    help="web-imagery provider for the figures (default: esri; "
                         "'none' for offline runs)")
+    p.add_argument("--quiet", action="store_true",
+                   help="suppress the package's INFO progress logging")
     args = p.parse_args(argv)
+    _setup_logging(args.quiet)
 
     from groundcontrol import io
     from groundcontrol.sources import fetch_control
@@ -69,6 +87,7 @@ def fetch_control_main(argv=None) -> int:
         _preflight(validate_landing_crs, args.landing_crs)
     aoi = _load_aoi(aoi)
 
+    print(f"querying sources: {', '.join(sources)} ...", file=sys.stderr)
     gdf, status = fetch_control(aoi, sources=sources,
                                 target_crs=args.target_crs, target_epoch=args.target_epoch,
                                 landing_crs=args.landing_crs)
@@ -614,7 +633,10 @@ def assess_dem_main(argv=None) -> int:
                    help="pin the survey-grade histogram limit (m); default empirical")
     p.add_argument("--wide-lim", type=float, default=None,
                    help="pin the NGS-monument histogram limit (m); default empirical")
+    p.add_argument("--quiet", action="store_true",
+                   help="suppress the package's INFO progress logging")
     args = p.parse_args(argv)
+    _setup_logging(args.quiet)
     if args.radius is not None and args.method != p.get_default("method"):
         p.error("--radius and --method are mutually exclusive (radius mode "
                 "computes a neighborhood median)")
@@ -752,6 +774,9 @@ def assess_dem_main(argv=None) -> int:
     # reads every product's mask, the one costly input step.
     if aoi is None:
         from groundcontrol.aoi import union_footprints
+        print("deriving the AOI from the product valid-data footprint "
+              "(a large raster without overviews is read in full here — "
+              "gdaladdo, or pass --aoi, to skip)", file=sys.stderr)
         aoi = _preflight(union_footprints, list(products.values()))
     else:
         aoi = _load_aoi(aoi)
@@ -772,6 +797,7 @@ def assess_dem_main(argv=None) -> int:
                   f"delete {cache} to re-fetch", file=sys.stderr)
     else:
         from groundcontrol.sources import fetch_control
+        print(f"querying sources: {', '.join(sources)} ...", file=sys.stderr)
         control, status = fetch_control(aoi, sources=sources)
         for name, s in status.items():
             line = f"  {name:6s} {s['n_rows']:6d} rows"

@@ -80,6 +80,34 @@ def raster_footprint(path, *, max_px: int = FOOTPRINT_MAX_PX):
                 "(gdal_edit -a_srs, or pass a vector AOI / bbox instead)")
         f = max(1, math.ceil(max(src.width, src.height) / max_px))
         h, w = math.ceil(src.height / f), math.ceil(src.width / f)
+        # untagged raster: the mask is all-valid by definition, so the
+        # footprint IS the bounds — skip the (potentially full-raster)
+        # mask read entirely (owner 2026-09-01: a large no-overview
+        # raster sat at 100% CPU for minutes here)
+        from rasterio.enums import MaskFlags
+        if all(fl == MaskFlags.all_valid for fl in src.mask_flag_enums[0]):
+            # the corner quadrilateral, not bounds: a ROTATED grid's
+            # axis-aligned bounds overstate the footprint
+            from shapely.geometry import Polygon
+            corners = [(0, 0), (src.width, 0), (src.width, src.height),
+                       (0, src.height)]
+            quad = Polygon([src.transform * c for c in corners])
+            bx = quad.bounds
+            span = max(bx[2] - bx[0], bx[3] - bx[1])
+            if span > 0:   # densify: straight edges curve in lon/lat
+                quad = quad.segmentize(span / 200.0)
+            logger.info("raster footprint %s: no nodata/mask tagged — "
+                        "footprint = grid extent (no mask read)",
+                        os.fspath(path))
+            gdf = gpd.GeoDataFrame({"source_raster": [os.fspath(path)]},
+                                   geometry=[quad], crs=src.crs)
+            return gdf.to_crs(4326)
+        logger.info("raster footprint %s: reading valid-data mask "
+                    "(%dx%d px at 1/%d)%s", os.fspath(path), src.width,
+                    src.height, f,
+                    "" if f == 1 or src.overviews(1) else
+                    " — NO OVERVIEWS: the full raster is read to build "
+                    "the decimated mask; gdaladdo to speed this up")
         # average, not nearest: a valid patch smaller than the decimation
         # factor must not vanish (fetch extent errs on the side of coverage)
         mask = src.read_masks(1, out_shape=(h, w), resampling=Resampling.average)

@@ -857,3 +857,39 @@ def test_disjoint_pair_bounds_refused(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match="disjoint extents"):
         _assess([str(dsm), str(far), "--vdatum", "ellipsoid",
                  "--outdir", str(tmp_path / "out")])
+
+
+def test_vdatum_rebase_samples_under_declared_frame(tmp_path, monkeypatch):
+    """The --vdatum reinterpretation contract end-to-end (owner bug report
+    2026-09-01): points landed in the DECLARED frame (ITRF2014 on the
+    raster's own grid) must sample a raster whose header still says the
+    ensemble — same grid, datum reinterpretation. A genuinely different
+    grid still refuses."""
+    import geopandas as gpd
+    import numpy as np
+
+    from groundcontrol.geodesy import with_vdatum
+    _forbid_fetch(monkeypatch)
+    dsm = _plane_tif_wgs84(tmp_path)                 # header: EPSG:32610
+    tgt = with_vdatum("EPSG:32610", "ellipsoid:itrf2014")
+    xs = np.linspace(X0 + 2.5, X0 + 8.5, 4)
+    ys = np.linspace(Y0 + 2.5, Y0 + 5.5, 4)
+    pts = gpd.GeoDataFrame({"source": ["ngs"] * 4,
+                            "point_type": ["monument"] * 4,
+                            "height": 2.0 * xs + 3.0 * ys - 0.05},
+                           geometry=gpd.points_from_xy(xs, ys), crs=tgt)
+    cache = tmp_path / "ctl.parquet"
+    pts.to_parquet(cache)
+    wkt = tmp_path / "tgt.wkt"
+    wkt.write_text(tgt.to_wkt())
+    rc = _assess([dsm, "--vdatum", "ellipsoid:itrf2014",
+                  "--source-crs", str(wkt), "--control", str(cache),
+                  "--outdir", str(tmp_path / "out"), "--site-name", "r",
+                  "--no-figures"])
+    assert rc == 0
+    out = gpd.read_parquet(tmp_path / "out" / "r_assessed.parquet")
+    assert np.isfinite(out["dh_DSM_before"]).all()
+    # a different GRID under the declaration still refuses
+    from groundcontrol.sample import _grid_signature
+    assert _grid_signature("EPSG:32610") == _grid_signature(tgt)
+    assert _grid_signature("EPSG:32611") != _grid_signature(tgt)

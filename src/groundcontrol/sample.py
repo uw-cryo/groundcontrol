@@ -77,8 +77,32 @@ def _horizontal_2d(crs) -> pyproj.CRS:
     return crs.to_2d()
 
 
-def _check_crs(gdf, da: xr.DataArray, check_crs: bool) -> None:
-    """Fail loud on point/raster frame disagreement (never silently mis-sample)."""
+def _grid_signature(crs):
+    """The map GRID a CRS describes, datum-blind: projection method +
+    parameters for a projected CRS, a marker for a plain geographic
+    graticule. Two CRSs with equal signatures address the same pixels —
+    the reinterpretation test behind ``declared_crs``."""
+    h = _horizontal_2d(crs)
+    if h.is_projected and h.coordinate_operation is not None:
+        co = h.coordinate_operation
+        return (co.method_name,
+                tuple(sorted((p.name, round(p.value, 9))
+                             for p in co.params
+                             if isinstance(p.value, (int, float)))))
+    if h.is_geographic:
+        return ("geographic",)
+    return ("other", h.to_wkt())
+
+
+def _check_crs(gdf, da: xr.DataArray, check_crs: bool,
+               declared_crs=None) -> None:
+    """Fail loud on point/raster frame disagreement (never silently
+    mis-sample). ``declared_crs``: the frame the caller DECLARED the
+    raster to actually be in (--target-crs / --vdatum semantics — the
+    header's datum is overridden, the grid is not): points matching the
+    declaration are accepted when the declaration addresses the same
+    grid as the header (same projection, datum-blind); a different grid
+    still refuses."""
     raster_crs = da.rio.crs
     if not check_crs:
         msg = (
@@ -96,6 +120,16 @@ def _check_crs(gdf, da: xr.DataArray, check_crs: bool) -> None:
             "(expert use) to override."
         )
     if not _horizontal_2d(gdf.crs).equals(_horizontal_2d(raster_crs)):
+        if (declared_crs is not None
+                and _horizontal_2d(gdf.crs).equals(_horizontal_2d(declared_crs))
+                and _grid_signature(declared_crs) == _grid_signature(raster_crs)):
+            logger.info(
+                "sampling under the declared frame %r; the raster header "
+                "says %r — same grid, datum reinterpretation (the "
+                "--target-crs/--vdatum contract), not a transform",
+                pyproj.CRS.from_user_input(declared_crs).name,
+                pyproj.CRS.from_user_input(raster_crs).name)
+            return
         raise ValueError(
             "points and raster are in different CRSs — refusing to silently mis-sample. "
             f"points: {pyproj.CRS.from_user_input(gdf.crs).name!r}; "
@@ -252,7 +286,8 @@ def _sample_in_memory(da: xr.DataArray, xs_pt, ys_pt, method: str, radius=None):
 
 
 def sample_raster(gdf, r, col: str = "height", method: str = "linear", diff: bool = False,
-                  block: int = 4096, check_crs: bool = True, radius=None):
+                  block: int = 4096, check_crs: bool = True, radius=None,
+                  declared_crs=None):
     """Sample raster ``r`` at the points of ``gdf``; return a copy with new column(s).
 
     Parameters
@@ -330,7 +365,7 @@ def sample_raster(gdf, r, col: str = "height", method: str = "linear", diff: boo
             "higher-order methods need a larger tile halo and seam validation)"
         )
     da = _squeeze_band(_open_dataarray(r))
-    _check_crs(gdf, da, check_crs)
+    _check_crs(gdf, da, check_crs, declared_crs=declared_crs)
     src_fn = da.encoding.get("source")
     name = da.name or (Path(src_fn).stem if src_fn else "sampled")
 

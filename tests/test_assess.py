@@ -141,6 +141,7 @@ def test_summarize_dz_segments_nodata_and_applies(tmp_path):
         "3DEP NVA", "3DEP VVA", "GNSS continuous", "GNSS semi-continuous",
         "GNSS campaign (OPUS)", "GNSS campaign (NGL)",
         "GNSS campaign (other)", "GNSS (pre-split)", "NGS monument",
+        "FAA surveyed", "FAA estimated",
         "OTHER (unsegmented)"}
 
 
@@ -546,3 +547,36 @@ def test_transform_control_2d_identity_still_allowed():
     out, _ = transform_control(g, "EPSG:32611", source_crs="EPSG:32611",
                                aoi_bounds_4326=(-120.0, 32.0, -119.0, 33.0))
     np.testing.assert_allclose(out["h_ell"], g["height"])
+
+
+def test_faa_segments_route_by_pos_class(tmp_path):
+    """Owner figure review 2026-08-30: FAA rows previously fell to OTHER.
+    Surveyed validates both product classes; estimated is context-only."""
+    import json
+    dsm = _plane_tif(tmp_path, "b-DSM_mos.tif")
+    pts = _landed([0.05, 0.05, 0.05, 0.05]).rename(columns={"h_ell": "height"})
+    pts["source"] = "faa"
+    pts["point_type"] = ["runway_end", "runway_end", "helipad", "displaced_threshold"]
+    pts["raw"] = [json.dumps({"pos_class": c})
+                  for c in ("surveyed", "surveyed", "estimated", "surveyed")]
+    pts["h_ell"] = pts["height"]
+    sampled = sample_products(pts, {"DSM": dsm})
+    stats = summarize_dz(sampled, products=["DSM"]).set_index("segment")
+    assert stats.loc["FAA surveyed", "n"] == 3
+    assert bool(stats.loc["FAA surveyed", "applies"])
+    assert stats.loc["FAA estimated", "n"] == 1
+    assert not bool(stats.loc["FAA estimated", "applies"])
+    assert stats.loc["OTHER (unsegmented)", "n"] == 0
+
+
+def test_assess_bundle_includes_labeled_control_map(tmp_path):
+    """The standard figure bundle carries the all-sources labeled control
+    map (owner 2026-08-30: prototyped in July, never formally included)."""
+    dsm = _plane_tif(tmp_path, "a-DSM_mos.tif")
+    pts = _landed([0.1, -0.1, 0.2, 0.0]).rename(columns={"h_ell": "height"})
+    _, _, art = assess_products(pts, {"DSM": dsm}, CRS, source_crs=CRS,
+                                outdir=tmp_path / "out", site_name="cm",
+                                basemap=None)
+    names = [p.name for p in art["control_figures"]]
+    assert "cm_control_map.png" in names
+    assert (tmp_path / "out" / "cm_control_map.png").exists()

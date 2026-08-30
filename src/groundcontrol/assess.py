@@ -67,7 +67,26 @@ SEGMENTS = {
     "GNSS (pre-split)": (lambda d: (d["point_type"] == "gnss")
                          & (d["source"] != "opus"), False, False),
     "NGS monument": (lambda d: d["source"] == "ngs", True, True),
+    # FAA NASR runway control by published coordinate provenance (raw
+    # pos_class, sources/faa.py): the surveyed class is AC 150/5300-18C
+    # survey-grade (~2 cm NMAD vertical, LV A/B 2026-08-13) and validates
+    # both product classes; estimated (OWNER/FAA-EST/ADO) is context-only.
+    # Added 2026-08-30 (owner figure review): FAA rows previously fell to
+    # OTHER (unsegmented).
+    "FAA surveyed": (lambda d: (d["source"] == "faa")
+                     & (_faa_pos_class(d) == "surveyed"), True, True),
+    "FAA estimated": (lambda d: (d["source"] == "faa")
+                      & (_faa_pos_class(d) != "surveyed"), False, False),
 }
+
+
+def _faa_pos_class(d):
+    """Row-wise NASR position-source class from ``raw`` (figures._raw_field
+    is the ONE raw reader — round-4 lesson: two readers diverge)."""
+    from groundcontrol.figures import _raw_field
+    if "raw" not in d.columns:
+        return pd.Series(pd.NA, index=d.index, dtype="object")
+    return _raw_field(d["raw"], "pos_class")
 
 
 def _unsegmented(d, _segs=tuple(SEGMENTS.values())):
@@ -330,7 +349,8 @@ def summarize_dz(sampled, products=None, segments=SEGMENTS):
 
 def assess_products(control, products, target_crs, *, outdir, site_name,
                     aoi=None, hs=None, rgb=None, intensity=None,
-                    basemap="esri", target_epoch=2010.0, method="linear",
+                    basemap="esri", midas_velocities=False,
+                    target_epoch=2010.0, method="linear",
                     radius=None, source_crs=None, figures=True, write=True,
                     point_lim=None, vendor_lim=None, wide_lim=None,
                     command=None):
@@ -416,4 +436,18 @@ def assess_products(control, products, target_crs, *, outdir, site_name,
                                 rgb=rgb, intensity=intensity, basemap=basemap)
         if sheets:
             artifacts["context_sheets"] = sheets
+        # the LABELED all-sources control map (+ monument facets, and MIDAS
+        # velocity maps when midas_velocities=True — a network fetch, so
+        # library-default False; the CLI passes True): the companion the
+        # contact sheets need — dz colors cannot carry class identity, and
+        # station/airport labels locate each sheet cell on the map (owner
+        # 2026-08-13 spec; wired into the standard bundle 2026-08-30)
+        from groundcontrol.figures import standard_control_figures
+        first = next((p for p in products.values()
+                      if isinstance(p, (str, Path))), None)
+        artifacts["control_figures"] = standard_control_figures(
+            sampled, aoi_gdf, outdir, site_name, dem_tif=first,
+            hs_tif=(hs.get(next(k for k, p in products.items() if p == first))
+                    if isinstance(hs, dict) and first is not None else hs),
+            midas_velocities=midas_velocities)
     return sampled, stats, artifacts

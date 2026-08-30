@@ -80,10 +80,15 @@ def fetch_control_main(argv=None) -> int:
              command="groundcontrol-fetch " + " ".join(argv or sys.argv[1:]))
     print(f"wrote {out} ({len(gdf)} points) + provenance sidecar", file=sys.stderr)
     if args.context_sheets:
-        from groundcontrol.figures import context_sheets
+        from groundcontrol.figures import context_sheets, standard_control_figures
         for fp in context_sheets(gdf, {}, Path(out).parent, Path(out).stem,
                                  basemap=None if args.basemap == "none"
                                  else args.basemap):
+            print(f"wrote {fp}", file=sys.stderr)
+        # the labeled all-sources control map that locates each sheet cell
+        for fp in standard_control_figures(
+                gdf, aoi if not isinstance(aoi, tuple) else None,
+                Path(out).parent, Path(out).stem, midas_velocities=False):
             print(f"wrote {fp}", file=sys.stderr)
     return 0
 
@@ -525,6 +530,7 @@ def assess_dem_main(argv=None) -> int:
         outdir=outdir, site_name=site_name, aoi=aoi_fig,
         hs=hs, rgb=rgb, intensity=intensity,
         basemap=None if args.basemap == "none" else args.basemap,
+        midas_velocities=True,  # the CLI is a network context already
         target_epoch=args.target_epoch, method=args.method,
         radius=args.radius, source_crs=source_crs, figures=not args.no_figures,
         point_lim=args.point_lim, vendor_lim=args.vendor_lim,

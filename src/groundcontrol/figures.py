@@ -890,6 +890,7 @@ def _aspect_panel_w(aoi_gdf, map_h, lo=0.5, hi=1.5):
 def standard_control_figures(control, aoi, outdir, site_name, *,
                              dem_tif=None, hs_tif=None, cmap=None,
                              dem_alpha=0.4, midas_frame="IGS14",
+                             midas_velocities=True,
                              buffer_km=60.0, clip_to_aoi=True,
                              label_points=True, dpi=200):
     """Write the default control figure bundle for a site; returns paths.
@@ -911,15 +912,17 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
     from .aoi import read_aoi
     aoi_gdf = read_aoi(aoi) if isinstance(aoi, (str, Path)) else aoi
 
-    # figure CRS: the DEM's if given, else the AOI's UTM estimate
+    # figure CRS: the DEM's if given, else the AOI's (or control's) UTM estimate
     import rasterio
     if dem_tif is not None:
         with rasterio.open(dem_tif) as src:
             fig_crs = src.crs
-    else:
+    elif aoi_gdf is not None:
         fig_crs = aoi_gdf.estimate_utm_crs()
+    else:
+        fig_crs = control.estimate_utm_crs()
     ctl = control.to_crs(fig_crs)
-    aoi_p = aoi_gdf.to_crs(fig_crs)
+    aoi_p = aoi_gdf.to_crs(fig_crs) if aoi_gdf is not None else None
 
     # ---- 1. control map ---------------------------------------------------
     fig, ax = plt.subplots(figsize=(10.5, 10))
@@ -998,7 +1001,8 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
     out.append(fp)
 
     # ---- 2. NGS monument-type facets ---------------------------------------
-    mon = ctl[ctl.point_type == "monument"]
+    mon = (ctl[ctl.point_type == "monument"] if "raw" in ctl.columns
+           else ctl.iloc[:0])  # facets read the raw datasheet fields
     if len(mon):
         fig, axes = plt.subplots(1, len(_FACETS), figsize=(5.6 * len(_FACETS), 6),
                                  sharex=True, sharey=True)
@@ -1025,7 +1029,11 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
         plt.close(fig)
         out.append(fp)
 
-    # ---- 3+4. MIDAS motion figures ------------------------------------------
+    # ---- 3+4. MIDAS motion figures (network fetch: gated) -------------------
+    if not midas_velocities or aoi_gdf is None:
+        logger.info("MIDAS velocity figures skipped (midas_velocities=%s, "
+                    "aoi=%s)", midas_velocities, aoi_gdf is not None)
+        return out
     try:
         from .plot import plot_velocity_vectors
         from .sources.ngl import read_midas
@@ -1079,6 +1087,8 @@ _SEG_STYLE = {
     "GNSS campaign (other)": "#B07AA1",
     "GNSS (pre-split)": "gnss",
     "NGS monument": "monument",
+    "FAA surveyed": "runway_end",
+    "FAA estimated": "#8C6BB1",
     "OTHER (unsegmented)": "gnss",  # never rendered (context, non-GNSS
                                     # label) — placeholder for the sync test
 }
@@ -1152,9 +1162,38 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         _relief(axes[0], None, hs_prod, None, 0.0, None)
         use = sampled[np.isfinite(sampled[col])]
         pl = point_lim if point_lim is not None else snap_clim(use[col], k=3.0)
-        sc = axes[0].scatter(use.geometry.x, use.geometry.y, c=use[col],
-                             cmap=DZ_CMAP, vmin=-pl, vmax=pl,
-                             s=34, edgecolors="#333333", linewidths=0.5, zorder=5)
+        # marker SHAPE carries class identity (owner 2026-08-30: identical
+        # circles hid which points were NVA vs GNSS vs monuments vs FAA);
+        # color stays the dz ramp (class colors clash with it, owner
+        # 2026-07-16), POINT_STYLE shapes match the control map and sheets
+        import matplotlib as _mpl
+        from matplotlib.lines import Line2D
+        norm = _mpl.colors.Normalize(vmin=-pl, vmax=pl)
+        handles = []
+        if "point_type" in use.columns and use["point_type"].notna().any():
+            pts_order = [t for t in LEGEND_ORDER
+                         if (use["point_type"] == t).any()]
+            pts_order += [t for t in use["point_type"].dropna().unique()
+                          if t not in pts_order]
+            for pt in pts_order:
+                mk, _, msz, _, mlab = POINT_STYLE.get(
+                    pt, ("o", "#888888", 34, 5, str(pt)))
+                sub = use[use["point_type"] == pt]
+                lw = 1.2 if mk in ("+", "x") else 0.5
+                axes[0].scatter(sub.geometry.x, sub.geometry.y, c=sub[col],
+                                cmap=DZ_CMAP, norm=norm, marker=mk,
+                                s=max(34, int(msz * 0.6)),
+                                edgecolors="#333333", linewidths=lw, zorder=5)
+                handles.append(Line2D([], [], marker=mk, ls="", color="#333333",
+                                      ms=7, label=f"{mlab} ({len(sub)})"))
+        else:
+            axes[0].scatter(use.geometry.x, use.geometry.y, c=use[col],
+                            cmap=DZ_CMAP, norm=norm, s=34,
+                            edgecolors="#333333", linewidths=0.5, zorder=5)
+        if handles:
+            axes[0].legend(handles=handles, loc="lower left", fontsize=7,
+                           framealpha=0.85, borderpad=0.4, handletextpad=0.4)
+        sc = _mpl.cm.ScalarMappable(norm=norm, cmap=DZ_CMAP)
         cb = fig.colorbar(sc, ax=axes[0], shrink=0.75, pad=0.02, extend="both")
         cb.set_label(f"dz = {prod} − control (m)", fontsize=9, color=_INK)
         cb.ax.tick_params(labelsize=8, colors=_MUT)

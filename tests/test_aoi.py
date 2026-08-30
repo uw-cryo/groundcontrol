@@ -736,6 +736,8 @@ def test_fetch_context_sheets_from_aoi_only(tmp_path, monkeypatch):
     assert pages == sorted(f"ctl_{sub}_gallery_{tier}.png"
                            for sub in ("3dep_nva", "3dep_vva", "opus")
                            for tier in ("120m", "30m"))
+    # the labeled all-sources control map accompanies the sheets (2026-08-30)
+    assert (tmp_path / "ctl_control_map.png").exists()
 
 
 def test_web_placeholder_chroma_rule_scoped_to_basemap_sources(tmp_path, caplog):

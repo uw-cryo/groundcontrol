@@ -630,7 +630,7 @@ def test_assess_writes_context_sheets_for_gnss_and_faa(tmp_path):
                                 midas_velocities=False)
     names = sorted(p.name for p in art["context_sheets"])
     # per-source subsets x the two standard tiers (recovered spec 2026-08-29)
-    assert names == [f"s_{sub}_gallery_{tier}.png"
+    assert names == [f"s_{sub}_gallery_{tier}.jpg"
                      for sub in ("3dep_nva", "3dep_vva", "faa_runway", "opus")
                      for tier in ("120m", "30m")]
     # ... routed into per-SOURCE subdirs (owner layout 2026-08-30)
@@ -763,11 +763,11 @@ def test_fetch_context_sheets_from_aoi_only(tmp_path, monkeypatch):
                              "--context-sheets"])
     assert rc == 0
     assert seen["crs"].is_projected                # UTM, not the 6318 landing
-    pages = sorted(p.name for p in tmp_path.rglob("ctl_*_gallery_*.png"))
-    assert pages == sorted(f"ctl_{sub}_gallery_{tier}.png"
+    pages = sorted(p.name for p in tmp_path.rglob("ctl_*_gallery_*.jpg"))
+    assert pages == sorted(f"ctl_{sub}_gallery_{tier}.jpg"
                            for sub in ("3dep_nva", "3dep_vva", "opus")
                            for tier in ("120m", "30m"))
-    assert (tmp_path / "gnss" / "ctl_opus_gallery_120m.png").exists()
+    assert (tmp_path / "gnss" / "ctl_opus_gallery_120m.jpg").exists()
     # the labeled all-sources control map accompanies the sheets (2026-08-30)
     assert (tmp_path / "ctl_control_map.png").exists()
 

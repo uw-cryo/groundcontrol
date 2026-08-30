@@ -722,8 +722,10 @@ def point_context_gallery(points, layers, outdir, site_name, *,
             fig.subplots_adjust(left=0.01, right=0.995,
                                 top=1.0 - 0.52 / fig_h, bottom=0.18 / fig_h)
             suffix = f"_p{pg}" if len(pages) > 1 else ""
-            fp = outdir / f"{site_name}_{subset_tag}_gallery_{tier}{suffix}.png"
-            fig.savefig(fp, dpi=dpi)
+            # JPEG q85 (owner 2026-09-01): the sheets are photo-heavy —
+            # 15 MB PNGs compress to ~1-2 MB with no review-relevant loss
+            fp = outdir / f"{site_name}_{subset_tag}_gallery_{tier}{suffix}.jpg"
+            fig.savefig(fp, dpi=dpi, pil_kwargs={"quality": 85})
             plt.close(fig)
             out_paths.append(fp)
     finally:
@@ -1947,6 +1949,12 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         ax_n.set_title(f"NGS monuments ({ngs_nmad_gate:.0f}-NMAD filtered)",
                        fontsize=10, color=_INK)
         fp = outdir / f"{site_name}_validation_dz_{prod}.png"
+        # equal-aspect shrinks the MAP's axes box inside its gridspec
+        # cell; clamp the colorbar to the map's final drawn height so it
+        # never extends past the map (owner 2026-09-01)
+        fig.canvas.draw()
+        pm, pc = ax_map.get_position(), cax.get_position()
+        cax.set_position([pc.x0, pm.y0, pc.width, pm.height])
         # bbox_inches trims the residual outer margin (tight_layout fights
         # the colorbar + spanning-gridspec combination)
         fig.savefig(fp, dpi=dpi, bbox_inches="tight")

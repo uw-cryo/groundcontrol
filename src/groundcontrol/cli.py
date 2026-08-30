@@ -35,6 +35,11 @@ def fetch_control_main(argv=None) -> int:
                         "EPSG:6318 + NAVD88; passing this raises)")
     p.add_argument("--target-epoch", type=float, default=None,
                    help="target coordinate epoch, decimal year (NOT YET IMPLEMENTED)")
+    p.add_argument("--landing-crs", default=None,
+                   help="override the interim horizontal landing frame (default "
+                        "EPSG:6318 + NAVD88 heights, the CONUS contract). Required "
+                        "outside the NAD83 area of use: e.g. --landing-crs EPSG:7912 "
+                        "for Nepal NGL control. Geographic CRS only")
     p.add_argument("--context-sheets", action="store_true",
                    help="also write per-point context contact sheets next to --out "
                         "(RGB web-basemap windows per fetched GNSS/FAA/3DEP point; "
@@ -54,10 +59,15 @@ def fetch_control_main(argv=None) -> int:
     # input, and an --out typo should not pay for it.
     out = _preflight(io.check_export_support, args.out)
     _check_sources(sources)
+    if args.landing_crs is not None:
+        from groundcontrol.sources import validate_landing_crs
+        _validate_crs(args.landing_crs, "--landing-crs")
+        _preflight(validate_landing_crs, args.landing_crs)
     aoi = _load_aoi(aoi)
 
     gdf, status = fetch_control(aoi, sources=sources,
-                                target_crs=args.target_crs, target_epoch=args.target_epoch)
+                                target_crs=args.target_crs, target_epoch=args.target_epoch,
+                                landing_crs=args.landing_crs)
     for name, s in status.items():
         line = f"  {name:6s} {s['n_rows']:6d} rows"
         if s["error"]:

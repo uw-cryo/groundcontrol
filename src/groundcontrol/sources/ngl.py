@@ -829,10 +829,15 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
                 "vertical_crs", "ref_frame", "native_crs", "raw"):
         df[col] = df[col].astype("string")
     df["measurement_datetime"] = pd.to_datetime(df["measurement_datetime"], utc=True)
+    # native dynamic-frame coordinates; the dispatcher lands them
+    # (crs.land_horizontal passes per-row coord_epoch as tt — TODO(D6)).
+    # The frame-level CRS is tagged when every row shares one code, so
+    # driving parse() directly (the non-CONUS workflow, rasuwa 2026-08-29)
+    # yields a usable GeoDataFrame without a manual set_crs; mixed codes
+    # keep crs=None (per-row horizontal_crs is the authority either way).
+    codes = df["horizontal_crs"].dropna().unique()
     return gpd.GeoDataFrame(
         df,
         geometry=gpd.points_from_xy(df["native_x"], df["native_y"]),
-        # native dynamic-frame coordinates; the dispatcher lands them
-        # (crs.land_horizontal passes per-row coord_epoch as tt — TODO(D6))
-        crs=None,
+        crs=codes[0] if len(codes) == 1 else None,
     )

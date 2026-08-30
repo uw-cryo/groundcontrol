@@ -565,7 +565,9 @@ def test_parse_schema_valid_and_frame_aliased():
     # geometry = emitted median position, 2D
     assert r.geometry.x == pytest.approx(r["native_x"]) == pytest.approx(-115.2582, abs=1e-3)
     assert r.geometry.y == pytest.approx(r["native_y"])
-    assert out.crs is None  # native frame; the dispatcher lands it
+    # native frame, tagged at frame level when uniform (rasuwa 2026-08-29:
+    # crs=None forced a manual set_crs when driving parse directly)
+    assert out.crs is not None and out.crs.to_epsg() == 7912
 
 
 def test_parse_igs20_aliases_to_itrf2020():

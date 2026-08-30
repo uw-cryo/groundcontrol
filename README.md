@@ -98,7 +98,21 @@ groundcontrol-fetch --aoi=-115.3,36.0,-114.9,36.3 --sources 3dep,ngs,opus --out 
 # the same for a polygon, or for wherever a DEM has data (+ FAA runway control)
 groundcontrol-fetch --aoi site.geojson --out control.parquet
 groundcontrol-fetch --aoi dsm.tif --sources 3dep,ngs,opus,faa --out control.parquet
+# outside the NAD83 area of use the default (CONUS) landing correctly refuses:
+# pick the landing frame — a specific geographic realization, never an ensemble
+groundcontrol-fetch --aoi nepal_aoi.geojson --sources ngl --landing-crs EPSG:7912 --out control.parquet
 ```
+
+`--landing-crs` overrides the interim horizontal landing **frame** (default EPSG:6318;
+heights are untouched and keep their per-row `vertical_crs` provenance — a 3D input
+like `EPSG:7912` lands at its 2D counterpart, `EPSG:9000`, though the written file's
+CRS is honestly promoted back to the 3D code when every row's vertical datum is that
+frame's ellipsoid); a source that cannot land in the requested frame (e.g. plate-fixed
+NGS/3DEP into a dynamic ITRF frame, pending declared-epoch landing) degrades into the
+per-source status report rather than poisoning the rest. The assess step then needs
+the matching declaration: `groundcontrol-assess --control nepal_control.parquet
+--source-crs EPSG:7912 ...` (the default source is the CONUS `EPSG:6318+5703`
+contract, and a mismatched control frame is refused, never reinterpreted).
 
 ### Assess your own DEM
 

@@ -392,6 +392,18 @@ def land_horizontal(gdf, target: str = "EPSG:6318", datum_col: str = "horizontal
         if pd.isna(datum) or str(datum).upper().replace(" ", "") == tgt_norm:
             out.loc[idx, "transform_id"] = f"land:identity:{target}"
             continue
+        if is_dynamic_frame(target) and not is_dynamic_frame(datum):
+            # sibling of the dynamic-SOURCE tt rule below (rasuwa round,
+            # 2026-08-29): a plate-fixed subset entering a dynamic target
+            # rides a time-dependent Helmert that an omitted tt evaluates
+            # at the operation's fixed t_epoch — fabricated epoch motion.
+            # Until D6 lands a target-epoch semantics for landing, refuse.
+            raise ValueError(
+                f"cannot land subset {datum!r} (not a dynamic frame) into the "
+                f"dynamic frame {target!r}: the time-dependent leg needs a "
+                "declared target epoch (D6, not yet implemented) — an omitted "
+                "tt would land at the operation's t_epoch. Land this source in "
+                "a plate-fixed frame, or assess it separately.")
         bounds = tuple(sub.geometry.total_bounds)  # subset AOI, in degrees (B7a)
         t = get_transformer(datum, target, aoi_bounds_4326=bounds)
         xs = sub.geometry.x.to_numpy()

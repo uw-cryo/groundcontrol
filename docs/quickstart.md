@@ -76,6 +76,10 @@ from groundcontrol.sources import fetch_control
 # AOI: bbox tuple, vector-file path, DEM/DSM/DTM raster path (footprint), or GeoDataFrame
 gdf, status = fetch_control("site_aoi.geojson", sources=("3dep", "ngs", "opus", "ngl"))
 gdf, status = fetch_control("dsm.tif", sources=("3dep", "ngs", "opus", "faa"))
+gdf, status = fetch_control(nepal_aoi, sources=("ngl",), landing_crs="EPSG:7912")
+# ^ outside the NAD83 area of use, pick the horizontal landing frame (specific
+#   geographic realization only — no ensembles, no compound/projected; a 3D
+#   input lands at its 2D counterpart: EPSG:7912 -> EPSG:9000, heights untouched)
 # -> normalized schema (docs/plan.md), EPSG:6318 horizontal (interim landing),
 #    NAVD88 orthometric heights for 3dep/ngs/opus/faa; ELLIPSOIDAL for ngl.
 #    status: {source: {n_rows, error}} — per-source failures degrade gracefully.

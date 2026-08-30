@@ -2379,9 +2379,12 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
             axh.tick_params(labelsize=8, colors=_MUT)
             axh.grid(alpha=0.25, lw=0.5)
             gap = f"; {n_gap} unsampled (nodata/gap)" if n_gap else ""
+            # left-anchored, matching the validation figure (owner
+            # 2026-09-01: dz titles were a mix of centered and left)
             fig.suptitle(f"Vertical difference (m, {prod} minus control) "
                          f"\u2014 {title}{gap}: {site_name}",
-                         fontsize=11.5, color=_INK)
+                         x=0.01, y=0.995, ha="left", va="top",
+                         fontsize=12, color=_INK)
             fp = outdir / f"{site_name}_dz_{fam}_{prod}.png"
             # equal-aspect shrinks the map boxes inside their cells; clamp
             # the colorbar to the union of the DRAWN maps (owner 2026-09-01

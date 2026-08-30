@@ -924,3 +924,28 @@ def test_vdatum_disambiguates_3d_ensemble_product(tmp_path):
         if has_vertical_axis(pyproj.CRS.from_user_input(src.crs)):
             with pytest.raises(ValueError, match="already declares"):
                 _vdatum_target_crs({"DSM": n83}, "ellipsoid")
+
+
+def test_assess_derives_landing_for_non_nad83_target(tmp_path, monkeypatch):
+    """A non-NAD83 target datum (ITRF2014 via --vdatum) lands the fetch on
+    its own geographic base instead of the CONUS NAD83 contract (owner
+    Nepal report 2026-09-01: ITRF->EPSG:6318 was refused, correctly, but
+    the assess CLI offered no other landing)."""
+    seen = {}
+
+    def fake_fetch(aoi, sources=(), landing_crs=None, **kw):
+        seen["landing"] = landing_crs
+        raise AssertionError("captured")
+
+    monkeypatch.setattr("groundcontrol.sources.fetch_control", fake_fetch)
+    ens = _plane_tif_wgs84(tmp_path)
+    with pytest.raises(AssertionError, match="captured"):
+        _assess([ens, "--vdatum", "ellipsoid:itrf2014",
+                 "--outdir", str(tmp_path / "out")])
+    assert seen["landing"] == "EPSG:7912"
+    # NAD83-family target: the CONUS contract stands (landing None)
+    n83 = _plane_tif_nad83(tmp_path)
+    with pytest.raises(AssertionError, match="captured"):
+        _assess([n83, "--vdatum", "ellipsoid",
+                 "--outdir", str(tmp_path / "out2")])
+    assert seen["landing"] is None

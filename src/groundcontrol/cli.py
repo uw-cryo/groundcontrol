@@ -612,8 +612,15 @@ def assess_dem_main(argv=None) -> int:
                         "inert for static-frame targets)")
     p.add_argument("--source-crs", default=None,
                    help="override the control landing CRS (default EPSG:6318+5703, "
-                        "the fetch_control contract) — expert use, e.g. a cache "
-                        "already in another frame")
+                        "the fetch_control contract; derived automatically with "
+                        "the landing for a non-NAD83 target) — expert use, e.g. "
+                        "a cache already in another frame")
+    p.add_argument("--landing-crs", default=None,
+                   help="horizontal landing frame for the control fetch "
+                        "(default: the CONUS EPSG:6318 + NAVD88 contract; "
+                        "DERIVED from the target datum when that is outside "
+                        "the NAD83 family — e.g. an ITRF2014 target lands at "
+                        "EPSG:7912, the Nepal pattern). Geographic CRS only")
     p.add_argument("--control", default=None,
                    help="control GeoParquet cache: reused when present, else fetched "
                         "from --sources and written here (default: <outdir>/<site-name>_control.parquet)")
@@ -769,6 +776,38 @@ def assess_dem_main(argv=None) -> int:
         target_crs = _preflight(_vdatum_target_crs, products, args.vdatum)
     if target_crs is None:
         target_crs = _embedded_target_crs(products)
+    # landing derivation (owner 2026-09-01, Nepal EarthDEM: the assess CLI
+    # had no landing override, so every fetch tried the interim CONUS
+    # NAD83 landing and the fail-loud guard refused ITRF->6318 outside its
+    # area of use): a non-NAD83 target datum lands the fetch on its own
+    # geographic base, and the control source frame follows
+    auto_source = None
+    landing = args.landing_crs
+    if landing is None and target_crs is not None:
+        import pyproj as _pp
+
+        from groundcontrol.geodesy import (NAD83_FAMILY_GEOGRAPHIC,
+                                           is_wgs84_ensemble)
+        _tgt = _pp.CRS.from_user_input(target_crs)
+        _h = _pp.CRS(_tgt.sub_crs_list[0]) if _tgt.is_compound else _tgt
+        _base = _h.geodetic_crs
+        # only a REALIZED non-NAD83 base re-lands the fetch: an ensemble
+        # base (the 2D identity expert path) cannot be a landing, and
+        # NAD83-family keeps the CONUS contract
+        if _base is not None and not is_wgs84_ensemble(_base):
+            _c2 = _base.to_2d().to_epsg()
+            if _c2 is not None and _c2 not in NAD83_FAMILY_GEOGRAPHIC:
+                _c3 = _base.to_3d().to_epsg()
+                landing = f"EPSG:{_c3 or _c2}"
+                print(f"landing (auto): {landing} — the target datum is "
+                      "outside the NAD83/NAVD88 interim contract",
+                      file=sys.stderr)
+    if landing is not None:
+        from groundcontrol.sources import validate_landing_crs
+        _validate_crs(landing, "--landing-crs")
+        _preflight(validate_landing_crs, landing)
+        if args.source_crs is None:
+            auto_source = landing
     if len(products) == 2 and args.aoi is None:
         # DSM/DTM pair sanity (owner 2026-09-01): a product family shares
         # ground — disjoint bounds mean independent acquisitions, which
@@ -827,7 +866,8 @@ def assess_dem_main(argv=None) -> int:
     else:
         from groundcontrol.sources import fetch_control
         print(f"querying sources: {', '.join(sources)} ...", file=sys.stderr)
-        control, status = fetch_control(aoi, sources=sources)
+        control, status = fetch_control(aoi, sources=sources,
+                                        landing_crs=landing)
         for name, s in status.items():
             line = f"  {name:6s} {s['n_rows']:6d} rows"
             if s["error"]:
@@ -839,6 +879,20 @@ def assess_dem_main(argv=None) -> int:
         io.write(control, cache, status=status,
                  command="groundcontrol-assess " + " ".join(argv or sys.argv[1:]))
         print(f"wrote control cache {cache} ({len(control)} points)", file=sys.stderr)
+
+    if auto_source is not None and source_crs is None and control.crs is not None:
+        import pyproj as _pp
+        _land = _pp.CRS.from_user_input(auto_source)
+        if _pp.CRS(control.crs).equals(_land.to_2d()) or \
+                _pp.CRS(control.crs).equals(_land):
+            source_crs = auto_source
+            print(f"source CRS (auto): {auto_source} (the landing frame; "
+                  "heights ellipsoidal on it)", file=sys.stderr)
+        else:
+            raise SystemExit(
+                f"error: control cache is in {control.crs} but the derived "
+                f"landing is {auto_source} — the cache predates this "
+                "landing; delete it to re-fetch, or pass --source-crs")
 
     from groundcontrol.assess import assess_products  # ~0.5 s; after the preflight
 

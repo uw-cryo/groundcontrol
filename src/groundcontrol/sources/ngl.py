@@ -297,13 +297,20 @@ def _attach_steps(stations) -> None:
     position-window/ant_m machinery, not epoch propagation."""
     try:
         steps = read_steps()
-        eq = steps[steps["type"] == 2]
+        # vintage from the FULL catalog; per-station epochs only for the
+        # FETCHED stations (profiling 2026-09-01: converting the whole
+        # 142k-row catalog through per-row decyear() burned ~90 s of CPU
+        # per fetch and GIL-convoyed the other sources)
+        eq_all = steps[steps["type"] == 2]
+        through = decyear(eq_all["date"].max()) if len(eq_all) else None
+        want = {s["meta"]["sta"] for s in stations}
+        mine = steps[steps["sta"].isin(want)]
+        eq = mine[mine["type"] == 2]
         per_sta = {sta: sorted(decyear(d) for d in grp["date"])
                    for sta, grp in eq.groupby("sta")}
-        equip = steps[steps["type"] == 1]
+        equip = mine[mine["type"] == 1]
         per_sta_eqp = {sta: sorted(decyear(d) for d in grp["date"])
                        for sta, grp in equip.groupby("sta")}
-        through = decyear(eq["date"].max()) if len(eq) else None
     except Exception as e:
         logger.warning("NGL steps.txt unavailable (%s: %s): eq_steps not "
                        "attached — propagate_epoch cannot step-check these "

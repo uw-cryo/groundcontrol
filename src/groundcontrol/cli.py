@@ -42,11 +42,14 @@ def fetch_control_main(argv=None) -> int:
                         "outside the NAD83 area of use: e.g. --landing-crs EPSG:7912 "
                         "for Nepal NGL control. Geographic CRS only")
     p.add_argument("--context-sheets", action="store_true",
-                   help="also write per-point context contact sheets next to --out "
-                        "(RGB web-basemap windows per fetched GNSS/FAA/3DEP point; "
-                        "no DEM needed)")
+                   help=argparse.SUPPRESS)   # deprecated 2026-08-31: default now
+    p.add_argument("--no-figures", action="store_true",
+                   help="write only the control file + provenance; skip the "
+                        "standard figure set (contact sheets, labeled control "
+                        "map, MIDAS velocity + NGL series figures)")
     p.add_argument("--basemap", default="esri", choices=("esri", "google", "none"),
-                   help="web-imagery provider for --context-sheets (default: esri)")
+                   help="web-imagery provider for the figures (default: esri; "
+                        "'none' for offline runs)")
     args = p.parse_args(argv)
 
     from groundcontrol import io
@@ -81,6 +84,12 @@ def fetch_control_main(argv=None) -> int:
              command="groundcontrol-fetch " + " ".join(argv or sys.argv[1:]))
     print(f"wrote {out} ({len(gdf)} points) + provenance sidecar", file=sys.stderr)
     if args.context_sheets:
+        print("note: --context-sheets is deprecated — the standard figure set "
+              "is written by default (use --no-figures to skip)", file=sys.stderr)
+    if not args.no_figures:
+        # figures are ON by default, matching groundcontrol-assess (owner
+        # 2026-08-31: "you shouldn't have to specify"); a source that found
+        # no sites simply contributes no figures
         from groundcontrol.figures import context_sheets, standard_control_figures
         for fp in context_sheets(gdf, {}, Path(out).parent, Path(out).stem,
                                  basemap=None if args.basemap == "none"

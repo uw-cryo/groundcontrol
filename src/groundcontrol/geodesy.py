@@ -257,17 +257,40 @@ def is_wgs84_ensemble(crs) -> bool:
                  "wgs84")
 
 
-#: --vdatum "ellipsoid:<realization>" tokens -> the 3D UTM builder on that
-#: realized base (the escape hatch for WGS84-ensemble products whose
-#: heights are really ITRF/IGS-realization ellipsoidal, e.g. SETSM
-#: EarthDEM/ArcticDEM/REMA mosaics).
+#: --vdatum "ellipsoid:<realization>" tokens -> (geographic base EPSG,
+#: base name): the escape hatch for WGS84-ensemble products whose heights
+#: are really realization-specific ellipsoidal (SETSM EarthDEM/ArcticDEM/
+#: REMA, Vantor Precision3D). Applied by rebasing the product's OWN map
+#: projection onto the realized base (works for UTM and the polar
+#: stereographic grids alike).
 ELLIPSOID_REALIZATIONS = {
-    "itrf2020": build_utm_itrf2020_3d,
-    "itrf2014": build_utm_itrf2014_3d,
-    "itrf2008": build_utm_itrf2008_3d,
-    "g2139": build_utm_g2139_3d,
-    "g1674": build_utm_g1674_3d,
+    "itrf2020": (ITRF2020_EPSG, "ITRF2020"),
+    "itrf2014": (ITRF2014_EPSG, "ITRF2014"),
+    "itrf2008": (ITRF2008_EPSG, "ITRF2008"),
+    "g2139": (WGS84_G2139_EPSG, "WGS 84 (G2139)"),
+    "g1674": (WGS84_G1674_EPSG, "WGS 84 (G1674)"),
 }
+
+
+def rebase_projection_3d(horizontal, base_epsg: int, base_name: str) -> CRS:
+    """The product's own map projection rebuilt on a REALIZED geographic
+    base, promoted to 3D (ellipsoidal heights) — the general form behind
+    the ``ellipsoid:<realization>`` tokens. ``horizontal``: a 2D projected
+    CRS (any conversion: UTM, the NSIDC/Antarctic polar stereographic
+    grids, ...) or a 2D geographic CRS (rebased directly)."""
+    h = CRS.from_user_input(horizontal)
+    base = CRS.from_epsg(base_epsg)
+    if h.is_geographic:
+        return base.to_3d()
+    if not h.is_projected or h.coordinate_operation is None:
+        raise ValueError(
+            f"rebase_projection_3d: '{h.name}' is not a plain projected "
+            "or geographic 2D CRS")
+    return ProjectedCRS(
+        conversion=h.coordinate_operation,
+        geodetic_crs=base,
+        name=f"{base_name} / {h.coordinate_operation.name}",
+    ).to_3d()
 
 
 def with_vdatum(horizontal, vdatum: str) -> CRS:
@@ -321,14 +344,8 @@ def with_vdatum(horizontal, vdatum: str) -> CRS:
                 f"horizontal, but '{h.name}' already names a realization "
                 "— use plain 'ellipsoid', or pass target_crs to change "
                 "the frame deliberately")
-        code = h.to_epsg()
-        if code is None or code // 100 not in (326, 327):
-            raise ValueError(
-                f"with_vdatum: 'ellipsoid:{token}' supports WGS84 UTM "
-                f"horizontals (EPSG:326xx/327xx); '{h.name}' is not one "
-                "— build the target with geodesy.build_utm_realization_3d "
-                "or pass target_crs WKT")
-        return ELLIPSOID_REALIZATIONS[token](code)
+        base_epsg, base_name = ELLIPSOID_REALIZATIONS[token]
+        return rebase_projection_3d(h, base_epsg, base_name)
     if is_wgs84_ensemble(h):
         raise ValueError(
             f"with_vdatum: '{h.name}' sits on the WGS 84 ENSEMBLE — "

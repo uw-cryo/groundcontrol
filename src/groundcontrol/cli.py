@@ -250,6 +250,35 @@ def _classify_input(path):
             f"input {path}: not a readable raster or vector ({e})") from e
 
 
+#: --vdatum product presets (owner 2026-09-01): named products resolve to
+#: the researched frame so strip/mosaic users need none of the frame
+#: archaeology. Evidence + caveats: docs/vdatum.md.
+VDATUM_PRESETS = {
+    "3dep": "EPSG:5703",
+    "precision3d": "ellipsoid:g1674",
+    "earthdem": "ellipsoid:itrf2014",
+    "arcticdem-strip": "ellipsoid:itrf2014",
+    "rema-strip": "ellipsoid:itrf2014",
+    "rema-mosaic": "ellipsoid:itrf2014",
+    "arcticdem-mosaic": "ellipsoid:itrf2014",
+}
+
+_PRESET_NOTES = {
+    "3dep": "NAVD88 orthometric (CONUS lidar)",
+    "precision3d": "Vantor-stated WGS84 G1674 (= ITRF2008 @ 2005.0)",
+    "earthdem": "UNREGISTERED strips+mosaic: expect meters-level vertical "
+                "bias — coregistration still required",
+    "arcticdem-strip": "unregistered strip: ~4 m absolute (PGC's figure)",
+    "rema-strip": "unregistered strip: ~4 m absolute (PGC's figure)",
+    "rema-mosaic": "v2 aligned to ICESat-2 ATL06 (ITRF2014, ~2019-2021)",
+    "arcticdem-mosaic": "v4.1 anchored to Copernicus GLO-30 outside "
+                        "Greenland (GrIMP/IS2 inside) — see docs/vdatum.md",
+}
+
+#: filename patterns that identify PGC SETSM products in the refusal hint
+_PGC_NAME_RE = r"setsm|arcticdem|rema|earthdem|utm\d{2}[ns]_\d"
+
+
 def _vdatum_target_crs(products, vdatum):
     """--vdatum resolver: each product's embedded 2D horizontal CRS + the
     stated vertical datum -> ONE full 3D target (geodesy.with_vdatum);
@@ -260,6 +289,11 @@ def _vdatum_target_crs(products, vdatum):
 
     from groundcontrol.assess import has_vertical_axis
     from groundcontrol.geodesy import with_vdatum
+    key = vdatum.strip().lower()
+    if key in VDATUM_PRESETS:
+        print(f"--vdatum preset '{key}' -> {VDATUM_PRESETS[key]} "
+              f"({_PRESET_NOTES[key]})", file=sys.stderr)
+        vdatum = VDATUM_PRESETS[key]
     seen = {}
     for name, path in products.items():
         with rasterio.open(path) as src:
@@ -323,6 +357,14 @@ def _embedded_target_crs(products):
                     "note: this horizontal names the WGS 84 ENSEMBLE "
                     "(~2 m ambiguity, not a realization),\n"
                     "so a bare '--vdatum ellipsoid' is refused")
+                import re as _re
+                if _re.search(_PGC_NAME_RE, Path(path).name, _re.I):
+                    choices += (
+                        "\nthis filename looks like a PGC SETSM product — "
+                        "presets apply the researched frame:\n"
+                        "  --vdatum earthdem | arcticdem-strip | "
+                        "arcticdem-mosaic | rema-strip | rema-mosaic\n"
+                        "(evidence and caveats: docs/vdatum.md)")
             else:
                 choices = (
                     f"  --vdatum ellipsoid       heights on the "
@@ -513,7 +555,9 @@ def assess_dem_main(argv=None) -> int:
                         "'ellipsoid' (heights on the horizontal datum's ellipsoid), "
                         "'ellipsoid:<realization>' (itrf2020/itrf2014/itrf2008/"
                         "g2139/g1674 — REQUIRED for WGS84-ensemble horizontals "
-                        "like EPSG:326xx, e.g. EarthDEM/ArcticDEM/REMA), "
+                        "like EPSG:326xx), a product PRESET (3dep, precision3d, "
+                        "earthdem, arcticdem-strip/-mosaic, rema-strip/-mosaic "
+                        "— the researched frame per docs/vdatum.md), "
                         "or any vertical CRS ('EPSG:5703' NAVD88, 'EPSG:3855' "
                         "EGM2008, 'NAVD88 height', ...). Mutually exclusive with "
                         "--target-crs; a geoid model name (GEOID18) is not a CRS — "

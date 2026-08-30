@@ -789,3 +789,29 @@ def test_assess_2d_ensemble_refusal_suggests_realizations(tmp_path, monkeypatch)
     assert "ellipsoid:itrf2014" in msg
     assert "ENSEMBLE" in msg
     assert "--vdatum ellipsoid\n" not in msg      # the refused bare form
+
+
+def test_vdatum_presets_and_polar_rebase(tmp_path):
+    """Product presets resolve to the researched frame, and the
+    ellipsoid:<realization> rebase handles non-UTM (polar stereo) grids."""
+    import pyproj
+
+    from groundcontrol.cli import VDATUM_PRESETS, _vdatum_target_crs
+    from groundcontrol.geodesy import build_utm_itrf2014_3d, with_vdatum
+    ens = _plane_tif_wgs84(tmp_path)
+    wkt = _vdatum_target_crs({"DSM": ens}, "earthdem")
+    assert pyproj.CRS(wkt).equals(build_utm_itrf2014_3d(32610))
+    assert VDATUM_PRESETS["precision3d"] == "ellipsoid:g1674"
+    c = with_vdatum("EPSG:3413", "ellipsoid:itrf2014")   # ArcticDEM grid
+    assert c.name.startswith("ITRF2014 /")
+    assert len(c.axis_info) == 3
+
+
+def test_assess_ensemble_refusal_names_pgc_presets(tmp_path, monkeypatch):
+    """A SETSM-looking filename adds the preset hint to the refusal."""
+    _forbid_fetch(monkeypatch)
+    ens = _plane_tif_wgs84(tmp_path, name="SETSM_s2s041_WV03_fake_2m.tif")
+    with pytest.raises(SystemExit) as exc:
+        _assess([ens, "--outdir", str(tmp_path / "out")])
+    assert "--vdatum earthdem" in str(exc.value)
+    assert "docs/vdatum.md" in str(exc.value)

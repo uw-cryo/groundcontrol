@@ -10,7 +10,7 @@ Fetch ground control points for an arbitrary AOI and assess DEM accuracy — wit
 > and given a DEM, sample the control, run the accuracy assessment, and produce the
 > analysis + visualization for vertical/horizontal accuracy.
 
-![control map](docs/img/casagrande_large_control_map.png)
+![control map](docs/img/casagrande_control_map.jpg)
 
 ## Status
 
@@ -98,11 +98,11 @@ never guessed — a wrong or assumed vertical datum shows up as a geoid-sized bi
 ### Fetch control for an AOI
 
 ```bash
-# runs as-is: Las Vegas bbox, live 3DEP/NGS/OPUS fetch
-groundcontrol-fetch --aoi=-115.3,36.0,-114.9,36.3 --sources 3dep,ngs,opus --out control.parquet
-# the same for a polygon, or for wherever a DEM has data (+ FAA runway control)
-groundcontrol-fetch --aoi site.geojson --out control.parquet
-groundcontrol-fetch --aoi dsm.tif --sources 3dep,ngs,opus,faa --out control.parquet
+# runs as-is: Las Vegas bbox, live fetch from every provider (the default set)
+groundcontrol-fetch --aoi=-115.3,36.0,-114.9,36.3 --out control.parquet
+# the same for a polygon, or for wherever a DEM has data; restrict with --sources
+groundcontrol-fetch --aoi site.geojson --sources ngs,opus --out control.parquet
+groundcontrol-fetch --aoi dsm.tif --out control.parquet
 # outside the NAD83 area of use the default (CONUS) landing correctly refuses:
 # pick the landing frame — a specific geographic realization, never an ensemble
 groundcontrol-fetch --aoi nepal_aoi.geojson --sources ngl --landing-crs EPSG:7912 --out control.parquet
@@ -126,14 +126,29 @@ besides its frame. The AOI defaults to the product's footprint, the site name to
 file stem, and the figure hillshade is computed from the product itself.
 
 ```bash
-groundcontrol-assess --product DSM=dsm.tif --target-crs dsm_frame.wkt --outdir out/
+groundcontrol-assess dsm.tif --vdatum ellipsoid
 ```
 
-`dsm.tif` and `dsm_frame.wkt` are placeholders for your product and its 3D CRS (for
-ellipsoidal heights on a UTM grid, `groundcontrol.geodesy.build_utm_nad83_2011_3d(32612)`
-+ `write_crs_file` produce the WKT). Optional: several `--product` entries (a DSM/DTM
-pair), `--aoi` to restrict or outline the area, `--sources` (default `3dep,ngs,opus`;
-add `ngl`, `faa`), `--control` to reuse a fetched cache, `--hs NAME=PATH` for a
+Positional inputs classify themselves: a raster is a product (a filename containing
+`DTM` is assessed under the bare-earth rules, anything else as a surface), a vector is
+the AOI, and with only a vector the command runs the AOI-only fetch. The output
+directory defaults to `<input stem>_groundcontrol/` next to the input. `--vdatum`
+states the vertical datum of the product heights and pairs with the raster's own 2D
+horizontal CRS: `ellipsoid`, `ellipsoid:<realization>` (`itrf2014`, `itrf2020`,
+`g2139`, ... — required for WGS84-ensemble horizontals like `EPSG:326xx`, whose bare
+ellipsoid is ~2 m of deliberate ambiguity and is refused), or any vertical CRS
+(`EPSG:5703` NAVD88, `EPSG:3855` EGM2008), or a product preset (`3dep`,
+`precision3d`, `earthdem`, `arcticdem-strip`/`-mosaic`, `rema-strip`/`-mosaic`) that
+applies the researched frame for that product — see the
+[vertical datum field guide](docs/vdatum.md). A product whose embedded CRS is already
+3D/compound needs neither; a 2D
+product with neither `--vdatum` nor `--target-crs` is refused with the common choices
+listed — the height datum lives in the product report and is never guessed. The
+explicit forms remain: `--product NAME=PATH`, `--target-crs dsm_frame.wkt` (for
+custom frames, `groundcontrol.geodesy.with_vdatum` / `build_utm_nad83_2011_3d` +
+`write_crs_file` produce the WKT). Optional: several products (a DSM/DTM
+pair), `--aoi` to restrict or outline the area, `--sources` (default: every provider —
+`3dep,ngs,opus,ngl,faa`), `--control` to reuse a fetched cache, `--hs NAME=PATH` for a
 pre-rendered hillshade on very large mosaics, `--site-name`, `--target-epoch`, and
 sampling `--method`/`--radius`.
 
@@ -147,7 +162,7 @@ Everything lands in `--outdir`, prefixed by the site name:
 | `<site>_assessed.parquet` + `.provenance.json` | control landed in the product frame (`h_ell`, per-point `xform_acc_m` transform budget) with `h_<NAME>` and `dh_<NAME>_before` (product − control) per product; unsampled points (nodata / mosaic gaps) stay as NaN, never dropped |
 | `<site>_dz_stats.csv` | one row per product × control segment (3DEP NVA/VVA, GNSS occupation classes, NGS monuments, ...): `n`, `n_valid`, `n_out`, robust `median_m`/`nmad_m`, parametric `mean_m`/`std_m`/`rmse_m`/`le90_m`/`le95_m` after a 3·NMAD gate, `xform_acc_m`, and `applies` (whether that segment validates that product class) |
 | `<site>_validation_dz_<NAME>.png` | per product: dz map over the hillshade + dual-track histograms for the survey-grade segments and the NGS monuments ([example](docs/gallery.md#2b-the-clis-own-output-bring-your-own-dem)) |
-| `<site>_<subset>_gallery_<tier>[_pN].png` | per-point context contact sheets, broken out by what came back — `cors`, `opus`, `gnss_other`, `faa_runway`, `3dep_nva`, `3dep_vva` — at the two standard tiers (120 m context, 30 m native-pixel). Panels adapt to the available layers: RGB imagery (your `--rgb` ortho and/or `--basemap` web tiles, Esri by default, credited on the sheet; `--basemap none` for offline) \| `--intensity` grayscale when given \| shaded relief per product ([example](docs/gallery.md#7-per-point-context-contact-sheets)). `groundcontrol-fetch --context-sheets` writes the same sheets for an AOI-only fetch (RGB panels only — no DEM required) |
+| `<site>_<subset>_gallery_<tier>[_pN].png` | per-point context contact sheets, broken out by what came back — `cors`, `opus`, `gnss_other`, `faa_runway`, `3dep_nva`, `3dep_vva` — at the two standard tiers (120 m context, 30 m native-pixel). Panels adapt to the available layers: RGB imagery (your `--rgb` ortho and/or `--basemap` web tiles, Esri by default, credited on the sheet; `--basemap none` for offline) \| `--intensity` grayscale when given \| shaded relief per product ([example](docs/gallery.md#7-per-point-context-contact-sheets)). `groundcontrol-fetch` writes the same sheets for an AOI-only fetch by default (RGB panels only — no DEM required; `--no-figures` to skip) |
 
 The CLI also prints the per-source row counts, the selected transform with its stated
 accuracy, and the stats table to stderr.

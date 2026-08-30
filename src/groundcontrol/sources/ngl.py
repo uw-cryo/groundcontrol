@@ -281,9 +281,39 @@ def _attach_networks(stations) -> None:
         m["networks_checked"] = sorted(tables)
 
 
+def _attach_steps(stations) -> None:
+    """Attach each station's earthquake-step epochs (steps.txt type 2) to
+    ``meta['eq_steps']`` as sorted decimal years — the evidence
+    ``crs.propagate_epoch``'s step guard consumes (owner 2026-08-30).
+    ``[]`` = checked, no earthquake steps (verified honest: steps.txt only
+    lists stations WITH steps); absent/None = NOT checked (a steps fetch
+    failure degrades with a loud warning, never aborts the position fetch —
+    the _attach_networks pattern). ``meta['eq_steps_through']`` carries the
+    catalog vintage (the file's latest type-2 date, decimal year) so the
+    guard can refuse to call an interval extending past it "checked"
+    (audit 2026-08-30: a fresh event would otherwise read as clean).
+    Type-1 (equipment) steps are deliberately OUT of scope here: they are
+    instrumental height jumps, not ground displacement — handled by the
+    position-window/ant_m machinery, not epoch propagation."""
+    try:
+        steps = read_steps()
+        eq = steps[steps["type"] == 2]
+        per_sta = {sta: sorted(decyear(d) for d in grp["date"])
+                   for sta, grp in eq.groupby("sta")}
+        through = decyear(eq["date"].max()) if len(eq) else None
+    except Exception as e:
+        logger.warning("NGL steps.txt unavailable (%s: %s): eq_steps not "
+                       "attached — propagate_epoch cannot step-check these "
+                       "rows", type(e).__name__, e)
+        return
+    for s in stations:
+        s["meta"]["eq_steps"] = per_sta.get(s["meta"]["sta"], [])
+        s["meta"]["eq_steps_through"] = through
+
+
 def fetch(aoi_bounds_4326, frame: str = "IGS14", epoch=None, time_range=None,
           max_stations: int | None = None, with_velocities: bool = True,
-          with_networks: bool = True) -> dict:
+          with_networks: bool = True, with_steps: bool = True) -> dict:
     """Fetch raw per-station NGL data for an AOI.
 
     Parameters
@@ -305,6 +335,11 @@ def fetch(aoi_bounds_4326, frame: str = "IGS14", epoch=None, time_range=None,
         skip — the raw evidence then records null (= not checked). List
         failures degrade to the same null with a loud warning; they never
         abort the position fetch (see :func:`_attach_networks`).
+    with_steps : attach each station's earthquake-step epochs from the
+        cached ``steps.txt`` (one GET at most) to ``meta['eq_steps']`` for
+        :func:`parse` -> ``raw["eq_steps"]`` — consumed by
+        ``crs.propagate_epoch``'s step guard. Same degrade contract:
+        failure -> null (= not checked) with a loud warning.
 
     Returns the raw payload consumed by :func:`parse` (which is pure/offline):
     ``{"frame", "epoch", "time_range", "stations": [{"meta", "tenv3"}, ...]}``
@@ -343,6 +378,8 @@ def fetch(aoi_bounds_4326, frame: str = "IGS14", epoch=None, time_range=None,
             s["meta"]["midas"] = vmap.get(s["meta"]["sta"])  # None if absent
     if with_networks:
         _attach_networks(stations)
+    if with_steps:
+        _attach_steps(stations)
     return {
         "frame": frame,
         "epoch": None if epoch is None else float(epoch),
@@ -807,6 +844,11 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
                 # partial check must not read as checked-everywhere)
                 "networks": meta.get("networks"),
                 "networks_checked": meta.get("networks_checked"),
+                # earthquake-step epochs (steps.txt type 2, decimal years);
+                # [] = checked-none, null = not checked — the step-guard
+                # evidence for propagate_epoch (owner 2026-08-30)
+                "eq_steps": meta.get("eq_steps"),
+                "eq_steps_through": meta.get("eq_steps_through"),
                 "n_solutions_used": pos["n_solutions_used"],
                 "window": window_desc,
                 "sig_e_m": pos["sig_e_m"],

@@ -469,3 +469,163 @@ def test_per_row_report_capped_but_column_complete(monkeypatch):
     assert rep["residual_bound_m"] is None                      # dropped from attrs...
     assert len(out["epoch_residual_m"]) == n                    # ...but complete as a column
     assert rep["max_residual_bound_m"] == pytest.approx(out["epoch_residual_m"].max())
+
+
+# --------------------------- earthquake-step guard (owner deferral 2026-08-30)
+
+def _step_gdf(coord_epoch=2011.0, eq_steps=(2015.31,), n=2):
+    """Dynamic-frame rows with MIDAS-style velocities and steps evidence."""
+    import json
+    raw = json.dumps({"eq_steps": list(eq_steps)}) if eq_steps is not None \
+        else json.dumps({})
+    return gpd.GeoDataFrame({
+        "id": [f"ST{i:02d}" for i in range(n)],
+        "height": [1400.0] * n,
+        "coord_epoch": [coord_epoch] * n,
+        "vel_e": [0.01] * n, "vel_n": [0.02] * n, "vel_u": [-0.003] * n,
+        "raw": [raw] * n,
+    }, geometry=gpd.points_from_xy(np.linspace(85.2, 85.4, n),
+                                   np.linspace(28.1, 28.3, n)), crs="EPSG:7912")
+
+
+def test_step_guard_skips_crossing_rows_with_nan_residual():
+    gdf = _step_gdf()
+    with pytest.warns(UserWarning, match="across earthquake step"):
+        out = propagate_epoch(gdf, target_epoch=2022.27)
+    rep = out.attrs["epoch_propagation"]
+    assert rep["n_step_skipped"] == 2 and rep["n_propagated"] == 0
+    assert rep["on_step_crossing"] == "skip"
+    assert rep["step_events"]["ST00"] == [2015.31]
+    # left at their own epoch; the step displacement is unbounded -> NaN
+    assert (out["coord_epoch"] == 2011.0).all()
+    assert np.isnan(out["epoch_residual_m"]).all()
+    np.testing.assert_array_equal(out.geometry.x, gdf.geometry.x)
+
+
+def test_step_guard_interval_logic_and_direction():
+    # target on the same side of the step: propagates
+    out = propagate_epoch(_step_gdf(), target_epoch=2013.0)
+    assert out.attrs["epoch_propagation"]["n_propagated"] == 2
+    assert out.attrs["epoch_propagation"]["n_step_skipped"] == 0
+    # BACKWARD propagation across the step is caught too (KH-9 direction)
+    with pytest.warns(UserWarning, match="across earthquake step"):
+        out = propagate_epoch(_step_gdf(coord_epoch=2020.0), target_epoch=1975.0)
+    assert out.attrs["epoch_propagation"]["n_step_skipped"] == 2
+    # a coordinate estimated AT the step epoch is not "across" it (exclusive)
+    out = propagate_epoch(_step_gdf(coord_epoch=2015.31), target_epoch=2022.0)
+    assert out.attrs["epoch_propagation"]["n_step_skipped"] == 0
+
+
+def test_step_guard_raise_and_propagate_modes():
+    with pytest.raises(ValueError, match="ST00.*2015.31"):
+        propagate_epoch(_step_gdf(), target_epoch=2022.27, on_step_crossing="raise")
+    with pytest.warns(UserWarning, match="propagated anyway"):
+        out = propagate_epoch(_step_gdf(), target_epoch=2022.27,
+                              on_step_crossing="propagate")
+    rep = out.attrs["epoch_propagation"]
+    assert rep["n_propagated"] == 2 and rep["n_step_propagated"] == 2
+    assert (out["coord_epoch"] == 2022.27).all()
+    # audit r1 HIGH: a propagated crossing must leave a DURABLE trace — the
+    # un-modeled step is unbounded (NaN, never a claimed-reconciled 0.0)
+    # and transform_id says what happened
+    assert np.isnan(out["epoch_residual_m"]).all()
+    out2 = _step_gdf()
+    out2["transform_id"] = "x"
+    with pytest.warns(UserWarning, match="propagated anyway"):
+        out2 = propagate_epoch(out2, target_epoch=2022.27,
+                               on_step_crossing="propagate")
+    assert (out2["transform_id"] == "x+prop:per_point[STEP-UNMODELED]->2022.27").all()
+    with pytest.raises(ValueError, match="on_step_crossing"):
+        propagate_epoch(_step_gdf(), target_epoch=2022.27, on_step_crossing="bogus")
+    with pytest.raises(ValueError, match="on_step_crossing"):   # mode validated
+        propagate_epoch(_step_gdf(), target_epoch=2022.27,      # even when the
+                        step_epochs=None, on_step_crossing="bogus")  # guard is off
+
+
+def test_step_guard_models_and_warning_honesty():
+    """Audit r1 M-1: step-skipped rows have a usable velocity — they get
+    their own models tier and must not inflate the no-velocity warning."""
+    import warnings as _w
+    gdf = _step_gdf()
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter("always")
+        out = propagate_epoch(gdf, target_epoch=2022.27)
+    rep = out.attrs["epoch_propagation"]
+    assert rep["models"] == {"per_point": 0, "plate": 0, "none": 0,
+                             "step_blocked": 2}
+    texts = [str(w.message) for w in rec]
+    assert any("across earthquake step" in t for t in texts)
+    assert not any("no usable velocity" in t for t in texts)
+
+
+def test_step_guard_vintage_limits_checked_claim():
+    """Audit r1 M-3: an interval extending past the steps.txt vintage is
+    only partially checked — counted unchecked, not clean."""
+    import json
+    gdf = _step_gdf(eq_steps=())
+    gdf["raw"] = json.dumps({"eq_steps": [], "eq_steps_through": 2020.5})
+    out = propagate_epoch(gdf, target_epoch=2022.27)
+    rep = out.attrs["epoch_propagation"]
+    assert rep["n_propagated"] == 2 and rep["n_step_unchecked"] == 2
+    out = propagate_epoch(gdf, target_epoch=2019.0)   # inside the vintage
+    assert out.attrs["epoch_propagation"]["n_step_unchecked"] == 0
+
+
+def test_step_guard_corrupt_evidence_raises():
+    """Audit r1 M-2: corrupt evidence must never read as a clean check."""
+    for bad in ('{"eq_steps": "2015"}', '{"eq_steps": [null]}',
+                '{"eq_steps": [1e999]}', '{"eq_steps": NaN}',
+                '{"eq_steps": [true]}', '{"eq_steps": ["2015.31"]}',
+                '{"eq_steps": [], "eq_steps_through": "2020"}'):
+        gdf = _step_gdf()
+        gdf["raw"] = bad
+        with pytest.raises(ValueError, match="corrupt step evidence|non-numeric"):
+            propagate_epoch(gdf, target_epoch=2022.27)
+
+
+def test_step_guard_empty_frame_report_shape():
+    """Audit r1 L-1: the n==0 report carries the step keys too."""
+    gdf = _step_gdf().iloc[:0]
+    rep = propagate_epoch(gdf, target_epoch=2022.27).attrs["epoch_propagation"]
+    for k in ("on_step_crossing", "n_step_skipped", "n_step_propagated",
+              "n_step_unchecked", "step_events"):
+        assert k in rep
+
+
+def test_step_guard_mapping_int_keys_coerced():
+    """Audit r1 L-4: a mapping keyed by non-string ids must still join."""
+    gdf = _step_gdf(eq_steps=None)
+    gdf["id"] = [10, 11]
+    with pytest.warns(UserWarning, match="across earthquake step"):
+        out = propagate_epoch(gdf, target_epoch=2022.27,
+                              step_epochs={10: [2015.31], 11: []})
+    assert out.attrs["epoch_propagation"]["n_step_skipped"] == 1
+
+
+def test_step_guard_unchecked_and_disabled():
+    # null evidence (steps.txt not consulted): propagate, count honestly
+    gdf = _step_gdf(eq_steps=None)
+    out = propagate_epoch(gdf, target_epoch=2022.27)
+    rep = out.attrs["epoch_propagation"]
+    assert rep["n_propagated"] == 2 and rep["n_step_unchecked"] == 2
+    # checked-none ([]) is not unchecked
+    out = propagate_epoch(_step_gdf(eq_steps=()), target_epoch=2022.27)
+    assert out.attrs["epoch_propagation"]["n_step_unchecked"] == 0
+    # step_epochs=None disables the guard entirely
+    out = propagate_epoch(_step_gdf(), target_epoch=2022.27, step_epochs=None)
+    rep = out.attrs["epoch_propagation"]
+    assert rep["n_propagated"] == 2 and rep["on_step_crossing"] is None
+
+
+def test_step_guard_mapping_evidence_and_transform_id():
+    gdf = _step_gdf(eq_steps=None)
+    gdf["transform_id"] = "land:identity:EPSG:9000"
+    with pytest.warns(UserWarning, match="across earthquake step"):
+        out = propagate_epoch(gdf, target_epoch=2022.27,
+                              step_epochs={"ST00": [2015.31], "ST01": []})
+    rep = out.attrs["epoch_propagation"]
+    assert rep["n_step_skipped"] == 1 and rep["n_propagated"] == 1
+    assert out.loc[out["id"] == "ST00", "transform_id"].iloc[0] \
+        == "land:identity:EPSG:9000+prop:noop[step]"
+    assert out.loc[out["id"] == "ST01", "transform_id"].iloc[0] \
+        == "land:identity:EPSG:9000+prop:per_point->2022.27"

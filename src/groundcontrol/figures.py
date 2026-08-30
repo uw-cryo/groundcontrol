@@ -1731,15 +1731,27 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
                          if (use["point_type"] == t).any()]
             pts_order += [t for t in use["point_type"].dropna().unique()
                           if t not in pts_order]
+            import matplotlib.patheffects as _pe
+            from matplotlib.markers import MarkerStyle
             for pt in pts_order:
                 mk, _, msz, _, mlab = POINT_STYLE.get(
                     pt, ("o", "#888888", 34, 5, str(pt)))
                 sub = use[use["point_type"] == pt]
-                lw = 1.0 if mk in ("+", "x") else 0.35
-                axes[0].scatter(sub.geometry.x, sub.geometry.y, c=sub[col],
-                                cmap=DZ_CMAP, norm=norm, marker=mk,
-                                s=max(11, int(msz * 0.24)),
-                                edgecolors="#333333", linewidths=lw, zorder=5)
+                kw = dict(c=sub[col], cmap=DZ_CMAP, norm=norm, marker=mk,
+                          s=max(11, int(msz * 0.24)), zorder=5)
+                if MarkerStyle(mk).is_filled():
+                    sc_ = axes[0].scatter(sub.geometry.x, sub.geometry.y,
+                                          edgecolors="#333333",
+                                          linewidths=0.35, **kw)
+                else:
+                    # line-only markers (+, carets) have no face to edge:
+                    # the dz color IS the stroke, so the thin outline every
+                    # ramp-filled symbol needs (owner 2026-08-31) comes from
+                    # a slightly wider dark under-stroke instead
+                    sc_ = axes[0].scatter(sub.geometry.x, sub.geometry.y,
+                                          linewidths=1.1, **kw)
+                    sc_.set_path_effects([_pe.withStroke(linewidth=2.0,
+                                          foreground="#333333")])
                 handles.append(Line2D([], [], marker=mk, ls="", color="#333333",
                                       ms=6, label=f"{mlab} ({len(sub)})"))
         else:

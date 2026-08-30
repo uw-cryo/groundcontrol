@@ -1548,8 +1548,12 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
                 ax.scatter(s.geometry.x, s.geometry.y, s=16, marker="o",
                            c=cyc[i % 6], edgecolors="white", linewidths=0.4,
                            zorder=5, label=f"{v} ({len(s)})")
-            _finish_map(ax, aoi_p, clip_to_aoi)
+            # legend BEFORE _finish_map: the scalebar auto-locator skips
+            # the corner a legend already holds, but only if it exists
+            # when the scalebar is placed (owner 2026-09-01: facet legend
+            # rendered under the scalebar)
             ax.legend(loc="lower left", fontsize=7.5, framealpha=0.9)
+            _finish_map(ax, aoi_p, clip_to_aoi)
             ax.set_title(f"NGS monuments by {key}", fontsize=10, color=_INK)
         fig.suptitle(f"NGS monument datasheet attributes (n={len(mon)}): "
                      f"{site_name}", fontsize=11.5, color=_INK)

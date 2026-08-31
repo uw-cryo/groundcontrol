@@ -982,16 +982,17 @@ _ARP_CAVEAT = (
     "building edges alias at coarse posting) — context, not accuracy")
 
 
-def _caveat_lines(existing):
-    """ARP caveat wrapped to the CURRENT text block's width. The footnote
-    must never be the widest line: under bbox_inches="tight" its extent
-    sets the figure's right edge, and every panel above it carries a dead
+def _caveat_lines(existing, text=None):
+    """Footnote wrapped to the CURRENT text block's width. A footnote must
+    never be the widest line: under bbox_inches="tight" its extent sets
+    the figure's right edge, and every panel above it carries a dead
     right band (owner 2026-08-31, Las Vegas). ``existing`` = the
     already-built (text, ...) rows; the wrap width follows the widest one
     (floor 60 so an empty table cannot force silly-narrow wrapping)."""
     import textwrap
     w = max([len(t[0]) for t in existing] + [60])
-    return textwrap.wrap(_ARP_CAVEAT, width=w, subsequent_indent="  ")
+    return textwrap.wrap(text or _ARP_CAVEAT, width=w,
+                         subsequent_indent="  ")
 
 
 #: contact-sheet subset display names — titles say what the subset IS,
@@ -1674,6 +1675,14 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
                                  sharex=True, sharey=True)
         cyc = ["#0033A0", "#C00000", "#005F20", "#8B008B", "#8B4E00",
                "#111111"]
+        # ring the ngs_best members on every panel, tying the attribute
+        # maps to the ngs_best dz figure (owner 2026-08-31); default rule
+        # only — the dz figure states it in the footer
+        try:
+            best_mon = default_ngs_best(mon).astype("boolean") \
+                .fillna(False).to_numpy(dtype=bool)
+        except Exception:  # facet maps must not die on a schema surprise
+            best_mon = None
         for ax, key in zip(np.atleast_1d(axes), _FACETS):
             _relief(ax, dem_tif, hs_tif, None, dem_alpha, None)
             vals = _raw_field(mon["raw"], key).fillna("(none)")
@@ -1688,6 +1697,12 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
             # the corner a legend already holds, but only if it exists
             # when the scalebar is placed (owner 2026-08-30: facet legend
             # rendered under the scalebar)
+            if best_mon is not None and best_mon.any():
+                b = mon[best_mon]
+                ax.scatter(b.geometry.x, b.geometry.y, s=60,
+                           facecolors="none", edgecolors="#111111",
+                           linewidths=1.0, zorder=6,
+                           label=f"ngs_best member ({len(b)})")
             ax.legend(loc="lower left", fontsize=7.5, framealpha=0.9)
             _finish_map(ax, aoi_p, clip_to_aoi)
             ax.set_title(f"NGS monuments by {key}", fontsize=10, color=_INK)
@@ -2250,6 +2265,12 @@ DZ_FAMILIES = {
 }
 
 
+#: the default_ngs_best rule in datasheet vocabulary, rendered on the
+#: ngs_best figure footer and kept next to the code it describes
+NGS_BEST_RULE = ("best = posSource ADJUSTED and (NAD 83(2011) realization "
+                 "or vertSource GPS OBS/ADJUSTED/READJUSTED)")
+
+
 def default_ngs_best(sampled):
     """Initial empirical 'best NGS' tier (Casa Grande assessment, 2026-07-15):
     ADJUSTED horizontal AND (published NAD 83(2011) realization OR GPS-grade
@@ -2328,6 +2349,13 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                              .to_numpy(dtype=bool), index=sampled.index)
             subclasses = [("NGS monuments (best)",
                            lambda d, m=mask: m, "monument", "o")]
+        # the figure must STATE what "best" means, in the datasheet
+        # vocabulary the monument-attribute maps use (owner 2026-08-31);
+        # a caller-supplied mask gets an honest pointer instead
+        fam_note = None
+        if fam == "ngs_best":
+            fam_note = (NGS_BEST_RULE if ngs_best is None
+                        else "best = caller-supplied ngs_best mask")
         for prod in products:
             col = f"dh_{prod}_before"
             if col not in sampled.columns:
@@ -2515,6 +2543,9 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
             if fam_flagged:
                 fam_lines.extend((line_, _MUT)
                                  for line_ in _caveat_lines(fam_lines))
+            if fam_note:
+                fam_lines.extend((line_, _MUT) for line_
+                                 in _caveat_lines(fam_lines, fam_note))
             if fam_lines:
                 step = min(0.13, 0.96 / len(fam_lines))
                 for i, (line, color) in enumerate(fam_lines):

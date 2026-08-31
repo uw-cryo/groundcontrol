@@ -971,10 +971,16 @@ ARP_HEIGHT_LABELS = {"GNSS continuous", "GNSS semi-continuous",
                      "GNSS campaign (NGL)",
                      "Continuous", "Semi-continuous", "Campaign (NGL)"}
 
+#: |median| above this flags an ARP-class segment as a likely
+#: uncorrected antenna/monument height (owner 2026-09-02: masts/roofs
+#: are 1.5-10 m; survey-class product biases rarely reach 1 m) — the
+#: caveat renders ONLY when a segment is flagged, with * on its median.
+ARP_SUSPECT_MED_M = 1.0
+
 _ARP_CAVEAT = (
-    "GNSS cont/semi-cont dz MAY include antenna/monument height (mark-vs-"
-    "ARP referencing varies",
-    "by station; marks sit on masts/roofs/walls; building edges alias at "
+    "* median suggests uncorrected antenna/monument height (mark-vs-ARP "
+    "referencing varies by",
+    "  station; marks sit on masts/roofs/walls; building edges alias at "
     "coarse posting) — context, not accuracy",
 )
 
@@ -999,10 +1005,20 @@ def _label_medians(ax, meds, span):
     span (label width is estimated from it)."""
     w = 0.13 * span            # ~label width in data units at fontsize 6
     # negatives label LEFT of their line, positives RIGHT (owner
-    # 2026-09-02) — near-zero clusters then fan away from each other;
-    # slot assignment runs per side, walking outward from zero
-    neg = sorted((m for m in meds if m[0] < 0), key=lambda t: -t[0])
-    pos = sorted((m for m in meds if m[0] >= 0), key=lambda t: t[0])
+    # 2026-09-02) — near-zero clusters then fan away from each other —
+    # EXCEPT within a label-width of a panel edge, where the side flips
+    # inward (a median at the axis limit clipped its label off-panel)
+    x0, x1 = ax.get_xlim()
+
+    def _side(x):
+        if x - x0 < w:
+            return 1
+        if x1 - x < w:
+            return -1
+        return -1 if x < 0 else 1
+
+    neg = sorted((m for m in meds if _side(m[0]) < 0), key=lambda t: -t[0])
+    pos = sorted((m for m in meds if _side(m[0]) > 0), key=lambda t: t[0])
     for group, sgn in ((neg, -1), (pos, 1)):
         slots = []             # last label x per vertical slot
         for x, color in group:
@@ -1015,7 +1031,7 @@ def _label_medians(ax, meds, span):
                 slots[k] = x
             ax.annotate(f"{x:+.2f}", (x, 0.99),
                         xycoords=("data", "axes fraction"),
-                        xytext=(2 * sgn, -7.5 * k),
+                        xytext=(2 * sgn, -8.5 * k),
                         textcoords="offset points", fontsize=6,
                         color=color, ha="left" if sgn > 0 else "right",
                         va="top", zorder=6)
@@ -1763,7 +1779,7 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
     return out
 
 
-def stats_table(entries):
+def stats_table(entries, flagged=frozenset()):
     """THE dz stats TABLE for figure text blocks (owner 2026-09-02: two
     lines per segment stopped reading past three classes). ``entries`` =
     ``[(label, values, color), ...]``; returns monospace-aligned
@@ -1784,8 +1800,9 @@ def stats_table(entries):
             f"{'out':>4}", _MUT, False)]
     for label, values, color in entries:
         er = error_report(values)
+        med_cell = f(er['median'], True) + ("*" if label in flagged else "")
         out.append((
-            f"{label[:20]:20s}{er['n']:>5d} {f(er['median'], True):>7} "
+            f"{label[:20]:20s}{er['n']:>5d} {med_cell:>7} "
             f"{f(er['nmad']):>7} {f(er['mean'], True):>7} "
             f"{f(er['std']):>6} {f(er['rmse']):>7} {f(er['le90']):>7} "
             f"{(er['n_outliers'] or ''):>4}", color, False))
@@ -2055,9 +2072,11 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
             ax.grid(alpha=0.25, lw=0.5)
         plt.setp(ax_s.get_xticklabels(), visible=False)
         ax_n.set_xlabel(f"dz = {prod} − control (m)", fontsize=9, color=_INK)
-        txt_lines.extend(stats_table(table_entries))
-        if any(lab in ARP_HEIGHT_LABELS
-               for _, seg_vals, _, _ in panels for lab in seg_vals):
+        flagged = {lab for lab, vals, _c in table_entries
+                   if lab in ARP_HEIGHT_LABELS and len(vals)
+                   and abs(float(np.median(vals))) > ARP_SUSPECT_MED_M}
+        txt_lines.extend(stats_table(table_entries, flagged))
+        if flagged:
             for line_ in _ARP_CAVEAT:
                 txt_lines.append((line_, _MUT, False))
         if "xform_acc_m" in sampled.columns:
@@ -2455,8 +2474,13 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                 if np.isfinite(b):
                     fam_lines.append((f"stated 3D transform budget ±{b:g} m",
                                       _MUT))
-            fam_lines[0:0] = [(t, c) for t, c, _b in stats_table(fam_entries)]
-            if any(sub[0] in ARP_HEIGHT_LABELS for sub in subs):
+            fam_flagged = {lab for lab, vals, _c in fam_entries
+                           if lab in ARP_HEIGHT_LABELS and len(vals)
+                           and abs(float(np.median(vals)))
+                           > ARP_SUSPECT_MED_M}
+            fam_lines[0:0] = [(t, c) for t, c, _b
+                              in stats_table(fam_entries, fam_flagged)]
+            if fam_flagged:
                 for line_ in _ARP_CAVEAT:
                     fam_lines.append((line_, _MUT))
             if fam_lines:

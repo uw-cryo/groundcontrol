@@ -1727,23 +1727,33 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
     return out
 
 
-def stats_lines(label, values, color):
-    """THE dual-track stats lines for figure text blocks (owner 2026-08-30:
-    formatting was duplicated across validation/family figures and the
-    order is standardized here — n FIRST, then the robust pair, then the
-    ASPRS Ed.2 parametric set after error_report's 3*NMAD gate). Returns
-    ``[(text, color, bold), ...]``.
-    """
+def stats_table(entries):
+    """THE dz stats TABLE for figure text blocks (owner 2026-09-02: two
+    lines per segment stopped reading past three classes). ``entries`` =
+    ``[(label, values, color), ...]``; returns monospace-aligned
+    ``[(text, color, bold), ...]`` — one gray header naming statistic +
+    unit, one class-colored row per segment, n FIRST then the robust
+    pair then the ASPRS Ed.2 parametric set (error_report's 3*NMAD
+    gate). Two decimals: the transform budget is cm-scale, mm digits
+    were noise. Render these with a MONOSPACE font."""
     from .accuracy import error_report
-    er = error_report(values)
-    return [
-        (f"{label}: n={er['n']}, med {er['median']:+.3f}, "
-         f"NMAD {er['nmad']:.3f}", color, True),
-        (f"   mean {er['mean']:+.3f}, σ {er['std']:.3f}, "
-         f"RMSE {er['rmse']:.3f}, LE90 {er['le90']:.3f}"
-         + (f" ({er['n_outliers']} out)" if er["n_outliers"] else ""),
-         color, False),
-    ]
+
+    def f(v, sign=False):
+        if v is None or not np.isfinite(v):
+            return "   n/a"
+        return f"{v:+.2f}" if sign else f"{v:.2f}"
+
+    out = [(f"{'':20s}{'n':>5} {'med(m)':>7} {'NMAD(m)':>7} "
+            f"{'mean(m)':>7} {'σ(m)':>6} {'RMSE(m)':>7} {'LE90(m)':>7} "
+            f"{'out':>4}", _MUT, False)]
+    for label, values, color in entries:
+        er = error_report(values)
+        out.append((
+            f"{label[:20]:20s}{er['n']:>5d} {f(er['median'], True):>7} "
+            f"{f(er['nmad']):>7} {f(er['mean'], True):>7} "
+            f"{f(er['std']):>6} {f(er['rmse']):>7} {f(er['le90']):>7} "
+            f"{(er['n_outliers'] or ''):>4}", color, False))
+    return out
 
 
 def _nmad(x):
@@ -1980,16 +1990,20 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
             else lim / 40.0
         nbins = int(np.clip(round(2 * lim / bw), 41, 201))
         txt_lines = []
+        table_entries = []
         for ax, seg_vals, seg_raw, _own in panels:
             for lab, v in seg_vals.items():
                 color = class_ink(seg_defs[lab][1])  # centralized legible ink
                 ax.hist(np.clip(v, -lim, lim), bins=nbins, range=(-lim, lim),
                         histtype="stepfilled", alpha=0.45, color=color,
                         edgecolor=color, label=lab)
-                # centralized dual-track lines (stats_lines: n first),
+                # per-distribution median (owner 2026-09-02): dashed, in
+                # the class ink; values live in the stats table
+                ax.axvline(float(np.median(v)), color=color, ls="--",
+                           lw=1.0, alpha=0.9, zorder=4)
+                # centralized stats TABLE (one colored row per segment),
                 # rendered OUTSIDE the histograms in their own panel
-                # (owner 2026-08-30: 3+ sources never fit in a corner box)
-                txt_lines.extend(stats_lines(lab, seg_raw[lab], color))
+                table_entries.append((lab, seg_raw[lab], color))
             ax.axvline(0, color=_INK, lw=0.8)
             ax.set_xlim(-lim, lim)
             if not seg_vals:
@@ -2000,6 +2014,7 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
             ax.grid(alpha=0.25, lw=0.5)
         plt.setp(ax_s.get_xticklabels(), visible=False)
         ax_n.set_xlabel(f"dz = {prod} − control (m)", fontsize=9, color=_INK)
+        txt_lines.extend(stats_table(table_entries))
         if any(lab in ARP_HEIGHT_LABELS
                for _, seg_vals, _, _ in panels for lab in seg_vals):
             for line_ in _ARP_CAVEAT:
@@ -2013,7 +2028,8 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
             step = min(0.10, 0.97 / len(txt_lines))
             for i, (line, color, bold) in enumerate(txt_lines):
                 ax_t.text(0.0, 0.98 - step * i, line, transform=ax_t.transAxes,
-                          fontsize=7.5, va="top", color=color,
+                          fontsize=6.8, va="top", color=color,
+                          family="monospace",
                           fontweight="bold" if bold else "normal")
         ax_s.set_title("survey-grade points", fontsize=10, color=_INK)
         ax_n.set_title(f"NGS monuments ({ngs_nmad_gate:.0f}-NMAD filtered)",
@@ -2330,6 +2346,7 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
             axt.set_axis_off()
             axes = _axm + [axh]
             sc, fam_lines, n_gap = None, [], 0
+            fam_entries = []
             for axm, sub, m in zip(axes[:-1], subs, sub_masks):
                 lab, _, style, mk = sub[:4]
                 _relief(axm, None, hs_prod, None, 0.0, None)
@@ -2358,10 +2375,11 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                     axh.hist(np.clip(vv, -hist_lim, hist_lim), bins=nb,
                              range=(-hist_lim, hist_lim), histtype="stepfilled",
                              alpha=0.45, color=color, edgecolor=color)
-                    # centralized dual-track lines (stats_lines: n first,
-                    # owner 2026-08-30)
-                    fam_lines.extend((t, c) for t, c, _b
-                                     in stats_lines(lab, vv, color))
+                    # per-distribution median dash (owner 2026-09-02)
+                    axh.axvline(float(np.median(vv)), color=color, ls="--",
+                                lw=1.0, alpha=0.9, zorder=4)
+                    # centralized stats TABLE row (owner 2026-09-02)
+                    fam_entries.append((lab, vv, color))
             if sc is not None:
                 cb = fig.colorbar(sc, cax=cax, extend="both")
                 # ticks + label LEFT of the bar (the validation-figure
@@ -2391,6 +2409,7 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                 if np.isfinite(b):
                     fam_lines.append((f"stated 3D transform budget ±{b:g} m",
                                       _MUT))
+            fam_lines[0:0] = [(t, c) for t, c, _b in stats_table(fam_entries)]
             if any(sub[0] in ARP_HEIGHT_LABELS for sub in subs):
                 for line_ in _ARP_CAVEAT:
                     fam_lines.append((line_, _MUT))
@@ -2398,11 +2417,8 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                 step = min(0.13, 0.96 / len(fam_lines))
                 for i, (line, color) in enumerate(fam_lines):
                     axt.text(0.0, 0.98 - step * i, line,
-                             transform=axt.transAxes, fontsize=8, va="top",
-                             color=color,
-                             fontweight="normal"
-                             if line.startswith(("   ", "stated"))
-                             else "bold")
+                             transform=axt.transAxes, fontsize=6.8,
+                             va="top", color=color, family="monospace")
             axh.tick_params(labelsize=8, colors=_MUT)
             axh.grid(alpha=0.25, lw=0.5)
             gap = f"; {n_gap} unsampled (nodata/gap)" if n_gap else ""

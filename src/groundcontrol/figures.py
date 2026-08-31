@@ -1795,14 +1795,27 @@ def stats_table(entries, flagged=frozenset()):
             return "   n/a"
         return f"{v:+.2f}" if sign else f"{v:.2f}"
 
-    out = [(f"{'':20s}{'n':>5} {'med(m)':>7} {'NMAD(m)':>7} "
-            f"{'mean(m)':>7} {'σ(m)':>6} {'RMSE(m)':>7} {'LE90(m)':>7} "
-            f"{'out':>4}", _MUT, False)]
+    # over-width labels shorten to their trailing (CODE), with a colored
+    # definition line above the table — the shared legend linking the
+    # histogram bars and the table rows by ink (owner 2026-09-02)
+    import re as _re
+    defs, resolved = [], []
     for label, values, color in entries:
+        short = label
+        if len(label) > 20:
+            m = _re.match(r"^(.*?)\s*\(([A-Za-z0-9/+-]{2,10})\)$", label)
+            if m:
+                short = m.group(2)
+                defs.append((f"{short} = {m.group(1)}", color, False))
+        resolved.append((label, short, values, color))
+    out = defs + [(f"{'':20s}{'n':>5} {'med(m)':>7} {'NMAD(m)':>7} "
+                   f"{'mean(m)':>7} {'σ(m)':>6} {'RMSE(m)':>7} "
+                   f"{'LE90(m)':>7} {'out':>4}", _MUT, False)]
+    for label, short, values, color in resolved:
         er = error_report(values)
         med_cell = f(er['median'], True) + ("*" if label in flagged else "")
         out.append((
-            f"{label[:20]:20s}{er['n']:>5d} {med_cell:>7} "
+            f"{short[:20]:20s}{er['n']:>5d} {med_cell:>7} "
             f"{f(er['nmad']):>7} {f(er['mean'], True):>7} "
             f"{f(er['std']):>6} {f(er['rmse']):>7} {f(er['le90']):>7} "
             f"{(er['n_outliers'] or ''):>4}", color, False))

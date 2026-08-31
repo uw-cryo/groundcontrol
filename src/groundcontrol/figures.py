@@ -957,6 +957,24 @@ def _map_panel_size(gdf, *, base=7.0, min_in=2.6, max_in=12.0, max_h=None):
 _PALE_INK = {"white": "#4477AA", "#A6CEE3": "#6FA3D0"}
 
 
+#: dz stat labels whose heights are ANTENNA REFERENCE positions, not
+#: ground marks (owner 2026-09-01, Nepal COP30: med -5.4 m was monument
+#: architecture, not product error): their dz carries uncorrected
+#: antenna/monument height until the queued ant_m correction lands, and
+#: building-mounted stations add edge aliasing at coarse DEM posting.
+#: OPUS campaign is NOT listed — OPUS reports the ground MARK.
+ARP_HEIGHT_LABELS = {"GNSS continuous", "GNSS semi-continuous",
+                     "GNSS campaign (NGL)",
+                     "Continuous", "Semi-continuous", "Campaign (NGL)"}
+
+_ARP_CAVEAT = (
+    "GNSS cont/semi-cont dz includes UNCORRECTED antenna/monument height "
+    "(stations on",
+    "masts/roofs; building edges alias at coarse posting) "
+    "— context, not product accuracy",
+)
+
+
 #: contact-sheet subset display names — titles say what the subset IS,
 #: not the internal tag (owner 2026-08-31 title sweep); unknown tags
 #: (sandbox callers) fall back to the tag itself.
@@ -1980,6 +1998,10 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
             ax.grid(alpha=0.25, lw=0.5)
         plt.setp(ax_s.get_xticklabels(), visible=False)
         ax_n.set_xlabel(f"dz = {prod} − control (m)", fontsize=9, color=_INK)
+        if any(lab in ARP_HEIGHT_LABELS
+               for _, seg_vals, _, _ in panels for lab in seg_vals):
+            for line_ in _ARP_CAVEAT:
+                txt_lines.append((line_, _MUT, False))
         if "xform_acc_m" in sampled.columns:
             _xa = sampled["xform_acc_m"].to_numpy(dtype="float64")
             if np.isfinite(_xa).any():
@@ -2367,6 +2389,9 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                 if np.isfinite(b):
                     fam_lines.append((f"stated 3D transform budget ±{b:g} m",
                                       _MUT))
+            if any(sub[0] in ARP_HEIGHT_LABELS for sub in subs):
+                for line_ in _ARP_CAVEAT:
+                    fam_lines.append((line_, _MUT))
             if fam_lines:
                 step = min(0.13, 0.96 / len(fam_lines))
                 for i, (line, color) in enumerate(fam_lines):

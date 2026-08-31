@@ -800,14 +800,11 @@ def assess_dem_main(argv=None) -> int:
     # is a property of WHERE the AOI is, never of the target frame (a
     # CONUS AOI keeps the NAD83/NAVD88 contract even for an ITRF target:
     # regression 2026-09-01, orthometric rows masked under a 7912 landing)
-    auto_source = None
     landing = args.landing_crs
     if landing is not None:
         from groundcontrol.sources import validate_landing_crs
         _validate_crs(landing, "--landing-crs")
         _preflight(validate_landing_crs, landing)
-        if args.source_crs is None:
-            auto_source = landing
     if len(products) == 2 and args.aoi is None:
         # DSM/DTM pair sanity (owner 2026-09-01): a product family shares
         # ground — disjoint bounds mean independent acquisitions, which
@@ -863,10 +860,22 @@ def assess_dem_main(argv=None) -> int:
         print(f"control cache: {cache} ({len(control)} points)", file=sys.stderr)
         have = (set(control["source"].dropna().unique())
                 if "source" in control.columns else set())
-        if set(sources) - have:
-            print(f"warning: control cache lacks requested source(s) "
-                  f"{sorted(set(sources) - have)} (cache has {sorted(have)}); "
-                  f"delete {cache} to re-fetch", file=sys.stderr)
+        queried = None
+        try:   # the provenance sidecar records which sources were QUERIED
+            import json
+            side = json.loads(
+                Path(str(cache) + ".provenance.json").read_text())
+            st = side.get("status") or {}
+            if st:
+                queried = set(st)
+        except Exception:
+            pass
+        missing = set(sources) - (queried if queried is not None else have)
+        if missing:
+            print(f"warning: control cache never queried source(s) "
+                  f"{sorted(missing)} (cache rows: {sorted(have)}); "
+                  f"delete {cache} or --refresh to re-fetch",
+                  file=sys.stderr)
     else:
         if landing is None:
             # AOI outside the NAD83 landing's area of use (Nepal, not CONUS):
@@ -901,8 +910,6 @@ def assess_dem_main(argv=None) -> int:
                 landing = f"EPSG:{_c3 or _c2}"
                 from groundcontrol.sources import validate_landing_crs
                 _preflight(validate_landing_crs, landing)
-                if args.source_crs is None:
-                    auto_source = landing
                 print(f"landing (auto): {landing} — the AOI is outside the "
                       "NAD83/NAVD88 interim contract's area of use",
                       file=sys.stderr)
@@ -922,19 +929,27 @@ def assess_dem_main(argv=None) -> int:
                  command="groundcontrol-assess " + " ".join(argv or sys.argv[1:]))
         print(f"wrote control cache {cache} ({len(control)} points)", file=sys.stderr)
 
-    if auto_source is not None and source_crs is None and control.crs is not None:
+    if source_crs is None and control.crs is not None:
+        # the CONTROL's own declared frame decides the source (owner
+        # 2026-09-02: a reused non-CONUS cache met the default NAD83
+        # contract and the frame guard refused — reading the cache's CRS
+        # is a declaration, not a guess). NAD83-family/ensemble/projected
+        # frames keep the CONUS contract default; a realized non-NAD83
+        # geographic landing (ITRF2014 -> EPSG:7912) means ellipsoidal
+        # heights on that frame, the landing convention that wrote it.
         import pyproj as _pp
-        _land = _pp.CRS.from_user_input(auto_source)
-        if _pp.CRS(control.crs).equals(_land.to_2d()) or \
-                _pp.CRS(control.crs).equals(_land):
-            source_crs = auto_source
-            print(f"source CRS (auto): {auto_source} (the landing frame; "
-                  "heights ellipsoidal on it)", file=sys.stderr)
-        else:
-            raise SystemExit(
-                f"error: control cache is in {control.crs} but the derived "
-                f"landing is {auto_source} — the cache predates this "
-                "landing; delete it to re-fetch, or pass --source-crs")
+
+        from groundcontrol.geodesy import (NAD83_FAMILY_GEOGRAPHIC,
+                                           is_wgs84_ensemble)
+        _c = _pp.CRS.from_user_input(control.crs)
+        if _c.is_geographic and not is_wgs84_ensemble(_c):
+            _c2 = _c.to_2d().to_epsg()
+            if _c2 is not None and _c2 not in NAD83_FAMILY_GEOGRAPHIC:
+                _c3 = _c.to_3d().to_epsg()
+                source_crs = f"EPSG:{_c3 or _c2}"
+                print(f"source CRS (from the control's declared frame): "
+                      f"{source_crs} — heights ellipsoidal on it",
+                      file=sys.stderr)
 
     from groundcontrol.assess import assess_products  # ~0.5 s; after the preflight
 

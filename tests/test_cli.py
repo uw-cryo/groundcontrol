@@ -1001,3 +1001,40 @@ def test_assess_refresh_ignores_control_cache(tmp_path, monkeypatch, capsys):
     finally:   # the CLI sets the env for its process; scrub it here
         os.environ.pop("GROUNDCONTROL_REFRESH", None)
     assert "ignoring control cache" in capsys.readouterr().err
+
+
+def test_assess_source_derives_from_control_frame(tmp_path, monkeypatch):
+    """A reused non-CONUS control cache declares its own frame (owner
+    2026-09-02: a 7912 cache met the default NAD83 source contract and
+    the frame guard refused): source_crs derives from the control CRS."""
+    import geopandas as gpd
+    seen = {}
+
+    def fake_assess(control, products, target_crs, **kw):
+        seen["source"] = kw.get("source_crs")
+        raise AssertionError("captured")
+
+    monkeypatch.setattr("groundcontrol.assess.assess_products", fake_assess)
+    ens = _plane_tif_wgs84(tmp_path)
+    cache = tmp_path / "ctl.parquet"
+    pts = gpd.GeoDataFrame({"source": ["ngl"] * 3,
+                            "point_type": ["gnss_cont"] * 3,
+                            "height": [1.0, 2.0, 3.0]},
+                           geometry=gpd.points_from_xy(
+                               [85.3, 85.4, 85.5], [28.2, 28.25, 28.3]),
+                           crs="EPSG:7912")
+    pts.to_parquet(cache)
+    with pytest.raises(AssertionError, match="captured"):
+        _assess([ens, "--vdatum", "ellipsoid:itrf2014",
+                 "--control", str(cache),
+                 "--outdir", str(tmp_path / "out")])
+    assert seen["source"] == "EPSG:7912"
+    # a CONUS (NAD83 2D) cache keeps the default contract (source None)
+    pts2 = pts.to_crs("EPSG:6318")
+    cache2 = tmp_path / "ctl2.parquet"
+    pts2.to_parquet(cache2)
+    with pytest.raises(AssertionError, match="captured"):
+        _assess([ens, "--vdatum", "ellipsoid:itrf2014", BBOX,
+                 "--control", str(cache2),
+                 "--outdir", str(tmp_path / "out2")])
+    assert seen["source"] is None

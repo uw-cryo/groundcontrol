@@ -187,6 +187,42 @@ def _radius_stats(arr, xc, yc, xq, yq, radius):
     return med, nmad, cnt
 
 
+
+#: max wasted pixels a group read may spend per point before it is split
+#: (owner 2026-08-30, Las Vegas 0.5 m VRT: fixed 4096-px blocks read 1.5 GB
+#: — 241 windows up to 13 Mpx — to sample 671 scattered points needing ~6 kpx;
+#: ~30 s per product)
+_PER_POINT_PX = 256 * 256
+
+
+def _point_windows(rows, cols, idx, halo_r, halo_c, H, W, block):
+    """Yield ``(idx, rr0, rr1, cc0, cc1)`` read groups for the point set.
+
+    Recursive spatial split: a group is read in one window when the tight
+    bbox (+halo) fits the ``block``-squared memory cap AND wastes at most
+    ``_PER_POINT_PX`` pixels per point; otherwise it splits at the midpoint
+    of the longer point-span axis (both halves provably non-empty) and
+    recurses. Dense clusters still amortize into one read; isolated points
+    read a few-pixel window instead of a multi-megapixel tile. A group
+    whose points share one pixel (or a lone point with a big radius halo)
+    can no longer split and is yielded regardless of the waste cap.
+    """
+    sr, sc = rows[idx], cols[idx]
+    rr0, rr1 = max(0, int(sr.min()) - halo_r), min(H, int(sr.max()) + halo_r + 1)
+    cc0, cc1 = max(0, int(sc.min()) - halo_c), min(W, int(sc.max()) + halo_c + 1)
+    area = (rr1 - rr0) * (cc1 - cc0)
+    rspan, cspan = int(sr.max() - sr.min()), int(sc.max() - sc.min())
+    if (area <= block * block and area <= len(idx) * _PER_POINT_PX) \
+            or (rspan == 0 and cspan == 0):
+        yield idx, rr0, rr1, cc0, cc1
+        return
+    v = sr if rspan >= cspan else sc
+    cut = (int(v.min()) + int(v.max())) // 2  # span > 0: both halves non-empty
+    lo = v <= cut
+    yield from _point_windows(rows, cols, idx[lo], halo_r, halo_c, H, W, block)
+    yield from _point_windows(rows, cols, idx[~lo], halo_r, halo_c, H, W, block)
+
+
 def _sample_windowed(src_fn: str, xs_pt, ys_pt, method: str, block: int, radius=None):
     """Block-wise windowed sampling from the raster's source file (memory-safe).
 
@@ -220,17 +256,8 @@ def _sample_windowed(src_fn: str, xs_pt, ys_pt, method: str, block: int, radius=
         inb = finite & (rows >= 0) & (rows < H) & (cols >= 0) & (cols < W)
         if not inb.any():
             return vals if radius is None else (r_med, r_nmad, r_cnt)
-        rmin, rmax = rows[inb].min(), rows[inb].max()
-        cmin, cmax = cols[inb].min(), cols[inb].max()
-        for r0 in range(rmin, rmax + 1, block):
-            for c0 in range(cmin, cmax + 1, block):
-                sel = inb & (rows >= r0) & (rows < r0 + block) & (cols >= c0) & (cols < c0 + block)
-                if not sel.any():
-                    continue
-                sr, sc = rows[sel], cols[sel]
-                # tile + halo, clamped to the dataset (window never leaves it)
-                rr0, rr1 = max(0, sr.min() - halo_r), min(H, sr.max() + halo_r + 1)
-                cc0, cc1 = max(0, sc.min() - halo_c), min(W, sc.max() + halo_c + 1)
+        for idx, rr0, rr1, cc0, cc1 in _point_windows(
+                rows, cols, np.where(inb)[0], halo_r, halo_c, H, W, block):
                 win = Window(cc0, rr0, cc1 - cc0, rr1 - rr0)
                 arr = ds.read(1, window=win).astype("float64")
                 arr = _mask_nodata(arr, nodata)
@@ -239,7 +266,6 @@ def _sample_windowed(src_fn: str, xs_pt, ys_pt, method: str, block: int, radius=
                 xc = wt.c + (np.arange(nx) + 0.5) * wt.a
                 yc = wt.f + (np.arange(ny) + 0.5) * wt.e
                 arr, xc, yc = _ascending(arr, xc, yc)
-                idx = np.where(sel)[0]
                 if radius is not None:
                     m, s, c = _radius_stats(arr, xc, yc, xs_pt[idx], ys_pt[idx], radius)
                     r_med[idx], r_nmad[idx], r_cnt[idx] = m, s, c

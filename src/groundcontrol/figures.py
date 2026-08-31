@@ -62,7 +62,9 @@ logger = logging.getLogger(__name__)
 #:   into campaign (OPUS) so applies stays continuous with main.
 #: Values: (marker, color, size, zorder, label).
 POINT_STYLE = {
-    "monument": ("P", "#111111", 30, 4, "NGS monument"),
+    # dark purple (owner 2026-09-02: black vanished on hillshade), and
+    # distinct from the red/orange 3DEP, blue GNSS, green FAA families
+    "monument": ("P", "#6A3D9A", 30, 4, "NGS monument"),
     # occupation-class ramp: three lightness steps of one blue family
     # (owner iterations 2026-08-30: three close blues failed, then white
     # failed on white backgrounds) — near-black navy / mid blue / light
@@ -989,6 +991,27 @@ SHEET_SUBSET_TITLES = {
     "3dep_vva": "3DEP VVA checkpoint",
 }
 
+def _label_medians(ax, meds, span):
+    """Median value labels that never overlap (owner 2026-09-02): sort by
+    x and give each label the first vertical slot whose previous label
+    sits far enough left; nearby medians step down slot by slot instead
+    of overprinting. ``meds`` = [(x, color), ...]; ``span`` = the x-axis
+    span (label width is estimated from it)."""
+    w = 0.13 * span            # ~label width in data units at fontsize 6
+    slots = []                 # rightmost label x per vertical slot
+    for x, color in sorted(meds, key=lambda t: t[0]):
+        k = next((i for i, lx in enumerate(slots) if x - lx > w), None)
+        if k is None:
+            k = len(slots)
+            slots.append(x)
+        else:
+            slots[k] = x
+        ax.annotate(f"{x:+.2f}", (x, 0.99),
+                    xycoords=("data", "axes fraction"),
+                    xytext=(2, -7.5 * k), textcoords="offset points",
+                    fontsize=6, color=color, ha="left", va="top", zorder=6)
+
+
 def _sparse_boost(n: int) -> float:
     """Marker-size multiplier keyed on the MAP-TOTAL point count (owner
     2026-09-01: three monuments vanished on a full-map hillshade; the
@@ -1605,7 +1628,11 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
            else ctl.iloc[:0])  # facets read the raw datasheet fields
     if len(mon):
         (outdir / "ngs").mkdir(parents=True, exist_ok=True)
-        fig, axes = plt.subplots(1, len(_FACETS), figsize=(5.6 * len(_FACETS), 6),
+        pw_, ph_ = _map_panel_size(aoi_p if aoi_p is not None else mon,
+                                   base=5.2, max_in=8.0, max_h=6.0)
+        fig, axes = plt.subplots(1, len(_FACETS),
+                                 figsize=(pw_ * len(_FACETS) + 0.6,
+                                          ph_ + 0.9),
                                  sharex=True, sharey=True)
         cyc = ["#0033A0", "#C00000", "#005F20", "#8B008B", "#8B4E00",
                "#111111"]
@@ -1630,7 +1657,7 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
                      f"{site_name}", fontsize=11.5, color=_INK)
         fig.tight_layout(rect=[0, 0, 1, 0.94])
         fp = outdir / "ngs" / f"{site_name}_monument_types.png"
-        fig.savefig(fp, dpi=dpi)
+        fig.savefig(fp, dpi=dpi, bbox_inches="tight")
         plt.close(fig)
         out.append(fp)
 
@@ -1992,20 +2019,25 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         txt_lines = []
         table_entries = []
         for ax, seg_vals, seg_raw, _own in panels:
+            panel_meds = []
             for lab, v in seg_vals.items():
                 color = class_ink(seg_defs[lab][1])  # centralized legible ink
                 ax.hist(np.clip(v, -lim, lim), bins=nbins, range=(-lim, lim),
                         histtype="stepfilled", alpha=0.45, color=color,
                         edgecolor=color, label=lab)
-                # per-distribution median (owner 2026-09-02): dashed, in
-                # the class ink; values live in the stats table
-                ax.axvline(float(np.median(v)), color=color, ls="--",
-                           lw=1.0, alpha=0.9, zorder=4)
+                # per-distribution median (owner 2026-09-02): dashed in
+                # the class ink; value labels placed collision-aware
+                # after the panel is complete
+                _med = float(np.median(v))
+                ax.axvline(_med, color=color, ls="--", lw=1.0, alpha=0.9,
+                           zorder=4)
+                panel_meds.append((_med, color))
                 # centralized stats TABLE (one colored row per segment),
                 # rendered OUTSIDE the histograms in their own panel
                 table_entries.append((lab, seg_raw[lab], color))
             ax.axvline(0, color=_INK, lw=0.8)
             ax.set_xlim(-lim, lim)
+            _label_medians(ax, panel_meds, 2 * lim)
             if not seg_vals:
                 ax.text(0.5, 0.5, "no matching checkpoints in AOI",
                         transform=ax.transAxes, ha="center", va="center",
@@ -2347,6 +2379,7 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
             axes = _axm + [axh]
             sc, fam_lines, n_gap = None, [], 0
             fam_entries = []
+            hist_meds = []
             for axm, sub, m in zip(axes[:-1], subs, sub_masks):
                 lab, _, style, mk = sub[:4]
                 _relief(axm, None, hs_prod, None, 0.0, None)
@@ -2375,9 +2408,12 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                     axh.hist(np.clip(vv, -hist_lim, hist_lim), bins=nb,
                              range=(-hist_lim, hist_lim), histtype="stepfilled",
                              alpha=0.45, color=color, edgecolor=color)
-                    # per-distribution median dash (owner 2026-09-02)
-                    axh.axvline(float(np.median(vv)), color=color, ls="--",
-                                lw=1.0, alpha=0.9, zorder=4)
+                    # per-distribution median dash; labels placed
+                    # collision-aware after the loop
+                    _med = float(np.median(vv))
+                    axh.axvline(_med, color=color, ls="--", lw=1.0,
+                                alpha=0.9, zorder=4)
+                    hist_meds.append((_med, color))
                     # centralized stats TABLE row (owner 2026-09-02)
                     fam_entries.append((lab, vv, color))
             if sc is not None:
@@ -2398,6 +2434,7 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                 cax.set_axis_off()
             axh.axvline(0, color=_INK, lw=0.8)
             axh.set_xlim(-hist_lim, hist_lim)
+            _label_medians(axh, hist_meds, 2 * hist_lim)
             axh.set_xlabel(f"dz = {prod} \u2212 control (m)", fontsize=9,
                            color=_INK)
             # colored stats lines OUTSIDE the histogram, in their own panel

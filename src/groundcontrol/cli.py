@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 def _setup_logging(quiet: bool = False) -> None:
-    """Route the package's own INFO logs to stderr (owner 2026-09-01: a
+    """Route the package's own INFO logs to stderr (owner 2026-08-30: a
     large run sat silent for minutes while the footprint/fetch worked —
     the pipeline narrates itself at INFO, but nothing configured a
     handler). Third-party loggers (botocore, rasterio) stay untouched."""
@@ -140,7 +140,7 @@ def fetch_control_main(argv=None) -> int:
             Path(out).parent, Path(out).stem, midas_velocities=True,
             map_basemap=None if args.basemap == "none" else "esri_hillshade")
         # per-file paths are in the INFO log (the writers log each one);
-        # stdout gets the count, not a raw list (owner 2026-09-01)
+        # stdout gets the count, not a raw list (owner 2026-08-30)
         print(f"wrote {len(sheets) + len(figs)} figures next to {out}",
               file=sys.stderr)
     return 0
@@ -257,9 +257,18 @@ def _load_aoi(aoi, valid_footprint=False):
 
 
 def _default_site_name(products):
-    """--site-name default: the first product's file stem (BYOD run of
-    ``--product DEM=site_dsm.tif`` -> ``site_dsm_*`` artifacts)."""
-    stem = Path(next(iter(products.values()))).stem
+    """--site-name default: the product file stem; for a DSM/DTM pair the
+    COMMON PREFIX of the stems, so no product token names the site (owner
+    2026-08-30: a DTM figure titled ``..._0.5m-DSM_mos`` read as the wrong
+    product). Falls back to the first stem when the prefix is too short to
+    identify anything."""
+    import os
+    stems = [Path(p).stem for p in products.values()]
+    stem = stems[0]
+    if len(stems) > 1:
+        common = os.path.commonprefix(stems).rstrip("_-. ")
+        if len(common) >= 3:
+            stem = common
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("_.") or "site"
 
 
@@ -286,7 +295,7 @@ def _classify_input(path):
             f"input {path}: not a readable raster or vector ({e})") from e
 
 
-#: --vdatum product presets (owner 2026-09-01): named products resolve to
+#: --vdatum product presets (owner 2026-08-30): named products resolve to
 #: the researched frame so strip/mosaic users need none of the frame
 #: archaeology. Evidence + caveats: docs/vdatum.md.
 VDATUM_PRESETS = {
@@ -299,22 +308,22 @@ VDATUM_PRESETS = {
 }
 
 #: presets are DATED SNAPSHOTS of each product line's source-delivery
-#: datum (owner 2026-09-01: products version, and datums move — NSRS 2022
+#: datum (owner 2026-08-30: products version, and datums move — NSRS 2022
 #: will replace NAVD88; PGC registration policies change per release);
 #: the note is printed at resolve time so the assumption is on the record.
 _PRESET_NOTES = {
     "3dep": "NAVD88 orthometric as delivered (GEOID18-realized chain; the "
-            "NSRS 2022 modernization will change this) [as of 2026-09]",
+            "NSRS 2022 modernization will change this) [as of 2026-08]",
     "cop30": "Copernicus GLO-30/90: EGM2008 heights, grid rebased to "
-             "ITRF2014 [as of 2026-09]",
+             "ITRF2014 [as of 2026-08]",
     "precision3d": "Vantor-stated WGS84 G1674 (= ITRF2008 @ 2005.0) "
-                   "[as of 2026-09]",
+                   "[as of 2026-08]",
     "earthdem": "UNREGISTERED strips + mosaics (v1.1): meters-level "
-                "vertical bias, coregistration still required [as of 2026-09]",
+                "vertical bias, coregistration still required [as of 2026-08]",
     "arcticdem": "strips unregistered (~4 m); mosaic v4.1 anchored to "
-                 "GLO-30 outside Greenland — docs/vdatum.md [as of 2026-09]",
+                 "GLO-30 outside Greenland — docs/vdatum.md [as of 2026-08]",
     "rema": "strips unregistered (~4 m); mosaic v2 IS2-aligned (ITRF2014) "
-            "— docs/vdatum.md [as of 2026-09]",
+            "— docs/vdatum.md [as of 2026-08]",
 }
 
 _PGC_NAME_RE = r"setsm|arcticdem|rema|earthdem|utm\d{2}[ns]_\d"
@@ -353,7 +362,7 @@ def _vdatum_target_crs(products, vdatum):
             # 3D on the ENSEMBLE is a declaration in name only (~2 m of
             # ambiguity) — --vdatum is exactly the disambiguation the
             # embedded-CRS refusal asks for (owner catch-22 report,
-            # 2026-09-01): proceed from the demoted horizontal
+            # 2026-08-30): proceed from the demoted horizontal
             if crs.is_compound:
                 crs = pyproj.CRS(crs.sub_crs_list[0])
             crs = crs.to_2d()
@@ -799,14 +808,14 @@ def assess_dem_main(argv=None) -> int:
     # the AUTO derivation happens after the AOI is resolved — the landing
     # is a property of WHERE the AOI is, never of the target frame (a
     # CONUS AOI keeps the NAD83/NAVD88 contract even for an ITRF target:
-    # regression 2026-09-01, orthometric rows masked under a 7912 landing)
+    # regression 2026-08-30, orthometric rows masked under a 7912 landing)
     landing = args.landing_crs
     if landing is not None:
         from groundcontrol.sources import validate_landing_crs
         _validate_crs(landing, "--landing-crs")
         _preflight(validate_landing_crs, landing)
     if len(products) == 2 and args.aoi is None:
-        # DSM/DTM pair sanity (owner 2026-09-01): a product family shares
+        # DSM/DTM pair sanity (owner 2026-08-30): a product family shares
         # ground — disjoint bounds mean independent acquisitions, which
         # are separate runs. An explicit --aoi is the deliberate override.
         import rasterio
@@ -931,7 +940,7 @@ def assess_dem_main(argv=None) -> int:
 
     if source_crs is None and control.crs is not None:
         # the CONTROL's own declared frame decides the source (owner
-        # 2026-09-02: a reused non-CONUS cache met the default NAD83
+        # 2026-08-30: a reused non-CONUS cache met the default NAD83
         # contract and the frame guard refused — reading the cache's CRS
         # is a declaration, not a guess). NAD83-family/ensemble/projected
         # frames keep the CONUS contract default; a realized non-NAD83

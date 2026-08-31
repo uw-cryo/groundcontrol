@@ -558,7 +558,7 @@ def point_context_gallery(points, layers, outdir, site_name, *,
             # honest blank, labeled (owner 2026-08-29: bare white panels
             # read as a bug) — the point is outside every source's data.
             # RETURN here: stretching an all-NaN window is pure
-            # RuntimeWarning noise (owner 2026-09-01 report)
+            # RuntimeWarning noise (owner 2026-08-30 report)
             ax.text(0.5, 0.12, "outside data extent", transform=ax.transAxes,
                     ha="center", fontsize=6.5, color="#888888")
             return x, y, ext
@@ -725,7 +725,7 @@ def point_context_gallery(points, layers, outdir, site_name, *,
             fig.subplots_adjust(left=0.01, right=0.995,
                                 top=1.0 - 0.52 / fig_h, bottom=0.18 / fig_h)
             suffix = f"_p{pg}" if len(pages) > 1 else ""
-            # JPEG q85 (owner 2026-09-01): the sheets are photo-heavy —
+            # JPEG q85 (owner 2026-08-30): the sheets are photo-heavy —
             # 15 MB PNGs compress to ~1-2 MB with no review-relevant loss
             fp = outdir / f"{site_name}_{subset_tag}_gallery_{tier}{suffix}.jpg"
             fig.savefig(fp, dpi=dpi, pil_kwargs={"quality": 85})
@@ -960,7 +960,7 @@ _PALE_INK = {"white": "#4477AA", "#A6CEE3": "#6FA3D0"}
 
 
 #: dz stat labels whose height referencing is PER-STATION AMBIGUOUS
-#: (owner 2026-09-01/02, Nepal COP30: med -5.4 m was monument
+#: (owner 2026-08-30/02, Nepal COP30: med -5.4 m was monument
 #: architecture, not product error): some stations publish mark heights
 #: with antenna height already removed, others effectively the ARP, and
 #: marks themselves may sit on masts/roofs/walls — unresolvable per
@@ -997,14 +997,14 @@ SHEET_SUBSET_TITLES = {
 }
 
 def _label_medians(ax, meds, span):
-    """Median value labels that never overlap (owner 2026-09-02): sort by
+    """Median value labels that never overlap (owner 2026-08-30): sort by
     x and give each label the first vertical slot whose previous label
     sits far enough left; nearby medians step down slot by slot instead
     of overprinting. ``meds`` = [(x, color), ...]; ``span`` = the x-axis
     span (label width is estimated from it)."""
     w = 0.13 * span            # ~label width in data units at fontsize 6
     # negatives label LEFT of their line, positives RIGHT (owner
-    # 2026-09-02) — near-zero clusters then fan away from each other —
+    # 2026-08-30) — near-zero clusters then fan away from each other —
     # EXCEPT within a label-width of a panel edge, where the side flips
     # inward (a median at the axis limit clipped its label off-panel)
     x0, x1 = ax.get_xlim()
@@ -1038,7 +1038,7 @@ def _label_medians(ax, meds, span):
 
 def _sparse_boost(n: int) -> float:
     """Marker-size multiplier keyed on the MAP-TOTAL point count (owner
-    2026-09-01: three monuments vanished on a full-map hillshade; the
+    2026-08-30: three monuments vanished on a full-map hillshade; the
     per-class version then mixed marker scales on one map — sparse FAA
     next to dense NGS — which read as inconsistency). ONE factor per
     map, applied to every class uniformly."""
@@ -1063,7 +1063,7 @@ def _edge_for(mk, col):
 
 
 #: _web_map_underlay render cache: the MIDAS figure draws the SAME
-#: underlay on two panels (owner 2026-09-01: duplicate esri fetches in
+#: underlay on two panels (owner 2026-08-30: duplicate esri fetches in
 #: the log) — key (crs, rounded bounds, provider, max_px), tiny cap.
 _UNDERLAY_CACHE: dict = {}
 
@@ -1229,7 +1229,11 @@ def control_map_figure(ctl, aoi_p, outdir, site_name, *, dem_tif=None,
     if not clip_to_aoi:
         handles.append(Line2D([], [], ls="--", color=_INK, alpha=0.45,
                               label="AOI"))
-    ax.legend(handles=handles, loc="lower left", fontsize=9, framealpha=0.92)
+    leg = ax.legend(handles=handles, loc="lower left", fontsize=9,
+                    framealpha=0.92)
+    # above the zorder-8 station labels: a label near the corner overprinted
+    # the legend box (owner 2026-08-30, Las Vegas BIRD)
+    leg.set_zorder(10)
     _finish_map(ax, aoi_p, clip_to_aoi, points=ctl)
     ax.set_title(title or f"Control points (n={len(ctl)}): {site_name}",
                  fontsize=11, color=_INK)
@@ -1672,7 +1676,7 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
                            zorder=5, label=f"{v} ({len(s)})")
             # legend BEFORE _finish_map: the scalebar auto-locator skips
             # the corner a legend already holds, but only if it exists
-            # when the scalebar is placed (owner 2026-09-01: facet legend
+            # when the scalebar is placed (owner 2026-08-30: facet legend
             # rendered under the scalebar)
             ax.legend(loc="lower left", fontsize=7.5, framealpha=0.9)
             _finish_map(ax, aoi_p, clip_to_aoi)
@@ -1796,7 +1800,7 @@ def stats_table(entries, flagged=frozenset()):
 
     # over-width labels shorten to their trailing (CODE), with a colored
     # definition line above the table — the shared legend linking the
-    # histogram bars and the table rows by ink (owner 2026-09-02)
+    # histogram bars and the table rows by ink (owner 2026-08-30)
     import re as _re
     defs, resolved = [], []
     for label, values, color in entries:
@@ -1807,14 +1811,17 @@ def stats_table(entries, flagged=frozenset()):
                 short = m.group(2)
                 defs.append((f"{short} = {m.group(1)}", color, False))
         resolved.append((label, short, values, color))
-    out = defs + [(f"{'':20s}{'n':>5} {'med(m)':>7} {'NMAD(m)':>7} "
+    # label column sized to the WIDEST resolved label (owner 2026-08-30:
+    # fixed 20 read as a gulf once NVA/VVA shortened to codes)
+    w = min(20, max((len(s) for _, s, _, _ in resolved), default=8))
+    out = defs + [(f"{'':{w}s}{'n':>5} {'med(m)':>7} {'NMAD(m)':>7} "
                    f"{'mean(m)':>7} {'σ(m)':>6} {'RMSE(m)':>7} "
                    f"{'LE90(m)':>7} {'out':>4}", _MUT, False)]
     for label, short, values, color in resolved:
         er = error_report(values)
         med_cell = f(er['median'], True) + ("*" if label in flagged else "")
         out.append((
-            f"{short[:20]:20s}{er['n']:>5d} {med_cell:>7} "
+            f"{short[:w]:{w}s}{er['n']:>5d} {med_cell:>7} "
             f"{f(er['nmad']):>7} {f(er['mean'], True):>7} "
             f"{f(er['std']):>6} {f(er['rmse']):>7} {f(er['le90']):>7} "
             f"{(er['n_outliers'] or ''):>4}", color, False))
@@ -2002,10 +2009,12 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         cb.set_label(f"dz = {prod} − control (m)", fontsize=9, color=_INK)
         cb.ax.tick_params(labelsize=8, colors=_MUT)
         _finish_map(axes[0], aoi, points=use)
-        # FIGURE-level single-line title (owner 2026-09-01: an axes-level
+        # FIGURE-level single-line title (owner 2026-08-30: an axes-level
         # title wrapped oddly across map aspects — the figure is always
         # wide enough, whatever the AOI shape)
-        fig.suptitle(f"Vertical difference (m, {prod} minus control), "
+        # PRODUCT leads the title (owner 2026-08-30: "DTM minus control"
+        # mid-sentence was too subtle when a DSM/DTM pair is analyzed)
+        fig.suptitle(f"{prod} \u2212 control (m), "
                      f"n={len(use)}: {site_name}", x=0.01, y=0.995,
                      ha="left", va="top", fontsize=12, color=_INK)
 
@@ -2063,7 +2072,7 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
                 ax.hist(np.clip(v, -lim, lim), bins=nbins, range=(-lim, lim),
                         histtype="stepfilled", alpha=0.45, color=color,
                         edgecolor=color, label=lab)
-                # per-distribution median (owner 2026-09-02): dashed in
+                # per-distribution median (owner 2026-08-30): dashed in
                 # the class ink; value labels placed collision-aware
                 # after the panel is complete
                 _med = float(np.median(v))
@@ -2109,7 +2118,7 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         fp = outdir / f"{site_name}_validation_dz_{prod}.png"
         # equal-aspect shrinks the MAP's axes box inside its gridspec
         # cell; clamp the colorbar to the map's final drawn height so it
-        # never extends past the map (owner 2026-09-01), and to a fixed
+        # never extends past the map (owner 2026-08-30), and to a fixed
         # 0.28-in bar flush right in its column (the column slack holds
         # the left-side ticks + label)
         fig.canvas.draw()
@@ -2117,7 +2126,7 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         figw = fig.get_size_inches()[0]
         bw = 0.28 / figw
         # anchored to the DRAWN map edge + room for the left-side
-        # ticks/label (owner 2026-09-01: flush-right in the column left
+        # ticks/label (owner 2026-08-30: flush-right in the column left
         # the slack between map and bar — a floating colorbar)
         cax.set_position([pm.x1 + 0.85 / figw, pm.y0, bw, pm.height])
         # bbox_inches trims the residual outer margin (tight_layout fights
@@ -2455,7 +2464,7 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                     axh.axvline(_med, color=color, ls="--", lw=1.0,
                                 alpha=0.9, zorder=4)
                     hist_meds.append((_med, color))
-                    # centralized stats TABLE row (owner 2026-09-02)
+                    # centralized stats TABLE row (owner 2026-08-30)
                     fam_entries.append((lab, vv, color))
             if sc is not None:
                 cb = fig.colorbar(sc, cax=cax, extend="both")
@@ -2506,14 +2515,14 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
             axh.grid(alpha=0.25, lw=0.5)
             gap = f"; {n_gap} unsampled (nodata/gap)" if n_gap else ""
             # left-anchored, matching the validation figure (owner
-            # 2026-09-01: dz titles were a mix of centered and left)
-            fig.suptitle(f"Vertical difference (m, {prod} minus control) "
+            # 2026-08-30: dz titles were a mix of centered and left)
+            fig.suptitle(f"{prod} \u2212 control (m) "
                          f"\u2014 {title}{gap}: {site_name}",
                          x=0.01, y=0.995, ha="left", va="top",
                          fontsize=12, color=_INK)
             fp = outdir / f"{site_name}_dz_{fam}_{prod}.png"
             # equal-aspect shrinks the map boxes inside their cells; clamp
-            # the colorbar to the union of the DRAWN maps (owner 2026-09-01
+            # the colorbar to the union of the DRAWN maps (owner 2026-08-30
             # validation convention) as a fixed 0.28-in bar flush right
             fig.canvas.draw()
             pos = [a.get_position() for a in _axm]

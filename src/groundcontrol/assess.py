@@ -391,6 +391,10 @@ def sample_products(gdf, products, *, method="linear", radius=None, block=4096,
                 "create duplicate labels and silently mixed statistics. Drop "
                 "those columns or use a different product name.")
         before = set(out.columns)
+        # pre-log: a large VRT mosaic can take a while to open/read, and
+        # this stage sat silent after the transform line (owner 2026-08-30,
+        # Las Vegas 0.5 m VRT)
+        logger.info("sampling %s at %d points ...", name, len(out))
         out = sample_raster(out, r, col="h_ell", method=method, diff=True,
                             block=block, check_crs=check_crs, radius=radius,
                             declared_crs=declared_crs)
@@ -469,7 +473,7 @@ def summarize_dz(sampled, products=None, segments=SEGMENTS):
 def check_product_family(products) -> None:
     """One run assesses ONE site's product family: at most one surface
     (DSM-classified) and one bare-earth (DTM-classified) product (owner
-    ruling 2026-09-01, after a multi-strip run produced context sheets
+    ruling 2026-08-30, after a multi-strip run produced context sheets
     where one of five DEMs covered each point). Multiple same-class
     products are independent acquisitions — separate runs, one per file.
     Raises ``ValueError`` naming the offenders."""
@@ -585,7 +589,7 @@ def assess_products(control, products, target_crs, *, outdir, site_name,
         # (GNSS occupation classes, FAA runway control; owner 2026-08-29)
         if sheets:
             # per-point contact sheets: the SLOW figure component (web-tile
-            # windows per point) — opt-in since 2026-09-01 (owner: useful,
+            # windows per point) — opt-in since 2026-08-30 (owner: useful,
             # but not what most users want to wait for by default)
             sheet_paths = context_sheets(sampled, products, outdir, site_name,
                                          rgb=rgb, intensity=intensity,

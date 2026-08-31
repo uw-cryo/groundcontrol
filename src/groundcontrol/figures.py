@@ -441,7 +441,7 @@ def _context_layer_stack(stack, crs, all_pts, products, rgb, intensity,
 
 
 def dz_outlier_sheets(sampled, products, outdir, site_name, *, rgb=None,
-                      intensity=None, basemap="esri", n_out=8, n_zero=4,
+                      intensity=None, basemap="esri", n_each=6,
                       tiers=SHEET_TIERS, dpi=150):
     """Small per-source DIAGNOSTIC galleries: dz outliers + near-zero
     exemplars (owner 2026-08-31: biased ngs_best members share top-class
@@ -449,11 +449,12 @@ def dz_outlier_sheets(sampled, products, outdir, site_name, *, rgb=None,
     so the separator is surface context, reviewable only in imagery).
 
     Per product column and per source subset — the ``context_sheets``
-    subsets PLUS the NGS monuments that never get full sheets — take the
-    ``n_out`` largest |dz| beyond the ``error_report`` 3*NMAD gate and
-    the ``n_zero`` smallest |dz| as the comparison sample. A subset with
-    no gated outliers renders nothing (a clean source needs no page).
-    Row labels carry the dz value; marker color = outlier vs near-zero.
+    subsets PLUS the NGS monuments that never get full sheets — equal
+    WORST and BEST sets by |dz| (``n_each`` each), rendered only when
+    the subset has residuals beyond the ``error_report`` 3*NMAD gate (a
+    clean source needs no page). Row labels carry the dz value; the
+    marker rides the :data:`DZ_CMAP` ramp at the subset's
+    :func:`snap_clim` tier, so page colors read like the dz maps.
     Default-ON in ``assess_products`` (unlike the full sheets): the
     selection is capped, so the pages are few and fast.
     """
@@ -482,13 +483,12 @@ def dz_outlier_sheets(sampled, products, outdir, site_name, *, rgb=None,
     out = []
     with ExitStack() as stack:
         layers = None   # built lazily: only when some subset has outliers
-        role_colors = {"outlier": "#C00000", "near-zero": "#1B7837"}
         for prod, col in dz_cols:
             for stag, (pts, _cls, _colors) in subsets.items():
                 dz = pd.to_numeric(pts[col], errors="coerce")
                 fin = pts[np.isfinite(dz)]
                 dzf = dz[np.isfinite(dz)]
-                if len(fin) < 3:
+                if len(fin) < 4:
                     continue
                 med = float(np.median(dzf))
                 nmad = 1.4826 * float(np.median(np.abs(dzf - med)))
@@ -496,14 +496,17 @@ def dz_outlier_sheets(sampled, products, outdir, site_name, *, rgb=None,
                     else pd.Series(False, index=dzf.index)
                 if not gate.any():
                     continue
-                iout = dzf[gate].abs().sort_values(ascending=False) \
-                    .index[:n_out]
-                izero = dzf.drop(iout).abs().sort_values().index[:n_zero]
-                sel = fin.loc[list(iout) + list(izero)].copy()
-                sel["dz_role"] = ["outlier"] * len(iout) + \
-                    ["near-zero"] * len(izero)
+                # equal-size WORST and BEST sets by |dz| (owner
+                # 2026-08-31: no per-row outlier labels — the contrast
+                # and the marker ramp carry the story)
+                k = min(n_each, len(dzf) // 2)
+                worst = dzf.abs().sort_values(ascending=False).index[:k]
+                best = dzf.drop(worst).abs().sort_values().index[:k]
+                sel = fin.loc[list(worst) + list(best)].copy()
+                sel["dz_val"] = dzf[sel.index]
                 sel["id"] = [f"{i} {v:+.2f} m" for i, v in
                              zip(sel["id"].astype(str), dzf[sel.index])]
+                clim = snap_clim(dzf)   # same tier rule as the dz maps
                 if layers is None:
                     all_pts = pd.concat([p for p, _, _ in subsets.values()])
                     layers = _context_layer_stack(
@@ -518,10 +521,10 @@ def dz_outlier_sheets(sampled, products, outdir, site_name, *, rgb=None,
                     out += point_context_gallery(
                         sel, layers, sub_out, site_name, half_m=half_m,
                         tier_tag=ttag, interp=interp, scale_len=slen,
-                        class_col="dz_role", class_colors=role_colors,
                         subset_tag=f"{stag}_dz_{prod}_outliers",
-                        title=f"{base_title} {prod} dz outlier + near-zero",
-                        sort=False, dpi=dpi)
+                        title=f"{base_title} {prod} dz worst {k} | best {k}",
+                        sort=False, dpi=dpi, value_col="dz_val",
+                        value_clim=clim)
     return out
 
 
@@ -530,7 +533,7 @@ def point_context_gallery(points, layers, outdir, site_name, *,
                           scale_len=25, id_col="id", class_col=None,
                           class_colors=None, subset_tag="station",
                           ncell=None, max_rows=12, sort=True, dpi=200,
-                          title=None):
+                          title=None, value_col=None, value_clim=None):
     """Per-point context contact sheet: one row-cell of image panels per point.
 
     For each point, a horizontal strip of windows from ``layers`` — e.g.
@@ -751,6 +754,14 @@ def point_context_gallery(points, layers, outdir, site_name, *,
                 row_i, cell = divmod(i, ncell)
                 cls = r[class_col] if class_col else None
                 color = (class_colors or {}).get(cls, "#C00000")
+                if value_col is not None and value_clim:
+                    # marker carries dz magnitude on the DZ_CMAP ramp
+                    # (owner 2026-08-31), same tier convention as dz maps
+                    import matplotlib as _mpl
+                    v = float(r[value_col])
+                    color = (_mpl.colormaps[DZ_CMAP](
+                        _mpl.colors.Normalize(-value_clim, value_clim)(v))
+                        if np.isfinite(v) else "#888888")
                 for j, (tag, chain, kind) in enumerate(srcs):
                     ax = fig.add_subplot(gs[row_i, cell * (npanel + 1) + j])
                     try:
@@ -813,12 +824,14 @@ def point_context_gallery(points, layers, outdir, site_name, *,
                 page_cls = f" — {pts_pg[class_col].iloc[0].upper()}"
             page_note = (f"{page_cls} — page {pg}/{len(pages)}"
                          if len(pages) > 1 else page_cls)
+            ramp = (f" | marker: dz ±{value_clim:g} m ({DZ_CMAP})"
+                    if value_col is not None and value_clim else "")
             fig.suptitle(
                 f"{title or SHEET_SUBSET_TITLES.get(subset_tag, subset_tag)}"
                 f" points "
                 f"— {tags} ({2*half_m:.0f} m "
                 f"windows{', native pixels' if interp == 'nearest' else ''})"
-                f": {site_name}{page_note}",
+                f"{ramp}: {site_name}{page_note}",
                 fontsize=12, y=1.0 - 0.12 / fig_h)
             fig.subplots_adjust(left=0.01, right=0.995,
                                 top=1.0 - 0.52 / fig_h, bottom=0.18 / fig_h)
@@ -2374,6 +2387,30 @@ DZ_FAMILIES = {
 }
 
 
+def _egm96_navd88_delta(lon, lat, h):
+    """Local (EGM96-as-truth minus NAVD88-as-assumed) difference in
+    NAD83(2011) ellipsoidal height for a published orthometric H at
+    lon/lat (deg) — the expected dz signature when a NASR elevation is
+    really EGM96 MSL (DoD standard) but was read as NAVD88 (owner
+    2026-08-31, Nellis: +0.479 m predicted, +0.45 observed). WGS84 is
+    taken as ITRF2014 (cm-level for this diagnostic). Returns NaN when
+    the PROJ grids are unavailable — diagnostic only, NEVER a correction.
+    """
+    try:
+        from pyproj import Transformer
+        _, _, ha = Transformer.from_crs("EPSG:6318+5703", "EPSG:6319",
+                                        always_xy=True).transform(lon, lat, h)
+        _, _, hw = Transformer.from_crs("EPSG:4326+5773", "EPSG:4979",
+                                        always_xy=True).transform(lon, lat, h)
+        _, _, hb = Transformer.from_crs("EPSG:7912", "EPSG:6319",
+                                        always_xy=True).transform(lon, lat, hw)
+        if not (np.isfinite(ha) and np.isfinite(hb)):
+            return float("nan")
+        return float(hb - ha)
+    except Exception:
+        return float("nan")
+
+
 #: the default_ngs_best rule in datasheet vocabulary, rendered on the
 #: ngs_best figure footer and kept next to the code it describes
 NGS_BEST_RULE = ("best = posSource ADJUSTED and (NAD 83(2011) realization "
@@ -2465,10 +2502,12 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
         if fam == "ngs_best":
             fam_note = (NGS_BEST_RULE if ngs_best is None
                         else "best = caller-supplied ngs_best mask")
-        elif fam == "faa" and "raw" in sampled.columns:
+        mil_mask = None
+        if fam == "faa" and "raw" in sampled.columns:
             _mil = pd.Series(_raw_field(sampled["raw"], "pos_class")
                              == "military").fillna(False)
             if bool(_mil.any()):
+                mil_mask = _mil.to_numpy(dtype=bool)
                 fam_note = ("military-owned facility: elevations may be "
                             "EGM96 MSL (DoD standard), not NAVD88 — vertical "
                             "datum unverified, excluded from the surveyed "
@@ -2661,8 +2700,35 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                 fam_lines.extend((line_, _MUT)
                                  for line_ in _caveat_lines(fam_lines))
             if fam_note:
+                note = fam_note
+                if mil_mask is not None:
+                    # informed-decision aid (owner 2026-08-31): does the
+                    # military median MATCH the local EGM96-NAVD88
+                    # separation? Stated, never silently corrected.
+                    mv = pd.to_numeric(sampled.loc[mil_mask, col],
+                                       errors="coerce").to_numpy("float64")
+                    mv = mv[np.isfinite(mv)]
+                    if len(mv) >= 2:
+                        import geopandas as _gpd
+                        mp = sampled.loc[mil_mask]
+                        c = mp.geometry.union_all().centroid
+                        ll = _gpd.GeoSeries([c],
+                                            crs=sampled.crs).to_crs(4326)
+                        dlt = _egm96_navd88_delta(
+                            float(ll.x.iloc[0]), float(ll.y.iloc[0]),
+                            float(np.nanmedian(pd.to_numeric(
+                                mp["height"], errors="coerce"))))
+                        med = float(np.median(mv))
+                        if np.isfinite(dlt):
+                            verdict = ("CONSISTENT with EGM96 elevations"
+                                       if abs(med - dlt) < 0.15 else
+                                       "NOT explained by the datum "
+                                       "difference")
+                            note += (f". Military median {med:+.2f} m vs "
+                                     f"local EGM96-NAVD88 separation "
+                                     f"{dlt:+.2f} m: {verdict}")
                 fam_lines.extend((line_, _MUT) for line_
-                                 in _caveat_lines(fam_lines, fam_note))
+                                 in _caveat_lines(fam_lines, note))
             if fam_lines:
                 step = min(0.13, 0.96 / len(fam_lines))
                 for i, (line, color) in enumerate(fam_lines):

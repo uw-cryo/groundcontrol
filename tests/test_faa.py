@@ -1,10 +1,11 @@
 """FAA NASR runway source: offline parse/fixture tests + live fetch.
 
-Fixture ``faa_apt_sample.txt`` holds 13 real fixed-width records (4 APT +
-9 RWY) captured from the live 2026-08-06 cycle: LAS (Harry Reid) and VGT
+Fixture ``faa_apt_sample.txt`` holds 17 real fixed-width records (5 APT +
+12 RWY) captured from the live 2026-08-06 cycle: LAS (Harry Reid) and VGT
 (North Las Vegas) with surveyed ends and displaced thresholds, NV53 (a
-hospital heliport, FAA-EST IMAGERY provenance), and 5AZ3 (Pegasus Airpark
-AZ, estimated-provenance GA field with displaced thresholds). ``fetch()``
+hospital heliport, FAA-EST IMAGERY provenance), 5AZ3 (Pegasus Airpark
+AZ, estimated-provenance GA field with displaced thresholds), and LSV
+(Nellis AFB: ownership MA — the military provenance class). ``fetch()``
 is ``@network``; parsing is offline.
 """
 
@@ -36,11 +37,12 @@ def _raw(bounds=WORLD):
 
 def test_parse_counts_and_types():
     out = faa.parse(_raw())
-    assert len(out) == 26
-    assert (out["point_type"] == "runway_end").sum() == 16
+    assert len(out) == 31
+    assert (out["point_type"] == "runway_end").sum() == 20
     assert (out["point_type"] == "displaced_threshold").sum() == 9
-    # NV53 H1 is a hospital helipad: pad point, not a runway end
-    assert list(out.loc[out["point_type"] == "helipad", "id"]) == ["NV53_H1"]
+    # NV53 H1 (hospital) and LSV H1 (base pad): pad points, not runway ends
+    assert sorted(out.loc[out["point_type"] == "helipad", "id"]) == \
+        ["LSV_H1", "NV53_H1"]
     assert out.crs is not None and out.crs.to_epsg() == 6318
     # every point carries coordinates; heights all present in this sample
     assert out.geometry.notna().all()
@@ -69,14 +71,21 @@ def test_provenance_classes_and_accuracy():
     cls = out["raw"].map(lambda s: json.loads(s)["pos_class"])
     srcs = out["raw"].map(lambda s: json.loads(s).get("pos_src", ""))
     surveyed = cls == "surveyed"
-    # LAS/VGT are 3RD PARTY SURVEY; NV53 heliport and 5AZ3 are estimated
+    military = cls == "military"
+    # LAS/VGT are 3RD PARTY SURVEY; NV53 heliport and 5AZ3 are estimated;
+    # LSV (Nellis AFB, ownership MA) classes military REGARDLESS of its
+    # MILITARY position source — DoD-pipeline elevations may be EGM96 MSL
     assert set(out.loc[surveyed, "id"].str[:3]) == {"LAS", "VGT"}
-    assert (~surveyed).sum() == 5  # NV53_H1 + four 5AZ3 points
-    assert set(srcs[~surveyed]) == {"FAA-EST IMAGERY", "ADO"}
+    assert set(out.loc[military, "id"].str[:3]) == {"LSV"}
+    assert (~surveyed & ~military).sum() == 5  # NV53_H1 + four 5AZ3 points
+    assert set(srcs[~surveyed & ~military]) == {"FAA-EST IMAGERY", "ADO"}
+    own = out["raw"].map(lambda s: json.loads(s).get("ownership"))
+    assert set(own[military]) == {"MA"} and set(own[surveyed]) == {"PU"}
     # spec accuracy attaches to the surveyed class ONLY; estimated rows
     # honestly carry no accuracy (never a fabricated bound)
     assert np.allclose(out.loc[surveyed, "acc_h"], faa.ACC_H_SURVEYED)
     assert np.allclose(out.loc[surveyed, "acc_v"], faa.ACC_V_SURVEYED)
+    # military rows too: their spec is the DoD pipeline's, not the AC's
     assert out.loc[~surveyed, "acc_h"].isna().all()
     assert out.loc[~surveyed, "acc_v"].isna().all()
 
@@ -92,8 +101,8 @@ def test_measurement_datetime_from_pos_src_date():
 
 def test_bbox_filter_and_empty():
     lv = faa.parse(_raw(LV_BBOX))
-    assert set(lv["id"].str[:4]) == {"LAS_", "VGT_", "NV53"}
-    assert len(lv) == 22  # 26 minus the four 5AZ3 (Arizona) points
+    assert set(lv["id"].str[:4]) == {"LAS_", "LSV_", "VGT_", "NV53"}
+    assert len(lv) == 27  # 31 minus the four 5AZ3 (Arizona) points
     empty = faa.parse(_raw((0.0, 0.0, 1.0, 1.0)))
     assert len(empty) == 0
     assert empty.crs is not None
@@ -146,7 +155,7 @@ def test_fetch_serves_from_cache(tmp_path, monkeypatch):
     raw = faa.fetch(LV_BBOX, cycle=FIXTURE_CYCLE)
     assert raw["cycle"] == FIXTURE_CYCLE
     out = faa.parse(raw)
-    assert len(out) == 22
+    assert len(out) == 27
 
 
 @pytest.mark.network

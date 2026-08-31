@@ -141,7 +141,7 @@ def test_summarize_dz_segments_nodata_and_applies(tmp_path):
         "3DEP NVA", "3DEP VVA", "GNSS continuous", "GNSS semi-continuous",
         "GNSS campaign (OPUS)", "GNSS campaign (NGL)",
         "GNSS campaign (other)", "GNSS (pre-split)", "NGS monument",
-        "FAA runway surveyed", "FAA other",
+        "FAA runway surveyed", "FAA military field", "FAA other",
         "OTHER (unsegmented)"}
 
 

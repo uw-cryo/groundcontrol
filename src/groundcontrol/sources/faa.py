@@ -31,6 +31,16 @@ Elevations are feet MSL, NAVD88 per the AC (the most recent NGS hybrid
 geoid at survey time); NASR never publishes ellipsoid height (ARINC 424
 field 5.225 via the CIFP distribution is the only public channel — a
 possible future join, not implemented here).
+
+MILITARY-owned facilities (APT ownership MA/MN/MR/CG; 316 nationally in
+cycle 2026-08-06) are the exception to the NAVD88 reading: their records
+flow from the DoD survey pipeline, whose standard is WGS84/EGM96 MSL. At
+Nellis AFB all four runway ends miss the co-located lidar by the local
+EGM96-NAVD88 separation (+0.479 m predicted, +0.45 m observed median),
+while the base's 2022-dated helipad record matches NAVD88 to 3 mm — the
+per-point datum is genuinely ambiguous, so :func:`pos_class` classes the
+whole facility ``"military"`` (own segment, no spec accuracy, excluded
+from the surveyed tier) rather than guessing a correction either way.
 """
 
 from __future__ import annotations
@@ -73,8 +83,26 @@ SURVEYED_SOURCES = frozenset(
     {"3RD PARTY SURVEY", "NGS", "ARPTS CONTRACTOR", "MILITARY"})
 
 
-def pos_class(src) -> str:
-    """Coordinate-provenance class for a NASR position source string."""
+#: APT ownership codes for military-branch facilities (MA air force,
+#: MN navy, MR army, CG coast guard)
+MILITARY_OWNERSHIP = {"MA", "MN", "MR", "CG"}
+
+
+def pos_class(src, ownership=None) -> str:
+    """Provenance class for a NASR position source string.
+
+    A row at a MILITARY-owned facility classes ``"military"`` regardless
+    of its position source: those elevations flow through the DoD survey
+    pipeline, whose standard vertical reference is EGM96 MSL, not NAVD88
+    (owner 2026-08-31, Nellis AFB: all four runway ends off by the local
+    EGM96-NAVD88 separation, +0.479 m predicted vs +0.45 m observed
+    median vs both DSM and DTM — while the base's 2022-dated helipad
+    record matches NAVD88 to 3 mm, so no per-facility datum can honestly
+    be assumed either way). The class keeps them out of the surveyed
+    accuracy tier and visible as their own segment instead of silently
+    biasing it or being silently "corrected"."""
+    if str(ownership).strip().upper() in MILITARY_OWNERSHIP:
+        return "military"
     return "surveyed" if str(src).strip().upper() in SURVEYED_SOURCES \
         else "estimated"
 
@@ -136,6 +164,9 @@ _APT_SITE = slice(3, 14)       # 00004 L11 landing facility site number
 _APT_TYPE = slice(14, 27)      # 00015 L13 facility type (AIRPORT/HELIPORT/..)
 _APT_LOCID = slice(27, 31)     # 00028 L4  location identifier
 _APT_NAME = slice(133, 183)    # 00134 L50 official facility name
+_APT_OWNER = slice(183, 185)   # 00184 L2  ownership: PU/PR public/private,
+                               #           MA/MN/MR/CG military branches
+_APT_USE = slice(185, 187)     # 00186 L2  facility use: PU/PR
 _RWY_SITE = slice(3, 14)       # 00004 L11 site number (joins APT record)
 _RWY_ID = slice(16, 23)        # 00017 L7  runway identification '01L/19R'
 _END_OFF = 222                 # reciprocal offset, GEOGRAPHIC blocks
@@ -184,6 +215,8 @@ def _rows(lines) -> list[dict]:
                 "fac_type": rec[_APT_TYPE].strip(),
                 "loc_id": rec[_APT_LOCID].strip(),
                 "name": rec[_APT_NAME].strip(),
+                "ownership": rec[_APT_OWNER].strip(),
+                "fac_use": rec[_APT_USE].strip(),
             }
         elif rt == "RWY":
             site = rec[_RWY_SITE].strip()
@@ -257,8 +290,11 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
     if not n:  # schema-shaped empty frame with a valid CRS
         df = pd.DataFrame(columns=["id", "point_type", "lat", "lon", "height",
                                    "pos_src", "pos_src_date"])
-    surveyed = df["pos_src"].map(pos_class).eq("surveyed").to_numpy() \
-        if n else np.array([], dtype=bool)
+    own = df["ownership"] if "ownership" in df.columns \
+        else pd.Series([None] * n, index=df.index)
+    cls = [pos_class(ps, ow) for ps, ow in zip(df.get("pos_src", []), own)] \
+        if n else []
+    surveyed = np.array([c == "surveyed" for c in cls], dtype=bool)
     mdt = pd.to_datetime(df["pos_src_date"], format="%m/%d/%Y",
                          errors="coerce", utc=True) \
         if n else pd.Series([], dtype="datetime64[ns, UTC]")
@@ -292,7 +328,7 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
             "raw": pd.Series(
                 [json.dumps({**{k: str(df.iloc[i][k]) for k in extras
                                 if pd.notna(df.iloc[i][k])},
-                             "pos_class": pos_class(df.iloc[i]["pos_src"])})
+                             "pos_class": cls[i]})
                  for i in range(n)], dtype="string", index=df.index),
         },
         geometry=gpd.points_from_xy(df["lon"], df["lat"]),

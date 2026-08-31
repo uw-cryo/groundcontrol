@@ -348,7 +348,8 @@ def _sheet_subsets(sampled):
                 faa = faa.assign(pos_class=_raw_field(faa["raw"], "pos_class"))
                 if faa["pos_class"].notna().any():
                     cls = "pos_class"
-                    colors = {"surveyed": "crimson", "estimated": "darkorange"}
+                    colors = {"surveyed": "crimson", "estimated": "darkorange",
+                              "military": "#8B4E00"}
             subsets["faa_runway"] = (faa, cls, colors)
     _add("3dep_nva", pt == "NVA")
     _add("3dep_vva", pt == "VVA")
@@ -1118,6 +1119,10 @@ def _label_medians(ax, meds, span):
     # EXCEPT within a label-width of a panel edge, where the side flips
     # inward (a median at the axis limit clipped its label off-panel)
     x0, x1 = ax.get_xlim()
+    # a median beyond the shared x-limits has no line to label — its value
+    # lives in the stats table; annotating it floated text off-axes
+    # (owner 2026-08-31: FAA military +0.45 vs a +/-0.25 m histogram)
+    meds = [m for m in meds if x0 <= m[0] <= x1]
 
     def _side(x):
         if x - x0 < w:
@@ -1984,6 +1989,7 @@ _SEG_STYLE = {
     "GNSS (pre-split)": "gnss",
     "NGS monument": "monument",
     "FAA runway surveyed": "runway_end",
+    "FAA military field": "#8B4E00",
     "FAA other": "#8C6BB1",
     "OTHER (unsegmented)": "gnss",  # never rendered (context, non-GNSS
                                     # label) — placeholder for the sync test
@@ -2360,6 +2366,10 @@ DZ_FAMILIES = {
          lambda d: (d["source"] == "faa")
          & (_raw_field(d["raw"], "pos_class") == "estimated"),
          "#8C6BB1", "v"),
+        ("FAA military",
+         lambda d: (d["source"] == "faa")
+         & (_raw_field(d["raw"], "pos_class") == "military"),
+         "#8B4E00", "^"),
     ]),
 }
 
@@ -2455,6 +2465,14 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
         if fam == "ngs_best":
             fam_note = (NGS_BEST_RULE if ngs_best is None
                         else "best = caller-supplied ngs_best mask")
+        elif fam == "faa" and "raw" in sampled.columns:
+            _mil = pd.Series(_raw_field(sampled["raw"], "pos_class")
+                             == "military").fillna(False)
+            if bool(_mil.any()):
+                fam_note = ("military-owned facility: elevations may be "
+                            "EGM96 MSL (DoD standard), not NAVD88 — vertical "
+                            "datum unverified, excluded from the surveyed "
+                            "accuracy class")
         for prod in products:
             col = f"dh_{prod}_before"
             if col not in sampled.columns:

@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 #:   into campaign (OPUS) so applies stays continuous with main.
 #: Values: (marker, color, size, zorder, label).
 POINT_STYLE = {
-    # dark purple (owner 2026-09-02: black vanished on hillshade), and
+    # dark purple (owner 2026-08-30: black vanished on hillshade), and
     # distinct from the red/orange 3DEP, blue GNSS, green FAA families
     "monument": ("P", "#6A3D9A", 30, 4, "NGS monument"),
     # occupation-class ramp: three lightness steps of one blue family
@@ -968,11 +968,10 @@ _PALE_INK = {"white": "#4477AA", "#A6CEE3": "#6FA3D0"}
 #: Building-mounted stations also alias at coarse DEM posting.
 #: OPUS campaign is NOT listed — OPUS reports the ground MARK.
 ARP_HEIGHT_LABELS = {"GNSS continuous", "GNSS semi-continuous",
-                     "GNSS campaign (NGL)",
-                     "Continuous", "Semi-continuous", "Campaign (NGL)"}
+                     "GNSS campaign (NGL)"}
 
 #: |median| above this flags an ARP-class segment as a likely
-#: uncorrected antenna/monument height (owner 2026-09-02: masts/roofs
+#: uncorrected antenna/monument height (owner 2026-08-30: masts/roofs
 #: are 1.5-10 m; survey-class product biases rarely reach 1 m) — the
 #: caveat renders ONLY when a segment is flagged, with * on its median.
 ARP_SUSPECT_MED_M = 1.0
@@ -1780,7 +1779,7 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
 
 
 def stats_table(entries, flagged=frozenset()):
-    """THE dz stats TABLE for figure text blocks (owner 2026-09-02: two
+    """THE dz stats TABLE for figure text blocks (owner 2026-08-30: two
     lines per segment stopped reading past three classes). ``entries`` =
     ``[(label, values, color), ...]``; returns monospace-aligned
     ``[(text, color, bold), ...]`` — one gray header naming statistic +
@@ -2150,14 +2149,14 @@ def _opus_tier(d):
 #: an expected DSM bias is not an error, so VVA is EXCLUDED from the DSM
 #: figure (owner 2026-07-15) rather than shown as a huge tail.
 DZ_FAMILIES = {
-    "3dep": ("3DEP checkpoints", [
-        ("Non-Vegetated Vertical Accuracy (NVA)",
+    "3dep": ("3DEP control points (by accuracy class)", [
+        ("3DEP Non-Vegetated Vertical Accuracy (NVA)",
          lambda d: (d["source"] == "3dep") & (d["point_type"] == "NVA"),
          "NVA", "o"),
         # no products restriction (owner 2026-08-30): VVA renders on the DSM
         # figure too — the canopy bias is informative, and `applies` in the
         # stats CSV still says it does not validate a DSM
-        ("Vegetated Vertical Accuracy (VVA)",
+        ("3DEP Vegetated Vertical Accuracy (VVA)",
          lambda d: (d["source"] == "3dep") & (d["point_type"] == "VVA"),
          "VVA", "s"),
     ]),
@@ -2170,17 +2169,17 @@ DZ_FAMILIES = {
     # NGL antenna-reference points, a mixture whose med/NMAD matches
     # neither). Legacy OPUS rows fold into Campaign (OPUS) like the stats
     # table; empty subclasses are skipped at render time.
-    "gnss": ("GNSS by occupation class", [
-        ("Continuous", lambda d: d["point_type"] == "gnss_cont",
+    "gnss": ("GNSS control points (by occupation class)", [
+        ("GNSS continuous", lambda d: d["point_type"] == "gnss_cont",
          "gnss_cont", "o"),
-        ("Semi-continuous", lambda d: d["point_type"] == "gnss_semicont",
+        ("GNSS semi-continuous", lambda d: d["point_type"] == "gnss_semicont",
          "gnss_semicont", "o"),
-        ("Campaign (OPUS)", lambda d: (d["source"] == "opus")
+        ("GNSS campaign (OPUS)", lambda d: (d["source"] == "opus")
          & d["point_type"].isin(["gnss_campaign", "gnss"]),
          "gnss_campaign", "o"),
-        ("Campaign (NGL ARP)", lambda d: (d["source"] == "ngl")
+        ("GNSS campaign (NGL)", lambda d: (d["source"] == "ngl")
          & (d["point_type"] == "gnss_campaign"), "#7BA3CF", "^"),
-        ("Campaign (other)", lambda d: (d["point_type"] == "gnss_campaign")
+        ("GNSS campaign (other)", lambda d: (d["point_type"] == "gnss_campaign")
          & ~d["source"].isin(["opus", "ngl"]), "#888888", "s"),
         ("Pre-split (non-OPUS)", lambda d: (d["point_type"] == "gnss")
          & (d["source"] != "opus"), "gnss", "o"),
@@ -2195,22 +2194,22 @@ DZ_FAMILIES = {
     # own panel: rows without a decodable code must stay visible, never
     # silently fall out. Okabe-Ito blue/vermillion = a quality contrast,
     # deliberately not the occupation-class blue ramp.
-    "opus_stability": ("OPUS campaign marks (NGS stability code: "
+    "opus_stability": ("OPUS control points (NGS stability code: "
                        "A/B = bedrock/deep-set, expected to hold; "
                        "C/D = surface/shallow, may move)", [
         # _opus_tier is NA for every non-OPUS row, so the tier comparison
         # alone gates A/B and C/D; only the not-coded mask needs the
         # explicit source gate (isna alone would match every other source)
-        ("A/B (expected to hold)",
+        ("OPUS A/B (holds)",
          lambda d: _opus_tier(d) == "A/B", "#0072B2", "o"),
-        ("C/D (may move)",
+        ("OPUS C/D (may move)",
          lambda d: _opus_tier(d) == "C/D", "#D55E00", "o"),
-        ("stability not coded",
+        ("OPUS not coded",
          lambda d: (d["source"] == "opus") & _opus_tier(d).isna(),
          "#888888", "o"),
     ]),
-    "ngs_best": ("NGS monuments, best vertical classes", [
-        ("NGS best", None, "monument", "o"),   # mask injected from ngs_best
+    "ngs_best": ("NGS control points (best vertical classes)", [
+        ("NGS monuments (best)", None, "monument", "o"),  # mask from ngs_best
     ]),
     # FAA NASR runway control, split by published coordinate provenance
     # (raw['pos_class'] from sources/faa.py): the surveyed class is
@@ -2219,12 +2218,12 @@ DZ_FAMILIES = {
     # short panel labels: long ones collide on narrow-aspect AOIs (SF);
     # surveyed = 3RD PARTY SURVEY/NGS/MILITARY/ARPTS CONTRACTOR,
     # estimated = OWNER/FAA-EST IMAGERY/ADO/OE-AAA/blank
-    "faa": ("FAA runways by position source", [
-        ("Surveyed",
+    "faa": ("FAA control points (by position source)", [
+        ("FAA surveyed",
          lambda d: (d["source"] == "faa")
          & (_raw_field(d["raw"], "pos_class") == "surveyed"),
          "runway_end", "^"),
-        ("Estimated",
+        ("FAA estimated",
          lambda d: (d["source"] == "faa")
          & (_raw_field(d["raw"], "pos_class") == "estimated"),
          "#8C6BB1", "v"),
@@ -2308,7 +2307,8 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                 m = pd.Series(np.asarray(mask), index=sampled.index)
             mask = pd.Series(m.astype("boolean").fillna(False)
                              .to_numpy(dtype=bool), index=sampled.index)
-            subclasses = [("NGS best", lambda d, m=mask: m, "monument", "o")]
+            subclasses = [("NGS monuments (best)",
+                           lambda d, m=mask: m, "monument", "o")]
         for prod in products:
             col = f"dh_{prod}_before"
             if col not in sampled.columns:

@@ -998,18 +998,27 @@ def _label_medians(ax, meds, span):
     of overprinting. ``meds`` = [(x, color), ...]; ``span`` = the x-axis
     span (label width is estimated from it)."""
     w = 0.13 * span            # ~label width in data units at fontsize 6
-    slots = []                 # rightmost label x per vertical slot
-    for x, color in sorted(meds, key=lambda t: t[0]):
-        k = next((i for i, lx in enumerate(slots) if x - lx > w), None)
-        if k is None:
-            k = len(slots)
-            slots.append(x)
-        else:
-            slots[k] = x
-        ax.annotate(f"{x:+.2f}", (x, 0.99),
-                    xycoords=("data", "axes fraction"),
-                    xytext=(2, -7.5 * k), textcoords="offset points",
-                    fontsize=6, color=color, ha="left", va="top", zorder=6)
+    # negatives label LEFT of their line, positives RIGHT (owner
+    # 2026-09-02) — near-zero clusters then fan away from each other;
+    # slot assignment runs per side, walking outward from zero
+    neg = sorted((m for m in meds if m[0] < 0), key=lambda t: -t[0])
+    pos = sorted((m for m in meds if m[0] >= 0), key=lambda t: t[0])
+    for group, sgn in ((neg, -1), (pos, 1)):
+        slots = []             # last label x per vertical slot
+        for x, color in group:
+            k = next((i for i, lx in enumerate(slots)
+                      if abs(x - lx) > w), None)
+            if k is None:
+                k = len(slots)
+                slots.append(x)
+            else:
+                slots[k] = x
+            ax.annotate(f"{x:+.2f}", (x, 0.99),
+                        xycoords=("data", "axes fraction"),
+                        xytext=(2 * sgn, -7.5 * k),
+                        textcoords="offset points", fontsize=6,
+                        color=color, ha="left" if sgn > 0 else "right",
+                        va="top", zorder=6)
 
 
 def _sparse_boost(n: int) -> float:

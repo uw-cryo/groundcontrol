@@ -957,21 +957,23 @@ def _map_panel_size(gdf, *, base=7.0, min_in=2.6, max_in=12.0, max_h=None):
 _PALE_INK = {"white": "#4477AA", "#A6CEE3": "#6FA3D0"}
 
 
-#: dz stat labels whose heights are ANTENNA REFERENCE positions, not
-#: ground marks (owner 2026-09-01, Nepal COP30: med -5.4 m was monument
-#: architecture, not product error): their dz carries uncorrected
-#: antenna/monument height until the queued ant_m correction lands, and
-#: building-mounted stations add edge aliasing at coarse DEM posting.
+#: dz stat labels whose height referencing is PER-STATION AMBIGUOUS
+#: (owner 2026-09-01/02, Nepal COP30: med -5.4 m was monument
+#: architecture, not product error): some stations publish mark heights
+#: with antenna height already removed, others effectively the ARP, and
+#: marks themselves may sit on masts/roofs/walls — unresolvable per
+#: station until the queued ant_m/hardware-at-epoch work lands.
+#: Building-mounted stations also alias at coarse DEM posting.
 #: OPUS campaign is NOT listed — OPUS reports the ground MARK.
 ARP_HEIGHT_LABELS = {"GNSS continuous", "GNSS semi-continuous",
                      "GNSS campaign (NGL)",
                      "Continuous", "Semi-continuous", "Campaign (NGL)"}
 
 _ARP_CAVEAT = (
-    "GNSS cont/semi-cont dz includes UNCORRECTED antenna/monument height "
-    "(stations on",
-    "masts/roofs; building edges alias at coarse posting) "
-    "— context, not product accuracy",
+    "GNSS cont/semi-cont dz MAY include antenna/monument height (mark-vs-"
+    "ARP referencing varies",
+    "by station; marks sit on masts/roofs/walls; building edges alias at "
+    "coarse posting) — context, not accuracy",
 )
 
 

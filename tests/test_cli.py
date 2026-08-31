@@ -1038,3 +1038,21 @@ def test_assess_source_derives_from_control_frame(tmp_path, monkeypatch):
                  "--control", str(cache2),
                  "--outdir", str(tmp_path / "out2")])
     assert seen["source"] is None
+
+
+def test_default_site_name_common_prefix_cuts_to_separator():
+    """A DSM/DTM pair's site name is the common stem prefix cut back to a
+    SEPARATOR: commonprefix of DSM_mos/DTM_no_fill_mos ends mid-token at
+    "...-D" (both continue with D) and a bare rstrip cannot remove the
+    fragment (vantor-06 field report, Las Vegas 2026-08-31)."""
+    from groundcontrol.cli import _default_site_name
+
+    lv = _default_site_name({
+        "DSM": "/d/lasvegas_site_aoi_0.5m-DSM_mos.vrt",
+        "DTM": "/d/lasvegas_site_aoi_0.5m-DTM_no_fill_mos.vrt"})
+    assert lv == "lasvegas_site_aoi_0.5m"
+    # single product: plain stem, untouched
+    assert _default_site_name({"DEM": "/d/casagrande_dsm.tif"}) == "casagrande_dsm"
+    # prefix with no separator at all degrades to the first stem, never "D"
+    assert _default_site_name({
+        "DSM": "/d/DSM_mos.tif", "DTM": "/d/DTM_mos.tif"}) == "DSM_mos"

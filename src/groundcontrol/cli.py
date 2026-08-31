@@ -266,7 +266,16 @@ def _default_site_name(products):
     stems = [Path(p).stem for p in products.values()]
     stem = stems[0]
     if len(stems) > 1:
-        common = os.path.commonprefix(stems).rstrip("_-. ")
+        common = os.path.commonprefix(stems)
+        # a prefix ending mid-token is a name FRAGMENT, not a name: DSM_mos/
+        # DTM_no_fill_mos share "...-D" (both continue with D) and rstrip
+        # cannot remove it — cut back to the last separator (vantor-06 /
+        # owner 2026-08-31: "-D" reached ~19 output names and figure titles)
+        if any(len(st) > len(common) for st in stems):
+            cut = max(common.rfind(c) for c in "_-.")
+            if cut > 0:
+                common = common[:cut]
+        common = common.rstrip("_-. ")
         if len(common) >= 3:
             stem = common
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("_.") or "site"

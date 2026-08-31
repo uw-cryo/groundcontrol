@@ -978,10 +978,20 @@ ARP_SUSPECT_MED_M = 1.0
 
 _ARP_CAVEAT = (
     "* median suggests uncorrected antenna/monument height (mark-vs-ARP "
-    "referencing varies by",
-    "  station; marks sit on masts/roofs/walls; building edges alias at "
-    "coarse posting) — context, not accuracy",
-)
+    "referencing varies by station; marks sit on masts/roofs/walls; "
+    "building edges alias at coarse posting) — context, not accuracy")
+
+
+def _caveat_lines(existing):
+    """ARP caveat wrapped to the CURRENT text block's width. The footnote
+    must never be the widest line: under bbox_inches="tight" its extent
+    sets the figure's right edge, and every panel above it carries a dead
+    right band (owner 2026-08-31, Las Vegas). ``existing`` = the
+    already-built (text, ...) rows; the wrap width follows the widest one
+    (floor 60 so an empty table cannot force silly-narrow wrapping)."""
+    import textwrap
+    w = max([len(t[0]) for t in existing] + [60])
+    return textwrap.wrap(_ARP_CAVEAT, width=w, subsequent_indent="  ")
 
 
 #: contact-sheet subset display names — titles say what the subset IS,
@@ -2098,8 +2108,8 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
                    and abs(float(np.median(vals))) > ARP_SUSPECT_MED_M}
         txt_lines.extend(stats_table(table_entries, flagged))
         if flagged:
-            for line_ in _ARP_CAVEAT:
-                txt_lines.append((line_, _MUT, False))
+            txt_lines.extend((line_, _MUT, False)
+                             for line_ in _caveat_lines(txt_lines))
         if "xform_acc_m" in sampled.columns:
             _xa = sampled["xform_acc_m"].to_numpy(dtype="float64")
             if np.isfinite(_xa).any():
@@ -2503,8 +2513,8 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
             fam_lines[0:0] = [(t, c) for t, c, _b
                               in stats_table(fam_entries, fam_flagged)]
             if fam_flagged:
-                for line_ in _ARP_CAVEAT:
-                    fam_lines.append((line_, _MUT))
+                fam_lines.extend((line_, _MUT)
+                                 for line_ in _caveat_lines(fam_lines))
             if fam_lines:
                 step = min(0.13, 0.96 / len(fam_lines))
                 for i, (line, color) in enumerate(fam_lines):

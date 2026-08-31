@@ -296,7 +296,7 @@ def _attach_steps(stations) -> None:
     try:
         steps = read_steps()
         # vintage from the FULL catalog; per-station epochs only for the
-        # FETCHED stations (profiling 2026-09-01: converting the whole
+        # FETCHED stations (profiling 2026-08-30: converting the whole
         # 142k-row catalog through per-row decyear() burned ~90 s of CPU
         # per fetch and GIL-convoyed the other sources)
         eq_all = steps[steps["type"] == 2]
@@ -389,7 +389,7 @@ def fetch(aoi_bounds_4326, frame: str = "IGS14", epoch=None, time_range=None,
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS + 2) as ex:
         # warm the big shared catalogs CONCURRENTLY with the per-station
-        # pulls (owner 2026-09-01: the ~40 MB steps catalog + MIDAS table
+        # pulls (owner 2026-08-30: the ~40 MB steps catalog + MIDAS table
         # downloaded serially AFTER the tenv3s and read as a hang): the
         # attach helpers then re-read the warm disk cache in seconds.
         # Failures are swallowed here on purpose — each attach path
@@ -408,7 +408,7 @@ def fetch(aoi_bounds_4326, frame: str = "IGS14", epoch=None, time_range=None,
     stations = [s for s in results if s is not None]
     if not stations:
         # nothing to enrich: skip the MIDAS/network/steps catalog fetches
-        # entirely (owner 2026-09-01: a 0-candidate Alaska tile hung for
+        # entirely (owner 2026-08-30: a 0-candidate Alaska tile hung for
         # minutes downloading the full steps catalog for an empty list)
         return {"frame": frame,
                 "epoch": None if epoch is None else float(epoch),
@@ -484,7 +484,7 @@ def _tenv3_text(station: str, frame: str,
                 max_age_days: float = INDEX_MAX_AGE_DAYS) -> str:
     """One station's raw tenv3 text, through the per-station disk cache
     (``ngl_<STA>_<frame>.tenv3``, DataHoldings staleness pattern). Shared
-    by :func:`read_tenv3` AND :func:`fetch` (owner 2026-09-01: fetch
+    by :func:`read_tenv3` AND :func:`fetch` (owner 2026-08-30: fetch
     bypassed the cache, so every assess run re-downloaded every series —
     ~100 s for 9 stations — and the figure stage then downloaded them all
     AGAIN through read_tenv3). Raises ``requests.HTTPError`` on 404."""

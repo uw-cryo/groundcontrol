@@ -167,7 +167,7 @@ def fetch_control(aoi, sources=("3dep", "ngs", "opus", "ngl", "faa"),
     bounds, poly = _aoi_bounds_and_poly(aoi)
     frames: list[gpd.GeoDataFrame] = []
     status: dict[str, dict] = {}
-    # network fetches run CONCURRENTLY (owner 2026-09-01: five serial
+    # network fetches run CONCURRENTLY (owner 2026-08-30: five serial
     # providers were pure wall-clock; the slow parts are downloads).
     # Parse + landing stay SERIAL in this thread: the landing path shares
     # cached pyproj transformers, and provider fetches are the only part

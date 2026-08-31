@@ -775,7 +775,7 @@ def test_vdatum_refuses_wgs84_ensemble_and_offers_realizations(tmp_path, monkeyp
     with pytest.raises(ValueError, match="ENSEMBLE.*realization"):
         _vdatum_target_crs({"DSM": ens}, "ellipsoid")
     # an ORTHOMETRIC vertical on an ensemble grid auto-rebases the
-    # horizontal to ITRF2014 with a loud warning (owner 2026-09-01,
+    # horizontal to ITRF2014 with a loud warning (owner 2026-08-30,
     # EGM2008 COP30 case) — the vertical defines the heights either way
     wkt5703 = _vdatum_target_crs({"DSM": ens}, "EPSG:5703")
     assert pyproj.CRS(wkt5703).equals(
@@ -830,7 +830,7 @@ def test_assess_ensemble_refusal_names_pgc_presets(tmp_path, monkeypatch):
 
 
 def test_one_product_family_per_run(tmp_path, monkeypatch):
-    """Owner ruling 2026-09-01: at most one surface + one bare-earth
+    """Owner ruling 2026-08-30: at most one surface + one bare-earth
     product per run; independent acquisitions are separate runs."""
     from groundcontrol.assess import check_product_family
     check_product_family({"DSM": "a.tif", "DTM": "b.tif"})   # the pair: fine
@@ -865,7 +865,7 @@ def test_disjoint_pair_bounds_refused(tmp_path, monkeypatch):
 
 def test_vdatum_rebase_samples_under_declared_frame(tmp_path, monkeypatch):
     """The --vdatum reinterpretation contract end-to-end (owner bug report
-    2026-09-01): points landed in the DECLARED frame (ITRF2014 on the
+    2026-08-30): points landed in the DECLARED frame (ITRF2014 on the
     raster's own grid) must sample a raster whose header still says the
     ensemble — same grid, datum reinterpretation. A genuinely different
     grid still refuses."""
@@ -903,7 +903,7 @@ def test_vdatum_disambiguates_3d_ensemble_product(tmp_path):
     """A product declaring 3D heights on the WGS84 ENSEMBLE is ambiguity
     in name only: the embedded-CRS refusal tells the user to pass
     --vdatum ellipsoid:<realization>, so the vdatum path must accept it
-    (owner catch-22 report 2026-09-01). A REALIZED 3D declaration is
+    (owner catch-22 report 2026-08-30). A REALIZED 3D declaration is
     still respected/refused."""
     import pyproj
 
@@ -933,7 +933,7 @@ def test_vdatum_disambiguates_3d_ensemble_product(tmp_path):
 def test_assess_derives_landing_for_non_nad83_target(tmp_path, monkeypatch):
     """A non-NAD83 target datum (ITRF2014 via --vdatum) lands the fetch on
     its own geographic base instead of the CONUS NAD83 contract (owner
-    Nepal report 2026-09-01: ITRF->EPSG:6318 was refused, correctly, but
+    Nepal report 2026-08-30: ITRF->EPSG:6318 was refused, correctly, but
     the assess CLI offered no other landing)."""
     seen = {}
 
@@ -945,7 +945,7 @@ def test_assess_derives_landing_for_non_nad83_target(tmp_path, monkeypatch):
     ens = _plane_tif_wgs84(tmp_path)
     # CONUS AOI: the CONUS landing stands even for an ITRF target — the
     # landing keys on WHERE the AOI is, never the target frame
-    # (regression 2026-09-01: a target-keyed landing masked every
+    # (regression 2026-08-30: a target-keyed landing masked every
     # orthometric CONUS row under EPSG:7912)
     with pytest.raises(AssertionError, match="captured"):
         _assess([ens, "--vdatum", "ellipsoid:itrf2014", BBOX,
@@ -1005,7 +1005,7 @@ def test_assess_refresh_ignores_control_cache(tmp_path, monkeypatch, capsys):
 
 def test_assess_source_derives_from_control_frame(tmp_path, monkeypatch):
     """A reused non-CONUS control cache declares its own frame (owner
-    2026-09-02: a 7912 cache met the default NAD83 source contract and
+    2026-08-30: a 7912 cache met the default NAD83 source contract and
     the frame guard refused): source_crs derives from the control CRS."""
     import geopandas as gpd
     seen = {}

@@ -38,7 +38,7 @@ the two general mechanisms behind every preset.
 
 ## Presets are dated snapshots
 
-Every preset records the **source-delivery default as of 2026-09**, and the
+Every preset records the **source-delivery default as of 2026-08**, and the
 resolve-time note says so. These will move:
 
 - **NSRS 2022 modernization**: NAVD88 and the NAD83 realizations are being

@@ -133,7 +133,7 @@ def raster_footprint(path, *, max_px: int = FOOTPRINT_MAX_PX,
                 f"raster {os.fspath(path)} has no CRS; an AOI needs one "
                 "(gdal_edit -a_srs, or pass a vector AOI / bbox instead)")
         if not valid:
-            # DEFAULT (owner 2026-09-01): the grid extent, no mask read.
+            # DEFAULT (owner 2026-08-30): the grid extent, no mask read.
             # The AOI only scopes the fetch and frames the figures —
             # points over nodata NaN out at sampling and are reported as
             # gaps, never propagated — so the (potentially full-raster)

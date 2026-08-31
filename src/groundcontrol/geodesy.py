@@ -241,7 +241,7 @@ def is_wgs84_ensemble(crs) -> bool:
     EPSG:4326 carry. An ensemble is not a realization: transforms to it
     are member-agnostic (PROJ's best CONUS candidate routes through
     NAD83(HARN) + a GEOID09-era grid at 1.14 m accuracy, measured
-    2026-09-01) and heights against it are ambiguous by construction."""
+    2026-08-30) and heights against it are ambiguous by construction."""
     crs = CRS.from_user_input(crs)
     d = crs.datum
     if d is None:
@@ -411,7 +411,7 @@ def with_vdatum(horizontal, vdatum: str) -> CRS:
                 "— or pass the full 3D frame as target_crs")
         return h.to_3d()
     if is_wgs84_ensemble(h):
-        # an ORTHOMETRIC vertical on an ensemble grid (owner 2026-09-01,
+        # an ORTHOMETRIC vertical on an ensemble grid (owner 2026-08-30,
         # EGM2008 COP30 derivative): the heights are datum-defined by the
         # vertical whichever WGS84 member the grid sits on — the
         # realization only cleans OUR horizontal transform legs, which is

@@ -160,7 +160,7 @@ def test_add_scalebar_artist_added():
 
 
 def test_scalebar_feet_grid_labels_meters():
-    """A ftUS state-plane grid gets a correct metric bar (owner 2026-09-01:
+    """A ftUS state-plane grid gets a correct metric bar (owner 2026-08-30:
     Alaska SPCS lidar tile) — dx carries the unit factor."""
     import matplotlib
     matplotlib.use("Agg")

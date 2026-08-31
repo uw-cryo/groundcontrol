@@ -879,7 +879,7 @@ def test_raster_footprint_caps_fragmented_mosaics(tmp_path, monkeypatch, caplog)
 
 
 def test_raster_footprint_default_is_grid_extent(tmp_path):
-    """Default (owner 2026-09-01): the grid extent, NO mask read — nodata
+    """Default (owner 2026-08-30): the grid extent, NO mask read — nodata
     areas fetch harmlessly and NaN out at sampling. valid=True keeps the
     valid-data polygon."""
     from groundcontrol import aoi as aoi_mod

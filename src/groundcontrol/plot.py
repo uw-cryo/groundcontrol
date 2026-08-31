@@ -546,7 +546,7 @@ def add_scalebar(ax, length: float | None = None, label: str | None = None,
     """Add a scalebar labeled in meters/km, whatever the grid unit.
 
     ``crs`` (optional): the axes' projected CRS — its axis unit sets the
-    data-unit-to-meter factor, so a ftUS state-plane grid (owner 2026-09-01,
+    data-unit-to-meter factor, so a ftUS state-plane grid (owner 2026-08-30,
     Alaska SPCS lidar tile) gets a correct metric bar instead of one
     mislabeled by 3.28x. Without it the grid is assumed metric.
 

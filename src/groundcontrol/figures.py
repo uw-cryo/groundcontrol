@@ -304,7 +304,7 @@ SOURCE_DIRS = {
     # contact-sheet subsets
     "3dep_nva": "3dep", "3dep_vva": "3dep",
     "opus": "gnss", "cors": "gnss", "gnss_other": "gnss",
-    "faa_runway": "faa",
+    "faa_runway": "faa", "ngs_monument": "ngs",
     # family_dz_figures families
     "3dep": "3dep", "gnss": "gnss", "ngs_best": "ngs", "faa": "faa",
 }
@@ -381,38 +381,14 @@ def context_sheets(sampled, products, outdir, site_name, *, rgb=None,
     """
     from contextlib import ExitStack
 
-    relief = [(f"{name} relief", p, "relief") for name, p in (products or {}).items()
-              if isinstance(p, (str, Path))]
     subsets = _sheet_subsets(sampled)
     if not subsets:
         return []
     out = []
     with ExitStack() as stack:
-        chain, tag = list(rgb) if isinstance(rgb, (list, tuple)) else \
-            ([rgb] if rgb else []), "RGB ortho"
-        if basemap is not None:
-            all_pts = pd.concat([p for p, _, _ in subsets.values()])
-            map_crs = sampled.crs
-            if map_crs is not None and map_crs.is_geographic:
-                map_crs = all_pts.estimate_utm_crs()   # meter windows need a grid
-                all_pts = all_pts.to_crs(map_crs)
-            step = max(1, len(all_pts) // 12)
-            web = open_web_basemap(
-                map_crs, all_pts.total_bounds, provider=basemap,
-                probe_xy=list(zip(all_pts.geometry.x[::step],
-                                  all_pts.geometry.y[::step])))
-            if web is not None:
-                base, vrt = web
-                stack.callback(base.close)
-                stack.callback(vrt.close)
-                chain.append(vrt)  # pre-opened: gallery reads, we close
-                label = WEB_BASEMAP_PROVIDERS[basemap][0]
-                tag = f"RGB ortho ({label} fallback)" if rgb else label
-        layers = ([(tag, chain if len(chain) > 1 else chain[0], "rgb")]
-                  if chain else [])
-        if intensity is not None:
-            layers.append(("intensity", intensity, "gray"))
-        layers += relief
+        all_pts = pd.concat([p for p, _, _ in subsets.values()])
+        layers = _context_layer_stack(stack, sampled.crs, all_pts,
+                                      products, rgb, intensity, basemap)
         if not layers:
             logger.info("context sheets skipped: no RGB/intensity/product layer")
             return []
@@ -429,11 +405,131 @@ def context_sheets(sampled, products, outdir, site_name, *, rgb=None,
     return out
 
 
+def _context_layer_stack(stack, crs, all_pts, products, rgb, intensity,
+                         basemap):
+    """The contact-sheet layer chain (RGB ortho / web fallback, intensity,
+    per-product relief) — shared by :func:`context_sheets` and
+    :func:`dz_outlier_sheets`. Opens the web basemap into ``stack``."""
+    relief = [(f"{name} relief", p, "relief")
+              for name, p in (products or {}).items()
+              if isinstance(p, (str, Path))]
+    chain, tag = list(rgb) if isinstance(rgb, (list, tuple)) else \
+        ([rgb] if rgb else []), "RGB ortho"
+    if basemap is not None:
+        map_crs = crs
+        if map_crs is not None and map_crs.is_geographic:
+            map_crs = all_pts.estimate_utm_crs()   # meter windows need a grid
+            all_pts = all_pts.to_crs(map_crs)
+        step = max(1, len(all_pts) // 12)
+        web = open_web_basemap(
+            map_crs, all_pts.total_bounds, provider=basemap,
+            probe_xy=list(zip(all_pts.geometry.x[::step],
+                              all_pts.geometry.y[::step])))
+        if web is not None:
+            base, vrt = web
+            stack.callback(base.close)
+            stack.callback(vrt.close)
+            chain.append(vrt)  # pre-opened: gallery reads, we close
+            label = WEB_BASEMAP_PROVIDERS[basemap][0]
+            tag = f"RGB ortho ({label} fallback)" if rgb else label
+    layers = ([(tag, chain if len(chain) > 1 else chain[0], "rgb")]
+              if chain else [])
+    if intensity is not None:
+        layers.append(("intensity", intensity, "gray"))
+    return layers + relief
+
+
+def dz_outlier_sheets(sampled, products, outdir, site_name, *, rgb=None,
+                      intensity=None, basemap="esri", n_out=8, n_zero=4,
+                      tiers=SHEET_TIERS, dpi=150):
+    """Small per-source DIAGNOSTIC galleries: dz outliers + near-zero
+    exemplars (owner 2026-08-31: biased ngs_best members share top-class
+    datasheet attributes with the tight ones — building edges, masts —
+    so the separator is surface context, reviewable only in imagery).
+
+    Per product column and per source subset — the ``context_sheets``
+    subsets PLUS the NGS monuments that never get full sheets — take the
+    ``n_out`` largest |dz| beyond the ``error_report`` 3*NMAD gate and
+    the ``n_zero`` smallest |dz| as the comparison sample. A subset with
+    no gated outliers renders nothing (a clean source needs no page).
+    Row labels carry the dz value; marker color = outlier vs near-zero.
+    Default-ON in ``assess_products`` (unlike the full sheets): the
+    selection is capped, so the pages are few and fast.
+    """
+    from contextlib import ExitStack
+
+    subsets = _sheet_subsets(sampled)
+    pt = sampled.get("point_type")
+    if pt is not None:
+        mon = sampled[(pt.astype("string") == "monument").fillna(False)]
+        if len(mon):
+            subsets["ngs_monument"] = (mon, None, None)
+            # the ngs_best tier separately: its biased-member review is
+            # the gallery's motivating case, and inside the full monument
+            # set those members never rank in the top |dz|
+            try:
+                bm = default_ngs_best(sampled).astype("boolean") \
+                    .fillna(False).to_numpy(dtype=bool)
+                if bm.any():
+                    subsets["ngs_best"] = (sampled[bm], None, None)
+            except Exception:
+                pass
+    if not subsets:
+        return []
+    dz_cols = [(c[len("dh_"):-len("_before")], c) for c in sampled.columns
+               if c.startswith("dh_") and c.endswith("_before")]
+    out = []
+    with ExitStack() as stack:
+        layers = None   # built lazily: only when some subset has outliers
+        role_colors = {"outlier": "#C00000", "near-zero": "#1B7837"}
+        for prod, col in dz_cols:
+            for stag, (pts, _cls, _colors) in subsets.items():
+                dz = pd.to_numeric(pts[col], errors="coerce")
+                fin = pts[np.isfinite(dz)]
+                dzf = dz[np.isfinite(dz)]
+                if len(fin) < 3:
+                    continue
+                med = float(np.median(dzf))
+                nmad = 1.4826 * float(np.median(np.abs(dzf - med)))
+                gate = np.abs(dzf - med) > 3 * nmad if nmad > 0 \
+                    else pd.Series(False, index=dzf.index)
+                if not gate.any():
+                    continue
+                iout = dzf[gate].abs().sort_values(ascending=False) \
+                    .index[:n_out]
+                izero = dzf.drop(iout).abs().sort_values().index[:n_zero]
+                sel = fin.loc[list(iout) + list(izero)].copy()
+                sel["dz_role"] = ["outlier"] * len(iout) + \
+                    ["near-zero"] * len(izero)
+                sel["id"] = [f"{i} {v:+.2f} m" for i, v in
+                             zip(sel["id"].astype(str), dzf[sel.index])]
+                if layers is None:
+                    all_pts = pd.concat([p for p, _, _ in subsets.values()])
+                    layers = _context_layer_stack(
+                        stack, sampled.crs, all_pts, products, rgb,
+                        intensity, basemap)
+                    if not layers:
+                        logger.info("dz outlier sheets skipped: no layer")
+                        return []
+                sub_out = Path(outdir) / SOURCE_DIRS.get(stag, stag)
+                base_title = SHEET_SUBSET_TITLES.get(stag, stag)
+                for half_m, ttag, interp, slen in tiers:
+                    out += point_context_gallery(
+                        sel, layers, sub_out, site_name, half_m=half_m,
+                        tier_tag=ttag, interp=interp, scale_len=slen,
+                        class_col="dz_role", class_colors=role_colors,
+                        subset_tag=f"{stag}_dz_{prod}_outliers",
+                        title=f"{base_title} {prod} dz outlier + near-zero",
+                        sort=False, dpi=dpi)
+    return out
+
+
 def point_context_gallery(points, layers, outdir, site_name, *,
                           half_m=60.0, tier_tag=None, interp="antialiased",
                           scale_len=25, id_col="id", class_col=None,
                           class_colors=None, subset_tag="station",
-                          ncell=None, max_rows=12, sort=True, dpi=200):
+                          ncell=None, max_rows=12, sort=True, dpi=200,
+                          title=None):
     """Per-point context contact sheet: one row-cell of image panels per point.
 
     For each point, a horizontal strip of windows from ``layers`` — e.g.
@@ -717,7 +813,8 @@ def point_context_gallery(points, layers, outdir, site_name, *,
             page_note = (f"{page_cls} — page {pg}/{len(pages)}"
                          if len(pages) > 1 else page_cls)
             fig.suptitle(
-                f"{SHEET_SUBSET_TITLES.get(subset_tag, subset_tag)} points "
+                f"{title or SHEET_SUBSET_TITLES.get(subset_tag, subset_tag)}"
+                f" points "
                 f"— {tags} ({2*half_m:.0f} m "
                 f"windows{', native pixels' if interp == 'nearest' else ''})"
                 f": {site_name}{page_note}",
@@ -1005,6 +1102,8 @@ SHEET_SUBSET_TITLES = {
     "faa_runway": "FAA runway",
     "3dep_nva": "3DEP NVA checkpoint",
     "3dep_vva": "3DEP VVA checkpoint",
+    "ngs_monument": "NGS monument",
+    "ngs_best": "NGS monument (ngs_best tier)",
 }
 
 def _label_medians(ax, meds, span):

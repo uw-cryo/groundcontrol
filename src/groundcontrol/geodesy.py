@@ -248,7 +248,12 @@ def is_wgs84_ensemble(crs) -> bool:
         return False
     n = (d.name or "").lower()
     if "ensemble" in n:
-        return True
+        # Only WGS 84's ensemble. ETRS89 (66 CRSs) and GR96 (32) are also
+        # EPSG datum ensembles, but their intra-ensemble ambiguity is
+        # ~0.1 m while their offset from ITRF2014 is decimetres-and-
+        # growing (0.76 m at Berlin, epoch 2020) — "ambiguous" does not
+        # license a rebase to ITRF.
+        return "world geodetic system 1984" in n or "wgs" in n
     # GeoTIFF/WKT1 round-trips drop the ENSEMBLE node (rasterio-written
     # EPSG:32610 reads back as plain 'World Geodetic System 1984'): a
     # bare WGS 84 datum with no realization suffix IS the ensemble

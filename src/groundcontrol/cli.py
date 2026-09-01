@@ -338,6 +338,17 @@ _PRESET_NOTES = {
 _PGC_NAME_RE = r"setsm|arcticdem|rema|earthdem|utm\d{2}[ns]_\d"
 
 
+def _compound_vertical(crs):
+    """The gravity-related vertical member of a compound CRS, else None.
+    A compound's vertical member defines the height datum even when the
+    horizontal sits on a datum ensemble — it must never be demoted away."""
+    import pyproj
+    if not crs.is_compound:
+        return None
+    return next((c for c in (pyproj.CRS(s) for s in crs.sub_crs_list)
+                 if c.is_vertical), None)
+
+
 def _vdatum_target_crs(products, vdatum):
     """--vdatum resolver: each product's embedded 2D horizontal CRS + the
     stated vertical datum -> ONE full 3D target (geodesy.with_vdatum);
@@ -364,6 +375,17 @@ def _vdatum_target_crs(products, vdatum):
         crs = pyproj.CRS.from_user_input(crs)
         if has_vertical_axis(crs):
             from groundcontrol.geodesy import is_wgs84_ensemble
+            vert = _compound_vertical(crs)
+            if vert is not None:
+                # a compound with a gravity-related vertical declares its
+                # height datum unambiguously WHATEVER the horizontal
+                # ensemble means — demoting it here would silently discard
+                # that vertical (COP30 EPSG:32645+3855: -37 m at Rasuwa)
+                raise ValueError(
+                    f"--vdatum: product {name}={path} already declares its "
+                    f"heights ({crs.name}) — the vertical member "
+                    f"'{vert.name}' defines the height datum; drop "
+                    "--vdatum, or override with --target-crs")
             if not is_wgs84_ensemble(crs):
                 raise ValueError(f"--vdatum: product {name}={path} already "
                                  f"declares its heights ({crs.name}); drop "
@@ -372,8 +394,6 @@ def _vdatum_target_crs(products, vdatum):
             # ambiguity) — --vdatum is exactly the disambiguation the
             # embedded-CRS refusal asks for (owner catch-22 report,
             # 2026-08-30): proceed from the demoted horizontal
-            if crs.is_compound:
-                crs = pyproj.CRS(crs.sub_crs_list[0])
             crs = crs.to_2d()
         seen[name] = crs
     first = next(iter(seen.values()))
@@ -450,6 +470,26 @@ def _embedded_target_crs(products):
                 + choices + "\n"
                 "(a .wkt file with a vertical member also works; "
                 "groundcontrol.geodesy.with_vdatum/build_utm_* construct these)")
+        elif is_wgs84_ensemble(crs) and _compound_vertical(crs) is not None:
+            # compound with a gravity-related vertical on an ensemble
+            # horizontal (COP30 native EPSG:4326+3855): the heights are
+            # datum-defined by the vertical whichever WGS84 member the
+            # grid sits on; only OUR horizontal transform legs are
+            # ambiguous. Rebase them onto ITRF2014, loudly — mirroring
+            # geodesy.with_vdatum's orthometric-on-ensemble branch.
+            from pyproj.crs import CompoundCRS
+
+            from groundcontrol.geodesy import (ITRF2014_EPSG,
+                                               rebase_projection_2d)
+            vert = _compound_vertical(crs)
+            h2 = rebase_projection_2d(pyproj.CRS(crs.sub_crs_list[0]).to_2d(),
+                                      ITRF2014_EPSG, "ITRF2014")
+            crs = pyproj.CRS(CompoundCRS(name=f"{h2.name} + {vert.name}",
+                                         components=[h2, vert]))
+            print(f"product {name}: horizontal is the WGS 84 ENSEMBLE but "
+                  f"heights are '{vert.name}' regardless of the member — "
+                  f"using ITRF2014 for the transform legs ({crs.name})",
+                  file=sys.stderr)
         elif is_wgs84_ensemble(crs):
             raise SystemExit(
                 f"error: product {name}={path} declares 3D heights on the "

@@ -246,11 +246,67 @@ def transform_control(control, target_crs, *, target_epoch=2010.0,
     incompat = None
     if "vertical_crs" in control.columns:
         src_obj2 = pyproj.CRS(src)
-        src_vert = (src_obj2.sub_crs_list[1].to_epsg()
-                    if src_obj2.is_compound else None)
-        if src_vert is not None:
+        src_vert = None    # gravity-related vertical member (compound src)
+        src_frame = None   # 3D frame with ellipsoidal heights
+        if src_obj2.is_compound:
+            src_vert = pyproj.CRS(src_obj2.sub_crs_list[1])
+        elif not src_obj2.is_geocentric and len(src_obj2.axis_info) == 3:
+            # a 3D non-compound source declares ELLIPSOIDAL heights on its
+            # frame. Before this branch the guard was silently inert here
+            # — the exact ellipsoidal-source case a mixed cache hits — and
+            # EPSG:5703 rows ran the ellipsoidal chain with the ~30 m
+            # geoid applied to already-orthometric heights, counted valid.
+            src_frame = src_obj2
+        if src_vert is not None or src_frame is not None:
             vc = control["vertical_crs"].astype("string")
-            incompat = vc.notna() & (vc != f"EPSG:{src_vert}")
+            src_code = (src_vert.to_epsg() if src_vert is not None
+                        else src_obj2.to_epsg())
+            unit_scale = np.ones(len(control), dtype="float64")
+            # NA = unknown height datum (sources/ngs.py contract: refuse,
+            # never guess) — previously let through by vc.notna() & (...)
+            incompat_arr = vc.isna().to_numpy(dtype=bool)
+            for val in vc.dropna().unique():
+                m = (vc == val).fillna(False).to_numpy(dtype=bool)
+                if src_code is not None and str(val) == f"EPSG:{src_code}":
+                    continue
+                try:
+                    v_obj = pyproj.CRS.from_user_input(str(val))
+                except Exception:
+                    incompat_arr |= m
+                    continue
+                if src_vert is not None:
+                    # orthometric chain: compatible = a vertical CRS on
+                    # the SAME datum. EPSG:6360 (NAVD88 ftUS) is the same
+                    # datum as EPSG:5703 in a different unit — the row's
+                    # vertical_crs declares the datum AND unit of
+                    # 'height', so scale instead of falsely excluding.
+                    if (not v_obj.is_vertical or v_obj.datum is None
+                            or src_vert.datum is None
+                            or v_obj.datum != src_vert.datum):
+                        incompat_arr |= m
+                        continue
+                    f_row = v_obj.axis_info[0].unit_conversion_factor
+                    f_src = src_vert.axis_info[0].unit_conversion_factor
+                    if not np.isclose(f_row, f_src):
+                        unit_scale[m] = f_row / f_src
+                        logger.info(
+                            "transform_control: %d row(s) carry %s — the "
+                            "source vertical datum in a different unit; "
+                            "heights scaled by %.10g", int(m.sum()), val,
+                            f_row / f_src)
+                else:
+                    # ellipsoidal chain: compatible = the source frame
+                    # itself (per-row codes are aliased 3D frame codes,
+                    # ngl schema); a gravity-related vertical or a
+                    # DIFFERENT frame goes to the native re-target below
+                    if (v_obj.is_vertical or v_obj.datum is None
+                            or src_frame.datum is None
+                            or v_obj.datum != src_frame.datum):
+                        incompat_arr |= m
+            incompat = pd.Series(incompat_arr, index=control.index)
+            if (unit_scale != 1.0).any():
+                H = H.copy()
+                H *= unit_scale
             if incompat.any():
                 H = H.copy()
                 H[incompat.to_numpy(dtype=bool)] = np.nan

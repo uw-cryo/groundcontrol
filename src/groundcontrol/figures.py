@@ -1398,7 +1398,11 @@ _PALE_INK = {"white": "#4477AA", "#A6CEE3": "#6FA3D0"}
 #: Building-mounted stations also alias at coarse DEM posting.
 #: OPUS campaign is NOT listed — OPUS reports the ground MARK.
 ARP_HEIGHT_LABELS = {"GNSS continuous", "GNSS semi-continuous",
-                     "GNSS campaign (NGL)"}
+                     "GNSS campaign (NGL)",
+                     # the one segment whose height basis is documented as
+                     # UNKNOWN (products written before the taxonomy
+                     # split) — the exact case the caveat was written for
+                     "GNSS (pre-split)"}
 
 #: |median| above this flags an ARP-class segment as a likely
 #: uncorrected antenna/monument height (owner 2026-08-30: masts/roofs
@@ -2301,7 +2305,9 @@ def _ngs_gate(v, mult):
     majority value and annotate fake-perfect stats; mirrors
     accuracy.error_report."""
     med0, nm0 = np.median(v), _nmad(v)
-    return v[np.abs(v - med0) < mult * nm0] if nm0 > 0 else v
+    # <= to match accuracy.error_report exactly: two implementations of
+    # one rule must keep identical membership at the boundary
+    return v[np.abs(v - med0) <= mult * nm0] if nm0 > 0 else v
 
 
 #: validation-figure style per assess.SEGMENTS label: a POINT_STYLE key or a
@@ -2455,6 +2461,19 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
                                 zorder=5)
                 handles.append(Line2D([], [], marker=mk, ls="", color="#333333",
                                       ms=6, label=f"{mlab} ({len(sub)})"))
+            na = use[use["point_type"].isna()]
+            if len(na):
+                # null point_type is a documented real state (summarize_dz
+                # handles it) — draw those rows too instead of silently
+                # under-reporting the title's n (main drew every row)
+                axes[0].scatter(na.geometry.x, na.geometry.y, c=na[col],
+                                cmap=DZ_CMAP, norm=norm, marker="o",
+                                s=int(15 * boost), edgecolors="#333333",
+                                linewidths=0.35 if boost == 1.0 else 0.7,
+                                zorder=5)
+                handles.append(Line2D([], [], marker="o", ls="",
+                                      color="#333333", ms=6,
+                                      label=f"unclassified ({len(na)})"))
         else:
             axes[0].scatter(use.geometry.x, use.geometry.y, c=use[col],
                             cmap=DZ_CMAP, norm=norm, s=15,
@@ -2483,15 +2502,16 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         is_dtm = is_dtm_product(prod)  # the ONE DSM/DTM classifier (round 4)
         panels = []                       # (ax, seg_vals, seg_raw, own_lim)
         for ax, labels, lim_over in (
-                # display rule != applies rule: context-only GNSS segments
-                # (applies False/False in the stats) still render as
-                # datum-sanity context per this figure's contract — the
-                # validation flags alone silently emptied the GNSS
-                # histograms (audit round 3). Empty segments drop out below.
-                (ax_s, [lbl for lbl, s in seg_defs.items()
-                        if ((s[3] if is_dtm else s[2])
-                            or lbl.startswith("GNSS"))
-                        and lbl != "NGS monument"],
+                # display rule != applies rule: EVERY segment with values
+                # renders — context-only ones (applies False for this
+                # product) are dagger-marked below rather than silently
+                # dropped. A string whitelist could not track the growing
+                # SEGMENTS taxonomy: 'FAA military field'/'FAA other'
+                # were plotted on the map and counted in the title's n but
+                # got no histogram and no table row, hiding the military
+                # +0.49 m story this branch was built for (H10b). Empty
+                # segments still drop out below.
+                (ax_s, [lbl for lbl in seg_defs if lbl != "NGS monument"],
                  vendor_lim),
                 (ax_n, ["NGS monument"], wide_lim)):
             seg_vals = {}
@@ -2527,13 +2547,18 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         nbins = int(np.clip(round(2 * lim / bw), 41, 201))
         txt_lines = []
         table_entries = []
+        any_dagger = False
         for ax, seg_vals, seg_raw, _own in panels:
             panel_meds = []
             for lab, v in seg_vals.items():
                 color = class_ink(seg_defs[lab][1])  # centralized legible ink
+                applies = ((seg_defs[lab][3] if is_dtm else seg_defs[lab][2])
+                           or lab == "NGS monument")
+                disp = lab if applies else lab + " †"
+                any_dagger |= not applies
                 ax.hist(np.clip(v, -lim, lim), bins=nbins, range=(-lim, lim),
                         histtype="stepfilled", alpha=0.45, color=color,
-                        edgecolor=color, label=lab)
+                        edgecolor=color, label=disp)
                 # per-distribution median (owner 2026-08-30): dashed in
                 # the class ink; value labels placed collision-aware
                 # after the panel is complete
@@ -2543,7 +2568,7 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
                 panel_meds.append((_med, color))
                 # centralized stats TABLE (one colored row per segment),
                 # rendered OUTSIDE the histograms in their own panel
-                table_entries.append((lab, seg_raw[lab], color))
+                table_entries.append((disp, seg_raw[lab], color))
             ax.axvline(0, color=_INK, lw=0.8)
             ax.set_xlim(-lim, lim)
             _label_medians(ax, panel_meds, 2 * lim)
@@ -2556,9 +2581,13 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         plt.setp(ax_s.get_xticklabels(), visible=False)
         ax_n.set_xlabel(f"dz = {prod} − control (m)", fontsize=9, color=_INK)
         flagged = {lab for lab, vals, _c in table_entries
-                   if lab in ARP_HEIGHT_LABELS and len(vals)
+                   if lab.rstrip(" †") in ARP_HEIGHT_LABELS and len(vals)
                    and abs(float(np.median(vals))) > ARP_SUSPECT_MED_M}
         txt_lines.extend(stats_table(table_entries, flagged))
+        if any_dagger:
+            txt_lines.append(("† context only — not part of the "
+                              "validation statistics for this product",
+                              _MUT, False))
         if flagged:
             txt_lines.extend((line_, _MUT, False)
                              for line_ in _caveat_lines(txt_lines))
@@ -2575,8 +2604,16 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
                           family="monospace",
                           fontweight="bold" if bold else "normal")
         ax_s.set_title("survey-grade points", fontsize=10, color=_INK)
-        ax_n.set_title(f"NGS monuments ({ngs_nmad_gate:.0f}-NMAD filtered)",
-                       fontsize=10, color=_INK)
+        # gated/total n on the title: the gate is recomputed from EACH
+        # product's own NMAD, so DSM and DTM keep different monument sets
+        # while n looks identical — say how many survived (owner
+        # DSM-vs-DTM discrepancy triage, 2026-08-30)
+        _ngs_t = f"NGS monuments ({ngs_nmad_gate:.0f}-NMAD filtered"
+        _gv = panels[1][1].get("NGS monument")
+        _rv = panels[1][2].get("NGS monument")
+        if _gv is not None and _rv is not None:
+            _ngs_t += f": {len(_gv)}/{len(_rv)} kept"
+        ax_n.set_title(_ngs_t + ")", fontsize=10, color=_INK)
         fp = outdir / f"{site_name}_validation_dz_{prod}.png"
         # equal-aspect shrinks the MAP's axes box inside its gridspec
         # cell; clamp the colorbar to the map's final drawn height so it

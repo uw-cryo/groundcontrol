@@ -777,7 +777,12 @@ def _residual_sheet(points, layers, outdir, site_name, *, tiers=SHEET_TIERS,
         # ABSOLUTE margins in inches: a fractional top= on a tall sheet
         # reserves inches of whitespace under the title (owner 2026-08-13)
         pw = max(1.9, min(2.7, 16.0 / (ntier * npanel)))
-        lab_w, gap_w, head_h, foot_h = 1.45, 0.30, 1.40, 0.52
+        # label gutter sized to the LONGEST id: the fixed 1.45 in clipped
+        # long 3DEP checkpoint ids at the left edge (owner 2026-09-01)
+        max_chars = max((len(str(r[id_col])) for _, r in points.iterrows()),
+                        default=8)
+        lab_w = max(1.45, min(3.9, 0.088 * max_chars + 0.48))
+        gap_w, head_h, foot_h = 0.30, 1.40, 0.52
         fig_w = pw * ntier * npanel + lab_w + gap_w * (ntier - 1) + 0.18
         fig_h = pw * nrow + head_h + foot_h
         fig = plt.figure(figsize=(fig_w, fig_h))
@@ -2144,7 +2149,10 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
                            facecolors="none", edgecolors="#111111",
                            linewidths=1.0, zorder=6,
                            label=f"ngs_best member ({len(b)})")
-            ax.legend(loc="lower left", fontsize=7.5, framealpha=0.9)
+            # above the ring scatter (zorder 6): the ngs_best rings drew
+            # on top of the legend box (owner 2026-09-01)
+            ax.legend(loc="lower left", fontsize=7.5,
+                      framealpha=0.9).set_zorder(7)
             _finish_map(ax, aoi_p, clip_to_aoi)
             ax.set_title(f"NGS monuments by {key}", fontsize=10, color=_INK)
         fig.suptitle(f"NGS monument datasheet attributes (n={len(mon)}): "

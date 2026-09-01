@@ -83,15 +83,15 @@ SURVEYED_SOURCES = frozenset(
     {"3RD PARTY SURVEY", "NGS", "ARPTS CONTRACTOR", "MILITARY"})
 
 
-#: APT ownership codes for military-branch facilities (MA air force,
+#: APT ownership codes for service-branch facilities (MA air force,
 #: MN navy, MR army, CG coast guard)
-MILITARY_OWNERSHIP = {"MA", "MN", "MR", "CG"}
+MIL_OWNERSHIP = {"MA", "MN", "MR", "CG"}
 
 
 def pos_class(src, ownership=None) -> str:
     """Provenance class for a NASR position source string.
 
-    A row at a MILITARY-owned facility classes ``"military"`` regardless
+    A row at a service-branch-owned facility classes ``"mil"`` regardless
     of its position source: those elevations flow through the DoD survey
     pipeline, whose standard vertical reference is EGM96 MSL, not NAVD88
     (owner 2026-08-31, Nellis AFB: all four runway ends off by the local
@@ -101,8 +101,8 @@ def pos_class(src, ownership=None) -> str:
     be assumed either way). The class keeps them out of the surveyed
     accuracy tier and visible as their own segment instead of silently
     biasing it or being silently "corrected"."""
-    if str(ownership).strip().upper() in MILITARY_OWNERSHIP:
-        return "military"
+    if str(ownership).strip().upper() in MIL_OWNERSHIP:
+        return "mil"
     return "surveyed" if str(src).strip().upper() in SURVEYED_SOURCES \
         else "estimated"
 
@@ -295,27 +295,27 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
     cls = [pos_class(ps, ow) for ps, ow in zip(df.get("pos_src", []), own)] \
         if n else []
     surveyed = np.array([c == "surveyed" for c in cls], dtype=bool)
-    military = np.array([c == "military" for c in cls], dtype=bool)
+    mil = np.array([c == "mil" for c in cls], dtype=bool)
     mdt = pd.to_datetime(df["pos_src_date"], format="%m/%d/%Y",
                          errors="coerce", utc=True) \
         if n else pd.Series([], dtype="datetime64[ns, UTC]")
     extras = [c for c in df.columns if c not in _CONSUMED]
-    # military facilities: pos_class's own contract says "no per-facility
+    # MIL facilities: pos_class's own contract says "no per-facility
     # datum can honestly be assumed either way" (DoD pipeline is EGM96
     # MSL, ~0.45-0.5 m from NAVD88) — never stamp a definite EPSG code on
     # an ambiguous datum. NA composes fail-loud downstream (the per-row
     # vertical guard re-targets these via the declared NATIVE frame, so
-    # the context-only military segment and its EGM96 diagnostic survive).
-    # native_crs DELIBERATELY keeps EPSG:6349 for military rows: it
+    # the context-only MIL segment and its EGM96 diagnostic survive).
+    # native_crs DELIBERATELY keeps EPSG:6349 for MIL rows: it
     # records the frame NASR *distributes* in, and the EGM96-vs-NAVD88
     # figure diagnostic requires dz computed under that published-as-
     # NAVD88 reading (h_ell is numerically the same chain as before —
     # only the semantic vertical_crs/height_datum stamps changed).
     height_datum = pd.Series(["NAVD88"] * n, dtype="string")
     vertical_crs = pd.Series(["EPSG:5703"] * n, dtype="string")
-    if n and military.any():
-        height_datum[military] = "MSL (EGM96 per DoD standard; unverified)"
-        vertical_crs[military] = pd.NA
+    if n and mil.any():
+        height_datum[mil] = "MSL (EGM96 per DoD standard; unverified)"
+        vertical_crs[mil] = pd.NA
     out = gpd.GeoDataFrame(
         {
             "id": df["id"].astype("string"),

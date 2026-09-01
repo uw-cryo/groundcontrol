@@ -410,13 +410,13 @@ def test_grid_signature_prime_meridian_and_units():
 # ---------------------------------------------------------------------------
 
 
-def test_faa_pos_class_military_ownership():
+def test_faa_pos_class_mil_ownership():
     from groundcontrol.sources.faa import pos_class
-    assert pos_class("NGS", "MA") == "military"   # ownership wins
+    assert pos_class("NGS", "MA") == "mil"   # ownership wins
     assert pos_class("NGS", "PU") == "surveyed"
 
 
-def test_faa_military_rows_never_assert_navd88():
+def test_faa_mil_rows_never_assert_navd88():
     import json
     from pathlib import Path
 
@@ -427,7 +427,7 @@ def test_faa_military_rows_never_assert_navd88():
     out = faa.parse({"cycle": "2026-08-06",
                      "aoi_bounds_4326": (-180.0, -90.0, 180.0, 90.0),
                      "lines": lines})
-    mil = np.array([json.loads(r).get("pos_class") == "military"
+    mil = np.array([json.loads(r).get("pos_class") == "mil"
                     for r in out["raw"]])
     assert mil.any() and (~mil).any()
     # ambiguous datum: NA code, explicit non-committal height_datum;

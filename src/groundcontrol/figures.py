@@ -349,7 +349,8 @@ def _sheet_subsets(sampled):
                 if faa["pos_class"].notna().any():
                     cls = "pos_class"
                     colors = {"surveyed": "crimson", "estimated": "darkorange",
-                              "military": "#8B4E00"}
+                              "mil": "#8B4E00",
+                              "military": "#8B4E00"}  # pre-rename caches
             subsets["faa_runway"] = (faa, cls, colors)
     _add("3dep_nva", pt == "NVA")
     _add("3dep_vva", pt == "VVA")
@@ -2349,7 +2350,7 @@ _SEG_STYLE = {
     "GNSS (pre-split)": "gnss",
     "NGS monument": "monument",
     "FAA runway surveyed": "runway_end",
-    "FAA military field": "#8B4E00",
+    "FAA MIL field": "#8B4E00",
     "FAA other": "#8C6BB1",
     "OTHER (unsegmented)": "gnss",  # never rendered (context, non-GNSS
                                     # label) — placeholder for the sync test
@@ -2757,9 +2758,9 @@ DZ_FAMILIES = {
          lambda d: (d["source"] == "faa")
          & (_raw_field(d["raw"], "pos_class") == "estimated"),
          "#8C6BB1", "v"),
-        ("FAA military",
+        ("FAA MIL",
          lambda d: (d["source"] == "faa")
-         & (_raw_field(d["raw"], "pos_class") == "military"),
+         & _raw_field(d["raw"], "pos_class").isin(("mil", "military")),
          "#8B4E00", "^"),
     ]),
 }
@@ -2892,10 +2893,11 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
         mil_mask = None
         if fam == "faa" and "raw" in sampled.columns:
             _mil = pd.Series(_raw_field(sampled["raw"], "pos_class")
-                             == "military").fillna(False)
+                             .isin(("mil", "military"))).fillna(False)
             if bool(_mil.any()):
                 mil_mask = _mil.to_numpy(dtype=bool)
-                fam_note = ("military-owned facility: elevations may be "
+                fam_note = ("MIL (service-branch-owned) facility: "
+                            "elevations may be "
                             "EGM96 MSL (DoD standard), not NAVD88 — vertical "
                             "datum unverified, excluded from the surveyed "
                             "accuracy class")

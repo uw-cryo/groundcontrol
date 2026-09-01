@@ -81,17 +81,19 @@ SEGMENTS = {
         & (_faa_pos_class(d) == "surveyed")
         & d["point_type"].isin(["runway_end", "displaced_threshold"]),
         True, True),
-    # military-owned facilities (sources/faa.py MILITARY_OWNERSHIP):
+    # service-branch-owned facilities (sources/faa.py MIL_OWNERSHIP):
     # elevations ride the DoD pipeline (EGM96 MSL standard) and the
     # per-point datum is unverifiable (Nellis 2026-08-31: runway ends off
     # by exactly the EGM96-NAVD88 separation, helipad NAVD88 to 3 mm) —
     # own context segment, never in the surveyed tier
-    "FAA military field": (
+    "FAA MIL field": (
         lambda d: (d["source"] == "faa")
-        & (_faa_pos_class(d) == "military"), False, False),
+        # isin: caches written before the 2026-09-01 rename carry the
+        # old "military" value in raw
+        & _faa_pos_class(d).isin(("mil", "military")), False, False),
     "FAA other": (
         lambda d: (d["source"] == "faa")
-        & (_faa_pos_class(d) != "military")
+        & ~_faa_pos_class(d).isin(("mil", "military"))
         & ~((_faa_pos_class(d) == "surveyed")
             & d["point_type"].isin(["runway_end", "displaced_threshold"])),
         False, False),

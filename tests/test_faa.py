@@ -5,7 +5,7 @@ Fixture ``faa_apt_sample.txt`` holds 17 real fixed-width records (5 APT +
 (North Las Vegas) with surveyed ends and displaced thresholds, NV53 (a
 hospital heliport, FAA-EST IMAGERY provenance), 5AZ3 (Pegasus Airpark
 AZ, estimated-provenance GA field with displaced thresholds), and LSV
-(Nellis AFB: ownership MA — the military provenance class). ``fetch()``
+(Nellis AFB: ownership MA — the MIL provenance class). ``fetch()``
 is ``@network``; parsing is offline.
 """
 
@@ -71,21 +71,21 @@ def test_provenance_classes_and_accuracy():
     cls = out["raw"].map(lambda s: json.loads(s)["pos_class"])
     srcs = out["raw"].map(lambda s: json.loads(s).get("pos_src", ""))
     surveyed = cls == "surveyed"
-    military = cls == "military"
+    mil = cls == "mil"
     # LAS/VGT are 3RD PARTY SURVEY; NV53 heliport and 5AZ3 are estimated;
-    # LSV (Nellis AFB, ownership MA) classes military REGARDLESS of its
+    # LSV (Nellis AFB, ownership MA) classes mil REGARDLESS of its
     # MILITARY position source — DoD-pipeline elevations may be EGM96 MSL
     assert set(out.loc[surveyed, "id"].str[:3]) == {"LAS", "VGT"}
-    assert set(out.loc[military, "id"].str[:3]) == {"LSV"}
-    assert (~surveyed & ~military).sum() == 5  # NV53_H1 + four 5AZ3 points
-    assert set(srcs[~surveyed & ~military]) == {"FAA-EST IMAGERY", "ADO"}
+    assert set(out.loc[mil, "id"].str[:3]) == {"LSV"}
+    assert (~surveyed & ~mil).sum() == 5  # NV53_H1 + four 5AZ3 points
+    assert set(srcs[~surveyed & ~mil]) == {"FAA-EST IMAGERY", "ADO"}
     own = out["raw"].map(lambda s: json.loads(s).get("ownership"))
-    assert set(own[military]) == {"MA"} and set(own[surveyed]) == {"PU"}
+    assert set(own[mil]) == {"MA"} and set(own[surveyed]) == {"PU"}
     # spec accuracy attaches to the surveyed class ONLY; estimated rows
     # honestly carry no accuracy (never a fabricated bound)
     assert np.allclose(out.loc[surveyed, "acc_h"], faa.ACC_H_SURVEYED)
     assert np.allclose(out.loc[surveyed, "acc_v"], faa.ACC_V_SURVEYED)
-    # military rows too: their spec is the DoD pipeline's, not the AC's
+    # MIL rows too: their spec is the DoD pipeline's, not the AC's
     assert out.loc[~surveyed, "acc_h"].isna().all()
     assert out.loc[~surveyed, "acc_v"].isna().all()
 

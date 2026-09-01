@@ -186,11 +186,15 @@ def test_vertical_note_survives_mixed_na_and_codes():
     assert "<NA>" in info["vertical_note"]
 
 
-def test_vertical_guard_scales_unit_variant_same_datum():
+def test_vertical_guard_accepts_unit_variant_code_same_datum():
+    # EPSG:6360 (NAVD88 ftUS code) was falsely excluded by code-string
+    # equality; datum identity accepts it. NO scaling: schema says the
+    # height column is always metres — vertical_crs records the ORIGINAL
+    # datum/unit provenance (round-2 audit: scaling silently divided
+    # schema-compliant metre heights by 3.28)
     from groundcontrol.assess import transform_control
-    ft = 0.304800609601219  # US survey foot
     ctl = gpd.GeoDataFrame({
-        "height": [500.0, 500.0 / ft],
+        "height": [500.0, 500.0],  # both metres, per schema
         "vertical_crs": pd.array(["EPSG:5703", "EPSG:6360"], dtype="string"),
     }, geometry=[Point(-111.5, 34.5)] * 2, crs="EPSG:6318")
     # identity compound chain: no geoid grid needed, h_ell == height in m
@@ -198,7 +202,7 @@ def test_vertical_guard_scales_unit_variant_same_datum():
                                   source_crs="EPSG:6318+5703")
     h = out["h_ell"].to_numpy()
     assert info["n_vertical_excluded"] == 0
-    assert h[0] == pytest.approx(h[1], abs=1e-6)  # ftUS row scaled, kept
+    assert h[0] == pytest.approx(500.0) and h[1] == pytest.approx(500.0)
 
 
 def test_transform_control_refuses_empty_frame():
@@ -209,10 +213,23 @@ def test_transform_control_refuses_empty_frame():
 
 
 def test_transform_control_duplicate_index_labels():
+    # rows must be INCOMPATIBLE with usable natives so the native
+    # re-target loop (the code that crashed on duplicate labels via
+    # get_indexer) actually runs (round-2 audit: a compatible-rows
+    # version was vacuous)
     from groundcontrol.assess import transform_control
-    ctl = _ctl(["EPSG:6319", "EPSG:6319"])
-    ctl.index = [0, 0]  # two caches concatenated
-    out, _ = transform_control(ctl, UTM12_3D, source_crs="EPSG:6319")
+    ctl = gpd.GeoDataFrame({
+        "height": [500.0, 501.0],
+        # ITRF2014 rows under a NAD83(2011) 3D source: incompatible
+        "vertical_crs": pd.array(["EPSG:7912"] * 2, dtype="string"),
+        "native_x": [-111.5, -111.501], "native_y": [34.5, 34.501],
+        "native_h": [500.0, 501.0],
+        "native_crs": pd.array(["EPSG:7912"] * 2, dtype="string"),
+        "coord_epoch": [2020.0, 2020.0],
+    }, geometry=[Point(-111.5, 34.5), Point(-111.501, 34.501)],
+        crs="EPSG:6319", index=[0, 0])  # two caches concatenated
+    out, info = transform_control(ctl, UTM12_3D, source_crs="EPSG:6319")
+    assert info["n_vertical_native"] == 2
     assert np.isfinite(out["h_ell"].to_numpy()).all()
 
 
@@ -283,6 +300,16 @@ def test_pole_raster_footprint_raises(tmp_path):
         raster_footprint(pole)
 
 
+def test_global_web_mercator_raster_still_resolves(tmp_path):
+    # round-2: a LEGITIMATELY global projected raster spans ~360 deg with
+    # a valid ring that contains its own centre — must not be refused
+    from groundcontrol.aoi import resolve_aoi
+    world = _mk_raster(tmp_path / "world.tif", "EPSG:3857",
+                       -20037508.34, 20037508.34, 2 * 20037508.34 / 50)
+    b, _poly = resolve_aoi(world)
+    assert (b[2] - b[0]) > 350.0
+
+
 def test_off_meridian_antarctic_raster_still_resolves(tmp_path):
     # MDV/Taylor Valley regression: EPSG:3031 near 162.5E must keep working
     from groundcontrol.aoi import resolve_aoi
@@ -346,3 +373,45 @@ def test_faa_pos_class_military_ownership():
     from groundcontrol.sources.faa import pos_class
     assert pos_class("NGS", "MA") == "military"   # ownership wins
     assert pos_class("NGS", "PU") == "surveyed"
+
+
+def test_faa_military_rows_never_assert_navd88():
+    import json
+    from pathlib import Path
+
+    from groundcontrol.sources import faa
+    with open(Path(__file__).parent / "data" / "faa_apt_sample.txt",
+              encoding="latin-1") as f:
+        lines = f.readlines()
+    out = faa.parse({"cycle": "2026-08-06",
+                     "aoi_bounds_4326": (-180.0, -90.0, 180.0, 90.0),
+                     "lines": lines})
+    mil = np.array([json.loads(r).get("pos_class") == "military"
+                    for r in out["raw"]])
+    assert mil.any() and (~mil).any()
+    # ambiguous datum: NA code, explicit non-committal height_datum;
+    # natives kept (distribution frame) so the EGM96 diagnostic survives
+    assert out.loc[mil, "vertical_crs"].isna().all()
+    assert (out.loc[mil, "height_datum"].str.contains("EGM96")).all()
+    assert out.loc[mil, "native_crs"].eq("EPSG:6349").all()
+    assert out.loc[~mil, "vertical_crs"].eq("EPSG:5703").all()
+
+
+def test_ngl_zero_candidate_exit_before_catalog_pool(monkeypatch):
+    # round-2: the 0-station exit sat after the catalog-warming pool, so
+    # an empty AOI still downloaded the ~40 MB steps + MIDAS catalogs
+    from pathlib import Path
+
+    from groundcontrol.sources import ngl
+    idx = ngl.parse_dataholdings(
+        (Path(__file__).parent / "data" / "ngl_dataholdings_sample.txt")
+        .read_text())
+    monkeypatch.setattr(ngl, "_load_index", lambda *a, **k: idx)
+
+    def _no_network(*a, **k):
+        raise AssertionError("catalog fetch attempted for empty AOI")
+
+    for name in ("_midas_text", "_steps_text", "_tenv3_text"):
+        monkeypatch.setattr(ngl, name, _no_network)
+    out = ngl.fetch((10.0, 10.0, 10.1, 10.1))  # no stations here
+    assert out["stations"] == []

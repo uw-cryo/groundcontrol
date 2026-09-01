@@ -66,9 +66,21 @@ def cache_write(local: Path, content: str | bytes) -> None:
     leaves a 0-byte/truncated file that ``cache_stale`` then trusts for
     days — for ``ngl_steps.txt`` that read as "checked, no earthquake
     steps" and silently defeated the Gorkha step guard."""
+    import stat
     import tempfile
     fd, tmp = tempfile.mkstemp(dir=local.parent, prefix=local.name + ".")
     try:
+        # mkstemp creates 0600 and os.replace carries that through — a
+        # shared GROUNDCONTROL_CACHE_DIR would lose group/other read on
+        # every refresh (round-2 audit). Preserve an existing file's
+        # mode; otherwise honor the umask like write_text did.
+        if local.exists():
+            mode = stat.S_IMODE(local.stat().st_mode)
+        else:
+            umask = os.umask(0)
+            os.umask(umask)
+            mode = 0o666 & ~umask
+        os.fchmod(fd, mode)
         with os.fdopen(fd, "wb" if isinstance(content, bytes) else "w") as f:
             f.write(content)
         os.replace(tmp, local)

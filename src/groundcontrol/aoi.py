@@ -41,7 +41,7 @@ FOOTPRINT_MAX_PX = 1024
 FOOTPRINT_MAX_PIECES = 2000
 
 
-def _checked_4326(gdf, src_crs, path):
+def _checked_4326(gdf, src_crs, path, src_geom):
     """Reprojected-footprint sanity gate. ``to_crs(4326)`` moves vertices
     independently, so a projected raster crossing the antimeridian or
     containing a pole comes back as a self-intersecting ring wrapping the
@@ -49,24 +49,40 @@ def _checked_4326(gdf, src_crs, path):
     359.994 deg of longitude that EXCLUDES the raster's own centre and
     CONTAINS the Atlantic; same for EPSG:3031 at lon 180 and a raster over
     the South Pole). Every real control point is then dropped and
-    unrelated ones kept — fail loud instead of fetching a global AOI."""
+    unrelated ones kept — fail loud instead of fetching a global AOI.
+
+    Discriminator (round-2 audit): a LEGITIMATELY global projected raster
+    (world EPSG:3857/4087) also spans ~360 deg but keeps a valid ring
+    that CONTAINS the independently-reprojected raster centre; a true
+    wrap is self-intersecting and excludes it. ``src_geom`` = the
+    footprint polygon in the source CRS, for that centre."""
+    import numpy as np
     import pyproj
 
-    if pyproj.CRS(src_crs).is_geographic:
+    crs_obj = pyproj.CRS(src_crs)
+    if crs_obj.is_geographic:
         return gdf  # identity-ish reprojection: no vertex-wise wrap
     b = gdf.total_bounds
     geom = gdf.geometry.iloc[0]
-    if (b[2] - b[0]) > 180.0 or not geom.is_valid:
-        raise ValueError(
-            f"raster {os.fspath(path)}: its EPSG:4326 footprint spans "
-            f"{b[2] - b[0]:.2f} deg of longitude"
-            + ("" if geom.is_valid else " and is self-intersecting")
-            + " — the raster likely crosses the antimeridian or contains "
-            "a pole, which vertex-wise reprojection cannot represent. "
-            "Pass an explicit AOI instead of the raster footprint "
-            "(--aoi with an EPSG:4326 bbox or vector, split at the "
-            "antimeridian if needed)")
-    return gdf
+    if (b[2] - b[0]) <= 180.0 and geom.is_valid:
+        return gdf
+    if geom.is_valid:
+        from shapely.geometry import Point as _Point
+        c = src_geom.centroid
+        lon, lat = pyproj.Transformer.from_crs(
+            crs_obj, "EPSG:4326", always_xy=True).transform(c.x, c.y)
+        if np.isfinite(lon) and np.isfinite(lat) \
+                and geom.contains(_Point(lon, lat)):
+            return gdf  # valid ring containing its own centre: global
+    raise ValueError(
+        f"raster {os.fspath(path)}: its EPSG:4326 footprint spans "
+        f"{b[2] - b[0]:.2f} deg of longitude"
+        + ("" if geom.is_valid else " and is self-intersecting")
+        + " — the raster likely crosses the antimeridian or contains "
+        "a pole, which vertex-wise reprojection cannot represent. "
+        "Pass an explicit AOI instead of the raster footprint "
+        "(--aoi with an EPSG:4326 bbox or vector, split at the "
+        "antimeridian if needed)")
 
 
 def _grid_extent_gdf(src, path):
@@ -85,7 +101,7 @@ def _grid_extent_gdf(src, path):
         quad = quad.segmentize(span / 200.0)
     gdf = gpd.GeoDataFrame({"source_raster": [os.fspath(path)]},
                            geometry=[quad], crs=src.crs)
-    return _checked_4326(gdf.to_crs(4326), src.crs, path)
+    return _checked_4326(gdf.to_crs(4326), src.crs, path, quad)
 
 
 def _cap_ring_points(poly, tol0: float, max_points):
@@ -251,7 +267,7 @@ def raster_footprint(path, *, max_px: int = FOOTPRINT_MAX_PX,
         gdf = gpd.GeoDataFrame({"source_raster": [os.fspath(path)]},
                                geometry=[poly], crs=src.crs)
         src_crs = src.crs
-    return _checked_4326(gdf.to_crs(4326), src_crs, path)
+    return _checked_4326(gdf.to_crs(4326), src_crs, path, poly)
 
 
 #: read straight as vector (no raster probe, which logs a GDAL error line)

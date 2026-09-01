@@ -306,6 +306,11 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
     # an ambiguous datum. NA composes fail-loud downstream (the per-row
     # vertical guard re-targets these via the declared NATIVE frame, so
     # the context-only military segment and its EGM96 diagnostic survive).
+    # native_crs DELIBERATELY keeps EPSG:6349 for military rows: it
+    # records the frame NASR *distributes* in, and the EGM96-vs-NAVD88
+    # figure diagnostic requires dz computed under that published-as-
+    # NAVD88 reading (h_ell is numerically the same chain as before —
+    # only the semantic vertical_crs/height_datum stamps changed).
     height_datum = pd.Series(["NAVD88"] * n, dtype="string")
     vertical_crs = pd.Series(["EPSG:5703"] * n, dtype="string")
     if n and military.any():

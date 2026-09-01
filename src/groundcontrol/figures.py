@@ -2233,6 +2233,7 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
         # ---- 5+6. NGL series beside their complementary MIDAS maps:
         # E/N/U common series + per-station step-aware small multiples
         for fn in (gnss_timeseries, gnss_station_series):
+            _open_before = set(plt.get_fignums())
             try:
                 fp_ts = fn(control, ngl_dir, site_name, frame=midas_frame,
                            dpi=dpi)
@@ -2240,6 +2241,10 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
                     out.append(fp_ts)
             except Exception as exc:  # network etc. — the bundle still ships
                 logger.warning("%s skipped: %s", fn.__name__, exc)
+                # same leak class as fig2: a raise mid-render leaves the
+                # function's own figure open (round-2 audit sibling)
+                for _n in set(plt.get_fignums()) - _open_before:
+                    plt.close(_n)
     except Exception as exc:  # network etc. — the map figures still ship
         logger.warning("MIDAS velocity figures skipped: %s", exc)
         if fig2 is not None:
@@ -2275,16 +2280,25 @@ def stats_table(entries, flagged=frozenset()):
     import re as _re
     defs, resolved = [], []
     for label, values, color in entries:
-        short = label
-        if len(label) > 20:
-            m = _re.match(r"^(.*?)\s*\(([A-Za-z0-9/+-]{2,10})\)$", label)
+        # a trailing dagger (context-only marker) is carried OUTSIDE the
+        # shortening: the (CODE) regex never matches through it and the
+        # width slice cut it off 4 of 9 rows (round-2 audit) while the
+        # footnote still claimed the convention
+        dag = label.endswith(" †")
+        base = label[:-2] if dag else label
+        short = base
+        if len(base) > 20:
+            m = _re.match(r"^(.*?)\s*\(([A-Za-z0-9/+-]{2,10})\)$", base)
             if m:
                 short = m.group(2)
                 defs.append((f"{short} = {m.group(1)}", color, False))
+        if dag:
+            short += " †"
         resolved.append((label, short, values, color))
     # label column sized to the WIDEST resolved label (owner 2026-08-30:
-    # fixed 20 read as a gulf once NVA/VVA shortened to codes)
-    w = min(20, max((len(s) for _, s, _, _ in resolved), default=8))
+    # fixed 20 read as a gulf once NVA/VVA shortened to codes); 22 leaves
+    # room for the dagger on a full-width base label
+    w = min(22, max((len(s) for _, s, _, _ in resolved), default=8))
     out = defs + [(f"{'':{w}s}{'n':>5} {'med(m)':>7} {'NMAD(m)':>7} "
                    f"{'mean(m)':>7} {'σ(m)':>6} {'RMSE(m)':>7} "
                    f"{'LE90(m)':>7} {'out':>4}", _MUT, False)]

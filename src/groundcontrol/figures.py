@@ -2717,12 +2717,21 @@ def _egm96_navd88_delta(lon, lat, h):
     """
     try:
         from pyproj import Transformer
-        _, _, ha = Transformer.from_crs("EPSG:6318+5703", "EPSG:6319",
-                                        always_xy=True).transform(lon, lat, h)
-        _, _, hw = Transformer.from_crs("EPSG:4326+5773", "EPSG:4979",
-                                        always_xy=True).transform(lon, lat, h)
-        _, _, hb = Transformer.from_crs("EPSG:7912", "EPSG:6319",
-                                        always_xy=True).transform(lon, lat, hw)
+
+        # allow_ballpark=False: outside NAVD88 coverage (Hawaii, Nepal,
+        # mid-ocean) PROJ otherwise silently substitutes the ballpark
+        # vertical transformation, ha == h unchanged, and the "separation"
+        # collapses to the bare EGM96 undulation — finite, plausible, and
+        # fiction (probed: Hickam AFB +14.28 m, all fabricated)
+        _, _, ha = Transformer.from_crs(
+            "EPSG:6318+5703", "EPSG:6319", always_xy=True,
+            allow_ballpark=False).transform(lon, lat, h)
+        _, _, hw = Transformer.from_crs(
+            "EPSG:4326+5773", "EPSG:4979", always_xy=True,
+            allow_ballpark=False).transform(lon, lat, h)
+        _, _, hb = Transformer.from_crs(
+            "EPSG:7912", "EPSG:6319", always_xy=True,
+            allow_ballpark=False).transform(lon, lat, hw)
         if not (np.isfinite(ha) and np.isfinite(hb)):
             return float("nan")
         return float(hb - ha)
@@ -3043,9 +3052,17 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                                        if abs(med - dlt) < 0.15 else
                                        "NOT explained by the datum "
                                        "difference")
-                            note += (f". Military median {med:+.2f} m vs "
-                                     f"local EGM96-NAVD88 separation "
-                                     f"{dlt:+.2f} m: {verdict}")
+                            note += (f". Military median {med:+.2f} m "
+                                     f"(n={len(mv)}) vs local EGM96-NAVD88 "
+                                     f"separation {dlt:+.2f} m: {verdict}")
+                        else:
+                            # NaN = no non-ballpark chain (outside NAVD88
+                            # coverage) — say so rather than dropping the
+                            # clause silently
+                            note += (f". Military median {med:+.2f} m "
+                                     f"(n={len(mv)}); local EGM96-NAVD88 "
+                                     "separation unavailable here "
+                                     "(outside NAVD88 grid coverage)")
                 fam_lines.extend((line_, _MUT) for line_
                                  in _caveat_lines(fam_lines, note))
             if fam_lines:

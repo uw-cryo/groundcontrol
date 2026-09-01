@@ -421,6 +421,28 @@ def with_vdatum(horizontal, vdatum: str) -> CRS:
                 "photogrammetry), 'ellipsoid:itrf2020', 'ellipsoid:g2139' "
                 "— or pass the full 3D frame as target_crs")
         return h.to_3d()
+    try:
+        v = CRS.from_user_input(vdatum)
+    except Exception as e:
+        hint = ""
+        if spec.startswith("ellipsoid"):
+            # "ellipsoidal", "ellipsoid-itrf2014", ...: before the vertical
+            # was resolved ahead of the ensemble fallback, these recursed
+            # forever appending ':itrf2014'
+            hint = (" — did you mean the literal 'ellipsoid' or "
+                    "'ellipsoid:<realization>' "
+                    f"({'/'.join(sorted(ELLIPSOID_REALIZATIONS))})?")
+        raise ValueError(
+            f"with_vdatum: {vdatum!r} is not 'ellipsoid' and does not "
+            f"resolve as a CRS ({e}). Pass a VERTICAL CRS (e.g. EPSG:5703 "
+            "for NAVD88, EPSG:3855 for EGM2008); a geoid model name is "
+            f"not a CRS{hint}") from e
+    if not v.is_vertical:
+        raise ValueError(
+            f"with_vdatum: {vdatum!r} resolves to '{v.name}', which is not "
+            "a vertical CRS — heights need a gravity-related or "
+            "ellipsoidal vertical member (e.g. EPSG:5703, EPSG:3855, or "
+            "the literal 'ellipsoid')")
     if is_wgs84_ensemble(h):
         # an ORTHOMETRIC vertical on an ensemble grid (owner 2026-08-30,
         # EGM2008 COP30 derivative): the heights are datum-defined by the
@@ -434,20 +456,6 @@ def with_vdatum(horizontal, vdatum: str) -> CRS:
             "are %s regardless of the WGS84 member", h.name, vdatum,
             vdatum)
         return with_vdatum(h, f"{vdatum.strip()}:itrf2014")
-    try:
-        v = CRS.from_user_input(vdatum)
-    except Exception as e:
-        raise ValueError(
-            f"with_vdatum: {vdatum!r} is not 'ellipsoid' and does not "
-            f"resolve as a CRS ({e}). Pass a VERTICAL CRS (e.g. EPSG:5703 "
-            "for NAVD88, EPSG:3855 for EGM2008); a geoid model name is "
-            "not a CRS") from e
-    if not v.is_vertical:
-        raise ValueError(
-            f"with_vdatum: {vdatum!r} resolves to '{v.name}', which is not "
-            "a vertical CRS — heights need a gravity-related or "
-            "ellipsoidal vertical member (e.g. EPSG:5703, EPSG:3855, or "
-            "the literal 'ellipsoid')")
     from pyproj.crs import CompoundCRS
     return CompoundCRS(name=f"{h.name} + {v.name}", components=[h, v])
 

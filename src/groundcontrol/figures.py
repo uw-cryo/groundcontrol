@@ -680,17 +680,21 @@ def dz_residual_sheets(sampled, products, outdir, site_name, *, rgb=None,
                 dz = pd.to_numeric(pts[col], errors="coerce")
                 fin = pts[np.isfinite(dz)]
                 dzf = dz[np.isfinite(dz)]
-                if len(fin) < 4:
+                if not len(fin):
+                    logger.info("dz residual sheets: %s %s has no finite "
+                                "dz — skipped", stag, prod)
                     continue
-                med = float(np.median(dzf))
-                nmad = 1.4826 * float(np.median(np.abs(dzf - med)))
-                gate = np.abs(dzf - med) > 3 * nmad if nmad > 0 \
-                    else pd.Series(False, index=dzf.index)
-                if not gate.any():
-                    continue
+                # ALWAYS render worst+best when any point exists (owner
+                # 2026-09-01, SF): the old outlier gate ('no 3-NMAD
+                # outliers -> no pages') silently skipped every subset
+                # where the product performs WELL — a 28-point NVA with
+                # NMAD 0.015 got nothing while the noisy 11-point VVA
+                # rendered; the pre-rework gallery had the same
+                # silent-no-page mode (audit MED). The extremes are the
+                # review product regardless of whether they exceed a gate.
                 # equal-size LARGEST and SMALLEST sets by |dz|, one page
                 # each (owner 2026-08-31: a mixed page does not review)
-                k = min(n_each, len(dzf) // 2)
+                k = min(n_each, max(1, len(dzf) // 2))
                 worst = dzf.abs().sort_values(ascending=False).index[:k]
                 best = dzf.drop(worst).abs().sort_values().index[:k]
                 if layers is None:

@@ -342,16 +342,25 @@ def _compound_vertical(crs):
     """The gravity-related vertical member of a compound CRS, else None.
     A compound's vertical member defines the height datum even when the
     horizontal sits on a datum ensemble — it must never be demoted away.
-    Registered EPSG entries only: the EPSG registry carries no ellipsoidal
-    vertical CRSs (verified over all 299), so the to_epsg() gate keeps a
-    hand-written WKT 'ellipsoidal height' VerticalCRS — for which the
+    The gate keeps a WKT 'ellipsoidal height' VerticalCRS — for which the
     realization IS the height datum — out of the datum-defined branch
-    (round-2 audit)."""
+    (round-2 audit), discriminating on the CRS/axis NAMES: every EPSG
+    height-type vertical carries the axis 'Gravity-related height' while
+    an ellipsoidal VERTCRS says 'Ellipsoidal height'. Registration is NOT
+    the test (round-3 audit: a genuine but unregistered national geoid —
+    the non-CONUS case this package exists for — must stay
+    datum-defining)."""
     import pyproj
     if not crs.is_compound:
         return None
+
+    def _gravity(c):
+        txt = " ".join([c.name or ""]
+                       + [a.name or "" for a in c.axis_info]).lower()
+        return "ellipsoidal" not in txt
+
     return next((c for c in (pyproj.CRS(s) for s in crs.sub_crs_list)
-                 if c.is_vertical and c.to_epsg() is not None), None)
+                 if c.is_vertical and _gravity(c)), None)
 
 
 def _vdatum_target_crs(products, vdatum):
@@ -400,8 +409,9 @@ def _vdatum_target_crs(products, vdatum):
             # embedded-CRS refusal asks for (owner catch-22 report,
             # 2026-08-30): proceed from the demoted horizontal
             crs = crs.to_2d()
-        if any(abs(a.unit_conversion_factor - 1.0) > 1e-12
-               for a in crs.axis_info):
+        if crs.is_projected and any(
+                abs(a.unit_conversion_factor - 1.0) > 1e-12
+                for a in crs.axis_info):
             # the rebase keeps these axes (H1) but the composed target's
             # HEIGHT axis is metres, and groundcontrol assumes elevations
             # are metres throughout — a raster storing ftUS heights would

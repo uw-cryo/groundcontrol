@@ -68,11 +68,15 @@ def _checked_4326(gdf, src_crs, path, src_geom):
         return gdf
     if geom.is_valid:
         from shapely.geometry import Point as _Point
-        c = src_geom.centroid
+        # representative_point, not centroid: a centroid can fall OUTSIDE
+        # the polygon (disjoint valid stripes, nodata hole at centre) and
+        # would falsely refuse a legitimate global raster (round-3 audit)
+        c = src_geom.representative_point()
         lon, lat = pyproj.Transformer.from_crs(
             crs_obj, "EPSG:4326", always_xy=True).transform(c.x, c.y)
-        if np.isfinite(lon) and np.isfinite(lat) \
-                and geom.contains(_Point(lon, lat)):
+        if (np.isfinite(lon) and np.isfinite(lat)
+                and -90.0 <= lat <= 90.0
+                and geom.contains(_Point(lon, lat))):
             return gdf  # valid ring containing its own centre: global
     raise ValueError(
         f"raster {os.fspath(path)}: its EPSG:4326 footprint spans "

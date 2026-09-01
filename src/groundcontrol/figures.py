@@ -2294,6 +2294,8 @@ def stats_table(entries, flagged=frozenset()):
                 defs.append((f"{short} = {m.group(1)}", color, False))
         if dag:
             short += " †"
+            if len(short) > 22:  # never let the width slice eat the dagger
+                short = short[:20].rstrip() + " †"
         resolved.append((label, short, values, color))
     # label column sized to the WIDEST resolved label (owner 2026-08-30:
     # fixed 20 read as a gulf once NVA/VVA shortened to codes); 22 leaves

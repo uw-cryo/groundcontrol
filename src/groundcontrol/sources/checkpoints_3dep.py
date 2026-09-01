@@ -67,20 +67,17 @@ def cache_write(local: Path, content: str | bytes) -> None:
     days — for ``ngl_steps.txt`` that read as "checked, no earthquake
     steps" and silently defeated the Gorkha step guard."""
     import stat
-    import tempfile
-    fd, tmp = tempfile.mkstemp(dir=local.parent, prefix=local.name + ".")
+    import uuid
+    tmp = str(local) + f".tmp-{uuid.uuid4().hex[:12]}"
+    # O_CREAT with mode 0o666: the KERNEL applies the process umask
+    # atomically — never os.umask() peeking, which is process-global and
+    # raced under the concurrent NGL per-station pool (round-3 audit:
+    # unrelated files created 0666 and the umask left at 0). mkstemp's
+    # 0600 carried through os.replace was the round-2 finding.
+    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
     try:
-        # mkstemp creates 0600 and os.replace carries that through — a
-        # shared GROUNDCONTROL_CACHE_DIR would lose group/other read on
-        # every refresh (round-2 audit). Preserve an existing file's
-        # mode; otherwise honor the umask like write_text did.
-        if local.exists():
-            mode = stat.S_IMODE(local.stat().st_mode)
-        else:
-            umask = os.umask(0)
-            os.umask(umask)
-            mode = 0o666 & ~umask
-        os.fchmod(fd, mode)
+        if local.exists():  # a refresh keeps the existing file's mode
+            os.fchmod(fd, stat.S_IMODE(local.stat().st_mode))
         with os.fdopen(fd, "wb" if isinstance(content, bytes) else "w") as f:
             f.write(content)
         os.replace(tmp, local)

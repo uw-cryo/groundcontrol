@@ -1,0 +1,337 @@
+"""Regression tests for the 2026-08-30 adversarial-audit fixes (H1-H10).
+
+Each test pins the exact failure scenario its finding was proven with,
+kept offline: ellipsoidal-only transform chains (no geoid grids), synthetic
+rasters, and monkeypatched caches. The findings live in the audit report
+(gitignored review/); the commit messages on this branch carry the
+per-finding failure scenarios.
+"""
+
+import numpy as np
+import pandas as pd
+import pytest
+
+pyproj = pytest.importorskip("pyproj")
+gpd = pytest.importorskip("geopandas")
+
+from pyproj import CRS  # noqa: E402
+from shapely.geometry import Point  # noqa: E402
+
+from groundcontrol.geodesy import (  # noqa: E402
+    is_wgs84_ensemble,
+    rebase_projection_2d,
+    rebase_projection_3d,
+    with_vdatum,
+)
+
+# ---------------------------------------------------------------------------
+# H3 — is_wgs84_ensemble must match ONLY the WGS 84 ensemble
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("code,expected", [
+    (4326, True),     # WGS 84 ensemble geographic
+    (32645, True),    # WGS 84 ensemble UTM
+    (25833, False),   # ETRS89 ensemble — 0.76 m from ITRF2014 at Berlin
+    (4258, False),    # ETRS89 geographic
+    (4747, False),    # GR96 (Greenland) ensemble
+    (6318, False),    # NAD83(2011)
+    (7912, False),    # ITRF2014 (realization, 3D)
+])
+def test_is_wgs84_ensemble_scoped_to_wgs84(code, expected):
+    assert is_wgs84_ensemble(CRS.from_epsg(code)) is expected
+
+
+def test_etrs89_horizontal_never_rebased_to_itrf():
+    # the audit's probed consequence: ETRS89 + EVRF2000 silently became
+    # ITRF2014 / UTM 33N (dE +0.594, dN +0.465 m at Berlin, epoch 2020)
+    out = with_vdatum(CRS.from_epsg(25833), "EPSG:5730")
+    assert "ETRS89" in out.name
+    assert "ITRF" not in out.name
+
+
+# ---------------------------------------------------------------------------
+# H1 — rebase_projection_2d/3d must keep the source Cartesian CS (units)
+# ---------------------------------------------------------------------------
+
+
+def test_rebase_preserves_ftus_axes_and_coordinates():
+    # EPSG:32664 (BLM 14N, US survey foot) is both ftUS and WGS84-ensemble
+    c2 = rebase_projection_2d(CRS.from_epsg(32664), 9000, "ITRF2014")
+    assert c2.axis_info[0].unit_name == "US survey foot"
+    c3 = rebase_projection_3d(CRS.from_epsg(32664), 9000, "ITRF2014")
+    assert c3.axis_info[0].unit_name == "US survey foot"
+    # native coordinates survive the rebase (the bug was a 3.28x scale)
+    from pyproj import Transformer
+    src = CRS.from_epsg(32664)
+    lon, lat = Transformer.from_crs(src, src.geodetic_crs,
+                                    always_xy=True).transform(1640416.67, 1e6)
+    e2, n2 = Transformer.from_crs(c2.geodetic_crs, c2,
+                                  always_xy=True).transform(lon, lat)
+    assert e2 == pytest.approx(1640416.67, abs=0.01)
+    assert n2 == pytest.approx(1e6, abs=0.01)
+
+
+def test_rebase_metre_grids_unchanged():
+    for code in (32610, 3413, 3031):
+        assert rebase_projection_2d(
+            CRS.from_epsg(code), 9000,
+            "ITRF2014").axis_info[0].unit_name == "metre"
+
+
+# ---------------------------------------------------------------------------
+# MED — with_vdatum('ellipsoidal') recursed forever appending ':itrf2014'
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("horizontal", [32610, 32645])  # realized + ensemble
+def test_with_vdatum_bad_ellipsoid_token_raises_once(horizontal):
+    with pytest.raises(ValueError, match="ellipsoid"):
+        with_vdatum(CRS.from_epsg(horizontal), "ellipsoidal")
+
+
+def test_with_vdatum_orthometric_on_ensemble_still_recurses_once():
+    out = with_vdatum(CRS.from_epsg(32645), "EPSG:3855")
+    assert "ITRF2014" in out.name and "EGM2008" in out.name
+
+
+# ---------------------------------------------------------------------------
+# H2 — compound orthometric product CRS through the CLI resolvers
+# ---------------------------------------------------------------------------
+
+
+def _write_tif(path, crs_input):
+    import rasterio
+    from rasterio.transform import from_origin
+
+    crs = pyproj.CRS.from_user_input(crs_input)
+    with rasterio.open(path, "w", driver="GTiff", width=4, height=4,
+                       count=1, dtype="float32", crs=crs.to_wkt(),
+                       transform=from_origin(340000, 3120000, 30, 30)) as dst:
+        dst.write(np.full((1, 4, 4), 1500.0, np.float32))
+    return path
+
+
+def test_cli_vdatum_refuses_compound_orthometric_product(tmp_path):
+    from groundcontrol.cli import _vdatum_target_crs
+    p = _write_tif(tmp_path / "cop30.tif", "EPSG:32645+3855")
+    # following the OLD refusal's advice stripped EGM2008 (-37.35 m at
+    # Rasuwa); the product declares its heights, so --vdatum must refuse
+    with pytest.raises(ValueError, match="declares its heights"):
+        _vdatum_target_crs({"cop30": str(p)}, "ellipsoid:itrf2014")
+
+
+def test_cli_embedded_accepts_compound_orthometric_on_ensemble(tmp_path):
+    from groundcontrol.cli import _embedded_target_crs
+    p = _write_tif(tmp_path / "cop30.tif", "EPSG:32645+3855")
+    wkt = _embedded_target_crs({"cop30": str(p)})
+    out = pyproj.CRS.from_wkt(wkt)
+    # EGM2008 preserved; ambiguous ensemble legs rebased to ITRF2014
+    assert "EGM2008" in out.name
+    assert "ITRF2014" in out.name
+    vert = pyproj.CRS(out.sub_crs_list[1])
+    assert vert.is_vertical and "EGM2008" in vert.name
+
+
+def test_cli_embedded_still_refuses_3d_ellipsoidal_ensemble(tmp_path):
+    from groundcontrol.cli import _embedded_target_crs
+    p = _write_tif(tmp_path / "e.tif",
+                   pyproj.CRS.from_epsg(32645).to_3d())
+    with pytest.raises(SystemExit, match="ENSEMBLE"):
+        _embedded_target_crs({"e": str(p)})
+
+
+# ---------------------------------------------------------------------------
+# H4 — per-row vertical guard for 3D (non-compound) sources; NA refused
+# ---------------------------------------------------------------------------
+
+UTM12_3D = pyproj.CRS.from_epsg(32612).to_3d()  # ellipsoidal target, no grids
+
+
+def _ctl(vertical_values, crs="EPSG:6319"):
+    n = len(vertical_values)
+    return gpd.GeoDataFrame({
+        "height": [500.0] * n,
+        "vertical_crs": pd.array(vertical_values, dtype="string"),
+    }, geometry=[Point(-111.5, 34.5)] * n, crs=crs)
+
+
+def test_vertical_guard_covers_3d_noncompound_source():
+    from groundcontrol.assess import transform_control
+    ctl = _ctl(["EPSG:5703", "EPSG:5703", "EPSG:6319"])
+    out, info = transform_control(ctl, UTM12_3D, source_crs="EPSG:6319")
+    # orthometric rows are masked under the ellipsoidal chain (the guard
+    # was silently inert here: ~30 m geoid applied, counted valid)
+    assert info["n_vertical_excluded"] == 2
+    h = out["h_ell"].to_numpy()
+    assert np.isnan(h[:2]).all() and np.isfinite(h[2])
+
+
+def test_vertical_guard_refuses_na():
+    from groundcontrol.assess import transform_control
+    ctl = _ctl(["EPSG:6319", pd.NA])
+    out, info = transform_control(ctl, UTM12_3D, source_crs="EPSG:6319")
+    assert info["n_vertical_excluded"] == 1
+    assert np.isnan(out["h_ell"].to_numpy()[1])
+
+
+def test_vertical_guard_scales_unit_variant_same_datum():
+    from groundcontrol.assess import transform_control
+    ft = 0.304800609601219  # US survey foot
+    ctl = gpd.GeoDataFrame({
+        "height": [500.0, 500.0 / ft],
+        "vertical_crs": pd.array(["EPSG:5703", "EPSG:6360"], dtype="string"),
+    }, geometry=[Point(-111.5, 34.5)] * 2, crs="EPSG:6318")
+    # identity compound chain: no geoid grid needed, h_ell == height in m
+    out, info = transform_control(ctl, "EPSG:6318+5703",
+                                  source_crs="EPSG:6318+5703")
+    h = out["h_ell"].to_numpy()
+    assert info["n_vertical_excluded"] == 0
+    assert h[0] == pytest.approx(h[1], abs=1e-6)  # ftUS row scaled, kept
+
+
+def test_transform_control_refuses_empty_frame():
+    from groundcontrol.assess import transform_control
+    ctl = _ctl(["EPSG:6319"]).iloc[0:0]
+    with pytest.raises(ValueError, match="empty"):
+        transform_control(ctl, UTM12_3D, source_crs="EPSG:6319")
+
+
+def test_transform_control_duplicate_index_labels():
+    from groundcontrol.assess import transform_control
+    ctl = _ctl(["EPSG:6319", "EPSG:6319"])
+    ctl.index = [0, 0]  # two caches concatenated
+    out, _ = transform_control(ctl, UTM12_3D, source_crs="EPSG:6319")
+    assert np.isfinite(out["h_ell"].to_numpy()).all()
+
+
+# ---------------------------------------------------------------------------
+# H6 — an empty steps cache must read as NOT checked; atomic cache writes
+# ---------------------------------------------------------------------------
+
+
+def test_empty_steps_cache_is_not_checked(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROUNDCONTROL_CACHE_DIR", str(tmp_path))
+    (tmp_path / "ngl_steps.txt").write_text("")  # interrupted download
+    from groundcontrol.sources import ngl
+    stations = [{"meta": {"sta": "CHLM"}}]
+    ngl._attach_steps(stations)
+    # eq_steps ABSENT = not checked -> propagate_epoch counts it
+    # step_unchecked; [] would read as "checked, no Gorkha steps"
+    assert "eq_steps" not in stations[0]["meta"]
+
+
+def test_cache_write_atomic_and_typed(tmp_path):
+    from groundcontrol.sources.checkpoints_3dep import cache_write
+    p = tmp_path / "c.txt"
+    cache_write(p, "text")
+    assert p.read_text() == "text"
+    cache_write(p, b"bytes")
+    assert p.read_bytes() == b"bytes"
+    assert list(tmp_path.iterdir()) == [p]  # no temp litter
+
+
+def test_refresh_env_zero_is_not_a_refresh(tmp_path, monkeypatch):
+    from groundcontrol.sources.checkpoints_3dep import cache_stale
+    p = tmp_path / "c.txt"
+    p.write_text("x")
+    monkeypatch.setenv("GROUNDCONTROL_REFRESH", "0")
+    assert cache_stale(p, None) is False
+    monkeypatch.setenv("GROUNDCONTROL_REFRESH", "1")
+    assert cache_stale(p, None) is True
+
+
+# ---------------------------------------------------------------------------
+# H7/H8 — antimeridian / polar footprints fail loud, never a global AOI
+# ---------------------------------------------------------------------------
+
+
+def _mk_raster(path, crs, x0, y0, px, n=50):
+    import rasterio
+    from rasterio.transform import from_origin
+    with rasterio.open(path, "w", driver="GTiff", width=n, height=n,
+                       count=1, dtype="float32", crs=crs, nodata=-9999.0,
+                       transform=from_origin(x0, y0, px, px)) as dst:
+        dst.write(np.full((1, n, n), 100.0, np.float32))
+    return str(path)
+
+
+def test_antimeridian_raster_footprint_raises(tmp_path):
+    from groundcontrol.aoi import raster_footprint
+    fiji = _mk_raster(tmp_path / "fiji.tif", "EPSG:32760",
+                      680000, 7910000, 4000)
+    with pytest.raises(ValueError, match="antimeridian"):
+        raster_footprint(fiji)
+
+
+def test_pole_raster_footprint_raises(tmp_path):
+    from groundcontrol.aoi import raster_footprint
+    pole = _mk_raster(tmp_path / "pole.tif", "EPSG:3031",
+                      -100000, 100000, 4000)
+    with pytest.raises(ValueError, match="pole|antimeridian"):
+        raster_footprint(pole)
+
+
+def test_off_meridian_antarctic_raster_still_resolves(tmp_path):
+    # MDV/Taylor Valley regression: EPSG:3031 near 162.5E must keep working
+    from groundcontrol.aoi import resolve_aoi
+    mdv = _mk_raster(tmp_path / "mdv.tif", "EPSG:3031",
+                     350000, -1300000, 200)
+    b, _poly = resolve_aoi(mdv)
+    assert (b[2] - b[0]) < 5.0
+
+
+def test_union_footprints_names_offending_raster(tmp_path):
+    from groundcontrol.aoi import union_footprints
+    fiji = _mk_raster(tmp_path / "fiji.tif", "EPSG:32760",
+                      680000, 7910000, 4000)
+    ok = _mk_raster(tmp_path / "ok.tif", "EPSG:32610",
+                    550000, 5280000, 30)
+    with pytest.raises(ValueError, match="fiji"):
+        union_footprints([fiji, ok])
+
+
+def test_resolve_aoi_accepts_ndarray_bbox():
+    from groundcontrol.aoi import resolve_aoi
+    b, poly = resolve_aoi(np.array([-115.5, 35.8, -114.8, 36.5]))
+    assert b == (-115.5, 35.8, -114.8, 36.5) and poly is None
+
+
+# ---------------------------------------------------------------------------
+# H9 — the military datum check must return NaN outside NAVD88 coverage
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("lon,lat", [
+    (-157.92, 21.32),   # Hickam AFB, Hawaii — was +14.28 m of fiction
+    (85.3, 28.1),       # Nepal — was -38.89
+    (-30.0, 30.0),      # mid-Atlantic — was +59.81
+])
+def test_egm96_navd88_delta_nan_outside_coverage(lon, lat):
+    from groundcontrol.figures import _egm96_navd88_delta
+    assert np.isnan(_egm96_navd88_delta(lon, lat, 10.0))
+
+
+# ---------------------------------------------------------------------------
+# MED — _grid_signature must see prime meridian and axis units
+# ---------------------------------------------------------------------------
+
+
+def test_grid_signature_prime_meridian_and_units():
+    from groundcontrol.sample import _grid_signature
+    sig = _grid_signature
+    assert sig(CRS.from_epsg(4326)) != sig(CRS.from_epsg(4807))   # Paris PM
+    assert sig(CRS.from_epsg(2230)) != sig(CRS.from_epsg(26946))  # ftUS vs m
+    # genuine same-grid datum reinterpretation still matches
+    assert sig(CRS.from_epsg(32611)) == sig(CRS.from_epsg(6340))
+
+
+# ---------------------------------------------------------------------------
+# MED — FAA military rows must not assert a definite vertical EPSG code
+# ---------------------------------------------------------------------------
+
+
+def test_faa_pos_class_military_ownership():
+    from groundcontrol.sources.faa import pos_class
+    assert pos_class("NGS", "MA") == "military"   # ownership wins
+    assert pos_class("NGS", "PU") == "surveyed"

@@ -605,17 +605,17 @@ def assess_products(control, products, target_crs, *, outdir, site_name,
                                          basemap=basemap)
             if sheet_paths:
                 artifacts["context_sheets"] = sheet_paths
-        # dz outlier + near-zero diagnostic galleries: capped per-source
-        # selection, so few pages and fast — default ON (owner 2026-08-31:
-        # the biased-vs-tight separator is surface context, not datasheet
-        # attributes; review it in imagery)
-        from groundcontrol.figures import dz_outlier_sheets
-        outlier_paths = dz_outlier_sheets(sampled, products, outdir,
-                                          site_name, rgb=rgb,
-                                          intensity=intensity,
-                                          basemap=basemap)
-        if outlier_paths:
-            artifacts["dz_outlier_sheets"] = outlier_paths
+        # largest / smallest vertical-residual review sheets: capped
+        # per-source selection, so few pages and fast — default ON (owner
+        # 2026-08-31: the biased-vs-tight separator is surface context, not
+        # datasheet attributes; review it in imagery)
+        from groundcontrol.figures import dz_residual_sheets
+        residual_paths = dz_residual_sheets(sampled, products, outdir,
+                                            site_name, rgb=rgb,
+                                            intensity=intensity,
+                                            basemap=basemap)
+        if residual_paths:
+            artifacts["dz_residual_sheets"] = residual_paths
         # the LABELED all-sources control map (+ monument facets, and the
         # MIDAS velocity maps + NGL series — default ON like every other
         # standard figure, owner 2026-08-31: "you shouldn't have to

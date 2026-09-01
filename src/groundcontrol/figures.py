@@ -410,7 +410,7 @@ def _context_layer_stack(stack, crs, all_pts, products, rgb, intensity,
                          basemap):
     """The contact-sheet layer chain (RGB ortho / web fallback, intensity,
     per-product relief) — shared by :func:`context_sheets` and
-    :func:`dz_outlier_sheets`. Opens the web basemap into ``stack``."""
+    :func:`dz_residual_sheets`. Opens the web basemap into ``stack``."""
     relief = [(f"{name} relief", p, "relief")
               for name, p in (products or {}).items()
               if isinstance(p, (str, Path))]
@@ -440,26 +440,215 @@ def _context_layer_stack(stack, crs, all_pts, products, rgb, intensity,
     return layers + relief
 
 
-def dz_outlier_sheets(sampled, products, outdir, site_name, *, rgb=None,
-                      intensity=None, basemap="esri", n_each=6,
-                      tiers=SHEET_TIERS, dpi=150):
-    """Small per-source DIAGNOSTIC galleries: dz outliers + near-zero
-    exemplars (owner 2026-08-31: biased ngs_best members share top-class
-    datasheet attributes with the tight ones — building edges, masts —
-    so the separator is surface context, reviewable only in imagery).
+def _units_per_m(src, y=None):
+    """``(x, y)`` grid units per METER for a raster — ``(1.0, 1.0)`` on a
+    metric CRS, so the metric path is unchanged.
+
+    Contact-sheet windows (``half_m``) and scalebars are both specified in
+    meters, but ``transform.a``/``.e`` are in the raster's own units: a ftUS
+    state-plane grid is 3.28x off without this (owner 2026-08-30, Alaska
+    SPCS lidar tile — the same bug :func:`groundcontrol.plot.add_scalebar`
+    took ``crs=`` for). Geographic grids convert at latitude ``y`` (deg).
+    """
+    crs = getattr(src, "crs", None)
+    if crs is None:
+        return 1.0, 1.0
+    try:
+        import pyproj
+        c = pyproj.CRS.from_user_input(crs)
+        if c.is_projected:
+            f = 1.0 / float(c.axis_info[0].unit_conversion_factor)
+            return f, f
+        if c.is_geographic:
+            # spherical approximation: a 120 m window is sub-percent here,
+            # and the alternative (a geodesic solve per panel) buys nothing
+            lat = 0.0 if y is None else float(np.clip(y, -89.0, 89.0))
+            m_per_deg = 111320.0
+            return (1.0 / max(m_per_deg * float(np.cos(np.radians(lat))),
+                              1.0),
+                    1.0 / m_per_deg)
+    except Exception:  # pragma: no cover - unit lookup is best-effort
+        pass
+    return 1.0, 1.0
+
+
+def _window(src, x, y, half_m):
+    """``half_m``-radius window around ``(x, y)`` in ``src``'s own CRS.
+
+    Returns ``(arr, extent, (px, py))``. Shared by :func:`_panel` and the
+    residual-sheet ramp pre-pass — one reader, never a second copy.
+    """
+    from rasterio.windows import Window
+
+    # per-axis pixel sizes: transform.a (x) and .e (y) differ on
+    # non-square-pixel rasters (Copilot review, PR #17)
+    px = abs(src.transform.a)
+    py = abs(src.transform.e)
+    ux, uy = _units_per_m(src, y)
+    halfx = max(4, int(round(half_m * ux / px)))
+    halfy = max(4, int(round(half_m * uy / py)))
+    row, col = src.index(x, y)
+    win = Window(col - halfx, row - halfy, 2 * halfx, 2 * halfy)
+    try:
+        arr = src.read(window=win, boundless=True,
+                       fill_value=src.nodata if src.nodata is not None
+                       else 0).astype("float64")
+    except Exception:
+        # WarpedVRT (the web-basemap panel) refuses boundless reads:
+        # read the in-bounds overlap and pad the rest with NaN
+        arr = np.full((src.count, 2 * halfy, 2 * halfx), np.nan)
+        r0 = max(0, row - halfy)
+        r1 = min(src.height, row + halfy)
+        c0 = max(0, col - halfx)
+        c1 = min(src.width, col + halfx)
+        if r1 > r0 and c1 > c0:
+            sub = src.read(window=Window(c0, r0, c1 - c0, r1 - r0)
+                           ).astype("float64")
+            arr[:, r0 - (row - halfy):r1 - (row - halfy),
+                c0 - (col - halfx):c1 - (col - halfx)] = sub
+    if src.nodata is not None:
+        arr[arr == src.nodata] = np.nan
+    return arr, [x - halfx * px, x + halfx * px,
+                 y - halfy * py, y + halfy * py], (px, py)
+
+
+def _valid_frac(arr, src, kind):
+    """Fraction of a window's pixels carrying signal (0 = honest blank)."""
+    # the all-bands-zero heuristic applies ONLY to untagged RGB (Byte
+    # mosaics fill gaps with 0 and carry no nodata) — zero is a legitimate
+    # value in single-band products (intensity, elevations near 0 m;
+    # Copilot review, PR #25)
+    ok = np.isfinite(arr).all(axis=0)
+    if kind == "rgb" and src.nodata is None:
+        ok &= (arr != 0).any(axis=0)
+        # a web provider's placeholder tile is pure achromatic (gray or
+        # black + text): web-basemap sources only — user orthos may be
+        # legitimately grayscale (KH-9)
+        if (getattr(src, "gc_web_basemap", False) and arr.shape[0] >= 3
+                and ok.size and np.abs(np.diff(arr[:3], axis=0)).mean()
+                < WEB_BLANK_CHROMA):
+            return 0.0
+    return float(ok.mean()) if ok.size else 0.0
+
+
+def _read_panel(dss, kind, x0, y0, pts_crs, half_m):
+    """Resolve a fallback chain at one point.
+
+    Returns ``(src, x, y, arr, extent, (px, py), frac)`` for the first
+    source in ``dss`` whose window holds >1% valid pixels — the last source
+    otherwise (an honest blank, never invented). ``x, y`` come back in that
+    source's CRS.
+    """
+    from rasterio.warp import transform as _rio_transform
+
+    src, x, y, arr, ext, res, frac = None, x0, y0, None, None, (1.0, 1.0), 0.0
+    for i, src in enumerate(dss):
+        x, y = x0, y0
+        if src.crs is not None and pts_crs is not None \
+                and src.crs.to_wkt() != pts_crs.to_wkt():
+            xs, ys = _rio_transform(pts_crs, src.crs, [x], [y])
+            x, y = xs[0], ys[0]
+        arr, ext, res = _window(src, x, y, half_m)
+        frac = _valid_frac(arr, src, kind)
+        if frac > 0.01 or i == len(dss) - 1:
+            if i:
+                logger.info("fallback source %d used at (%.0f, %.0f)",
+                            i, x0, y0)
+            break
+    return src, x, y, arr, ext, res, frac
+
+
+def _relief_clim(values):
+    """Elevation stretch for relief panels: 1-99% of ``values``, widened to
+    +-1 m on a flat surface so water / lake ice is not tinted pure noise."""
+    lo, hi = np.nanpercentile(values, (1, 99))
+    if hi - lo < 2:
+        mid = 0.5 * (hi + lo)
+        lo, hi = mid - 1, mid + 1
+    return float(lo), float(hi)
+
+
+def _panel(ax, dss, kind, x0, y0, *, pts_crs, half_m, interp,
+           relief_clim=None, annotate_z=True):
+    """Draw one contact-sheet panel; returns ``(x, y, extent, src)``.
+
+    ``x, y`` and ``extent`` are in the rendering source's CRS, and ``src``
+    is that source — the caller needs it for a correct ``add_scalebar``
+    ``crs=`` on a non-metric grid. ``relief_clim`` forces a shared
+    elevation ramp (residual sheets share one per point+tier so DSM and
+    DTM are directly comparable); ``annotate_z=False`` suppresses the
+    per-panel ``z lo..hi m`` stamp when the caller prints it once.
+    """
+    from .plot import hillshade
+
+    src, x, y, arr, ext, (px, py), frac = _read_panel(
+        dss, kind, x0, y0, pts_crs, half_m)
+    if frac == 0.0:
+        # honest blank, labeled (owner 2026-08-29: bare white panels
+        # read as a bug) — the point is outside every source's data.
+        # RETURN here: stretching an all-NaN window is pure
+        # RuntimeWarning noise (owner 2026-08-30 report)
+        ax.text(0.5, 0.12, "outside data extent", transform=ax.transAxes,
+                ha="center", fontsize=6.5, color="#888888")
+        return x, y, ext, src
+    if kind == "rgb":
+        img = arr[:3]
+        lo = np.nanpercentile(img, 0.5, axis=(1, 2))[:, None, None]
+        hi = np.nanpercentile(img, 99.5, axis=(1, 2))[:, None, None]
+        img = np.clip((img - lo) / np.where(hi > lo, hi - lo, 1), 0, 1)
+        ax.imshow(np.moveaxis(np.nan_to_num(img), 0, -1), extent=ext,
+                  zorder=0, interpolation=interp)
+    elif kind == "gray":
+        lo, hi = np.nanpercentile(arr[0], (0.5, 99.5))
+        ax.imshow(arr[0], cmap="gray", vmin=lo, vmax=hi, extent=ext,
+                  zorder=0, interpolation=interp)
+    elif kind == "relief":
+        b = arr[0]
+        lo, hi = _relief_clim(b) if relief_clim is None else relief_clim
+        ax.imshow(hillshade(b, dx=px, dy=py, multidirectional=True),
+                  cmap="gray", vmin=0, vmax=1, extent=ext, zorder=0,
+                  interpolation=interp)
+        ax.imshow(b, cmap=cpt_rainbow(), vmin=lo, vmax=hi, alpha=0.4,
+                  extent=ext, zorder=1, interpolation=interp)
+        if annotate_z:
+            ax.text(0.03, 0.03, f"z {lo:.0f}..{hi:.0f} m",
+                    transform=ax.transAxes, fontsize=6.5, color="white",
+                    bbox=dict(fc="black", alpha=0.45, pad=1.5))
+    else:
+        raise ValueError(f"unknown layer kind {kind!r}")
+    return x, y, ext, src
+
+
+def dz_residual_sheets(sampled, products, outdir, site_name, *, rgb=None,
+                       intensity=None, basemap="esri", n_each=6,
+                       tiers=SHEET_TIERS, dpi=150):
+    """Per-source vertical-RESIDUAL review sheets (owner 2026-08-31:
+    biased ngs_best members share top-class datasheet attributes with the
+    tight ones — building edges, masts — so the separator is surface
+    context, reviewable only in imagery).
 
     Per product column and per source subset — the ``context_sheets``
-    subsets PLUS the NGS monuments that never get full sheets — equal
-    WORST and BEST sets by |dz| (``n_each`` each), rendered only when
+    subsets PLUS the NGS monuments that never get full sheets — the
+    ``n_each`` LARGEST and the ``n_each`` SMALLEST |dz| points, each set
+    on its OWN page ("Largest vertical residual" / "Smallest vertical
+    residual"; owner: a mixed page does not review). Rendered only when
     the subset has residuals beyond the ``error_report`` 3*NMAD gate (a
-    clean source needs no page). Row labels carry the dz value; the
-    marker rides the :data:`DZ_CMAP` ramp at the subset's
-    :func:`snap_clim` tier, so page colors read like the dz maps.
+    clean source needs no page).
+
+    Each page is TIER-MAJOR (:func:`_residual_sheet`): rows are control
+    points, and the tiers are two SUPERCOLUMNS — every layer at 120 m,
+    then the same layers at the native-pixel 30 m — so one point reads
+    across in a single row. Relief panels share one elevation ramp per
+    (point, tier), never across points. The marker rides the
+    :data:`DZ_CMAP` ramp at the SELECTED points' :func:`snap_clim` tier
+    (the population tier saturates every selected outlier to one color).
     Default-ON in ``assess_products`` (unlike the full sheets): the
     selection is capped, so the pages are few and fast.
     """
     from contextlib import ExitStack
 
+    if "id" not in sampled.columns:  # BYOD frames; the fetch schema has id
+        sampled = sampled.assign(id=sampled.index.astype(str))
     subsets = _sheet_subsets(sampled)
     pt = sampled.get("point_type")
     if pt is not None:
@@ -474,15 +663,17 @@ def dz_outlier_sheets(sampled, products, outdir, site_name, *, rgb=None,
                     .fillna(False).to_numpy(dtype=bool)
                 if bm.any():
                     subsets["ngs_best"] = (sampled[bm], None, None)
-            except Exception:
-                pass
+            except Exception as exc:
+                # loud: ngs_best IS the gallery's motivating case, and a
+                # silent pass drops it with no trace (audit 2026-08-30)
+                logger.warning("ngs_best residual subset skipped: %s", exc)
     if not subsets:
         return []
     dz_cols = [(c[len("dh_"):-len("_before")], c) for c in sampled.columns
                if c.startswith("dh_") and c.endswith("_before")]
     out = []
     with ExitStack() as stack:
-        layers = None   # built lazily: only when some subset has outliers
+        layers = None   # built lazily: only when some subset has residuals
         for prod, col in dz_cols:
             for stag, (pts, _cls, _colors) in subsets.items():
                 dz = pd.to_numeric(pts[col], errors="coerce")
@@ -496,36 +687,252 @@ def dz_outlier_sheets(sampled, products, outdir, site_name, *, rgb=None,
                     else pd.Series(False, index=dzf.index)
                 if not gate.any():
                     continue
-                # equal-size WORST and BEST sets by |dz| (owner
-                # 2026-08-31: no per-row outlier labels — the contrast
-                # and the marker ramp carry the story)
+                # equal-size LARGEST and SMALLEST sets by |dz|, one page
+                # each (owner 2026-08-31: a mixed page does not review)
                 k = min(n_each, len(dzf) // 2)
                 worst = dzf.abs().sort_values(ascending=False).index[:k]
                 best = dzf.drop(worst).abs().sort_values().index[:k]
-                sel = fin.loc[list(worst) + list(best)].copy()
-                sel["dz_val"] = dzf[sel.index]
-                sel["id"] = [f"{i} {v:+.2f} m" for i, v in
-                             zip(sel["id"].astype(str), dzf[sel.index])]
-                clim = snap_clim(dzf)   # same tier rule as the dz maps
                 if layers is None:
                     all_pts = pd.concat([p for p, _, _ in subsets.values()])
                     layers = _context_layer_stack(
                         stack, sampled.crs, all_pts, products, rgb,
                         intensity, basemap)
                     if not layers:
-                        logger.info("dz outlier sheets skipped: no layer")
+                        logger.info("dz residual sheets skipped: no layer")
                         return []
                 sub_out = Path(outdir) / SOURCE_DIRS.get(stag, stag)
                 base_title = SHEET_SUBSET_TITLES.get(stag, stag)
-                for half_m, ttag, interp, slen in tiers:
-                    out += point_context_gallery(
-                        sel, layers, sub_out, site_name, half_m=half_m,
-                        tier_tag=ttag, interp=interp, scale_len=slen,
-                        subset_tag=f"{stag}_dz_{prod}_outliers",
-                        title=f"{base_title} {prod} dz worst {k} | best {k}",
-                        sort=False, dpi=dpi, value_col="dz_val",
-                        value_clim=clim)
+                for ktag, idx, head in (
+                        ("largest", worst, "Largest vertical residual"),
+                        ("smallest", best, "Smallest vertical residual")):
+                    sel = fin.loc[list(idx)].copy()
+                    sel["dz_val"] = dzf[sel.index].astype("float64")
+                    # clim from the SELECTED points, not the population:
+                    # every "largest" point sits beyond the population
+                    # tier and renders one saturated color (audit
+                    # 2026-08-30)
+                    fp = _residual_sheet(
+                        sel, layers, sub_out, site_name, tiers=tiers,
+                        subset_tag=f"{stag}_dz_{prod}_residual_{ktag}",
+                        title=f"{head} — {base_title} {prod}",
+                        value_col="dz_val",
+                        value_clim=snap_clim(sel["dz_val"]), dpi=dpi)
+                    if fp is not None:
+                        out.append(fp)
     return out
+
+
+def _residual_sheet(points, layers, outdir, site_name, *, tiers=SHEET_TIERS,
+                    subset_tag="residual", title=None, id_col="id",
+                    value_col=None, value_clim=None, dpi=150):
+    """One TIER-MAJOR residual review page (owner 2026-08-31).
+
+    Rows are control points — one point per row, read straight across.
+    Columns are two SUPERCOLUMNS, one per entry in ``tiers`` (120 m
+    context, then the native-pixel 30 m), and inside each supercolumn one
+    column per layer in ``layers`` order, so a site with RGB + DSM + DTM
+    renders 3 + 3 columns and adding lidar intensity renders 4 + 4.
+
+    All relief panels sharing a (row, tier) share ONE elevation ramp, from
+    a pooled 1-99% stretch over that point's windows, so DSM and DTM are
+    directly comparable; the ``z lo..hi m`` stamp prints once per (row,
+    tier). Ramps are NEVER shared across rows — points kilometers apart
+    sit at different elevations and a global ramp flattens every panel.
+
+    Returns the written page, or ``None`` when there is nothing to draw.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib as mpl
+    import matplotlib.pyplot as plt
+    import rasterio
+    from matplotlib.markers import MarkerStyle
+    from matplotlib.transforms import Affine2D
+
+    from .plot import add_scalebar
+
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    srcs = []   # built inside the try: a failed open must not leak the others
+    owned = []  # datasets THIS call opened (pre-opened entries stay caller's)
+    try:
+        for tag, p, kind in layers:
+            chain = p if isinstance(p, (list, tuple)) else [p]
+            opened = []
+            for q in chain:
+                if hasattr(q, "read"):  # already-open dataset (caller-owned)
+                    opened.append(q)
+                else:
+                    ds = rasterio.open(q)
+                    owned.append(ds)
+                    opened.append(ds)
+            srcs.append((tag, opened, kind))
+        npanel, ntier, nrow = len(srcs), len(tiers), len(points)
+        if not npanel or not ntier or not nrow:
+            return None
+        pts_crs = points.crs
+        relief_j = [j for j, (_, _, kd) in enumerate(srcs) if kd == "relief"]
+
+        # ABSOLUTE margins in inches: a fractional top= on a tall sheet
+        # reserves inches of whitespace under the title (owner 2026-08-13)
+        pw = max(1.9, min(2.7, 16.0 / (ntier * npanel)))
+        lab_w, gap_w, head_h, foot_h = 1.45, 0.30, 1.40, 0.52
+        fig_w = pw * ntier * npanel + lab_w + gap_w * (ntier - 1) + 0.18
+        fig_h = pw * nrow + head_h + foot_h
+        fig = plt.figure(figsize=(fig_w, fig_h))
+        wr = []
+        for t in range(ntier):
+            if t:
+                wr.append(gap_w / pw)   # spacer column BETWEEN supercolumns
+            wr += [1.0] * npanel
+        gs = fig.add_gridspec(nrow, ntier * npanel + (ntier - 1),
+                              width_ratios=wr, hspace=0.06, wspace=0.03)
+        tier_axes = {t: [] for t in range(ntier)}
+
+        for i, (_, r) in enumerate(points.iterrows()):
+            color = "#C00000"
+            dz = float(r[value_col]) if value_col is not None else np.nan
+            if value_col is not None and value_clim:
+                # marker carries dz on the DZ_CMAP ramp (owner 2026-08-31),
+                # same tier convention as the dz maps
+                color = (mpl.colormaps[DZ_CMAP](
+                    mpl.colors.Normalize(-value_clim, value_clim)(dz))
+                    if np.isfinite(dz) else "#888888")
+            row_label = str(r[id_col])
+            if np.isfinite(dz):
+                # 3 decimals near zero: the "smallest residual" page is all
+                # sub-cm and "+0.00 m" on every row reads as a format bug
+                row_label += (f"\n{dz:+.3f} m" if abs(dz) < 0.1
+                              else f"\n{dz:+.2f} m")
+            for t, (half_m, _ttag, interp, slen) in enumerate(tiers):
+                # ONE elevation ramp per (row, tier): pooled stretch over
+                # this point's relief windows, so DSM/DTM compare directly
+                rc = None
+                if len(relief_j) > 1:
+                    vals = []
+                    for j in relief_j:
+                        try:
+                            _s, _x, _y, arr, _e, _res, frac = _read_panel(
+                                srcs[j][1], "relief", r.geometry.x,
+                                r.geometry.y, pts_crs, half_m)
+                            if frac > 0.0:
+                                vals.append(arr[0][np.isfinite(arr[0])])
+                        except Exception as exc:
+                            logger.info("shared relief ramp: %s skipped "
+                                        "at %s: %s", srcs[j][0],
+                                        r[id_col], exc)
+                    vals = [v for v in vals if v.size]
+                    if vals:
+                        rc = _relief_clim(np.concatenate(vals))
+                for j, (tag, chain, kd) in enumerate(srcs):
+                    ax = fig.add_subplot(gs[i, t * (npanel + 1) + j])
+                    tier_axes[t].append(ax)
+                    psrc = None
+                    kw = dict(pts_crs=pts_crs, half_m=half_m, interp=interp,
+                              relief_clim=rc if kd == "relief" else None,
+                              annotate_z=bool(relief_j) and j == relief_j[0])
+                    try:
+                        try:
+                            x, y, ext, psrc = _panel(
+                                ax, chain, kd, r.geometry.x, r.geometry.y,
+                                **kw)
+                        except Exception:
+                            # ONE retry: web-tile reads fail transiently
+                            # (rate limits, dropped connections) and a
+                            # second windowed read usually lands
+                            ax.clear()
+                            x, y, ext, psrc = _panel(
+                                ax, chain, kd, r.geometry.x, r.geometry.y,
+                                **kw)
+                        ptype = str(r.get("point_type", "")) \
+                            if "point_type" in r else ""
+                        mk = POINT_STYLE.get(ptype, ("o",))[0]
+                        if MarkerStyle(mk).is_filled():
+                            mkw = dict(facecolors="none", edgecolors=color)
+                        else:
+                            mkw = dict(color=color)
+                        az = _point_azimuth(r)
+                        if np.isfinite(az) and ptype in (
+                                "runway_end", "displaced_threshold"):
+                            mk = MarkerStyle(
+                                mk, transform=Affine2D().rotate_deg(-az))
+                        # dark halo first: mid-ramp DZ_CMAP colors are pale
+                        # yellow/white and vanish on bright imagery
+                        ax.scatter([x], [y], s=170, marker=mk,
+                                   linewidths=3.6, zorder=4,
+                                   **(dict(facecolors="none",
+                                           edgecolors="#111111")
+                                      if MarkerStyle(mk).is_filled()
+                                      else dict(color="#111111")))
+                        ax.scatter([x], [y], s=170, marker=mk,
+                                   linewidths=2.0, zorder=5, **mkw)
+                        ax.set_xlim(ext[0], ext[1])
+                        ax.set_ylim(ext[2], ext[3])
+                    except Exception as e:
+                        ax.clear()
+                        ax.text(0.5, 0.5, f"{tag}\nunavailable", ha="center",
+                                va="center", transform=ax.transAxes,
+                                fontsize=8)
+                        logger.warning(
+                            "%s %s panel failed after retry (web-tile reads "
+                            "can be transient; panel left blank): %s",
+                            r[id_col], tag, e)
+                    ax.set_aspect("equal")
+                    ax.set_xticks([]), ax.set_yticks([])
+                    # house style: EVERY map axes gets a matplotlib-scalebar,
+                    # and crs= keeps a non-metric grid honestly labeled
+                    add_scalebar(ax, length=slen, label=f"{slen} m",
+                                 crs=getattr(psrc, "crs", None))
+                    if i == 0:
+                        ax.set_title(tag, fontsize=9.5, loc="left",
+                                     pad=4)
+                    if t == 0 and j == 0:
+                        ax.set_ylabel(row_label, rotation=0, ha="right",
+                                      va="center", fontsize=10,
+                                      fontweight="bold", labelpad=10)
+
+        fig.subplots_adjust(left=lab_w / fig_w, right=1.0 - 0.18 / fig_w,
+                            top=1.0 - head_h / fig_h, bottom=foot_h / fig_h)
+        # SUPERCOLUMN headers, placed from the realized axes positions so
+        # they always span their tier's columns exactly
+        for t, (half_m, _ttag, interp, _slen) in enumerate(tiers):
+            axs = tier_axes[t]
+            if not axs:
+                continue
+            pos = [a.get_position() for a in axs]
+            x0 = min(p.x0 for p in pos)
+            x1 = max(p.x1 for p in pos)
+            y1 = max(p.y1 for p in pos)
+            head = f"{2 * half_m:.0f} m " + ("native pixels"
+                                             if interp == "nearest"
+                                             else "context")
+            fig.text(0.5 * (x0 + x1), y1 + 0.34 / fig_h, head, ha="center",
+                     va="bottom", fontsize=13, fontweight="bold",
+                     bbox=dict(fc="#E8E8E8", ec="#BBBBBB", pad=3.5))
+        tags = " | ".join(t for t, _, _ in srcs)
+        ramp = (f"  |  marker: dz ±{value_clim:g} m ({DZ_CMAP})"
+                if value_col is not None and value_clim else "")
+        fig.suptitle(f"{title or subset_tag}: {site_name}", fontsize=15,
+                     y=1.0 - 0.10 / fig_h)
+        fig.text(0.5, 1.0 - 0.42 / fig_h,
+                 f"rows = control points, labeled with dz  |  layers: "
+                 f"{tags}{ramp}", ha="center", va="top", fontsize=9.5,
+                 color="#444444")
+        fig.text(0.5, 0.14 / fig_h,
+                 "relief = cpt_rainbow over multidirectional hillshade; one "
+                 "elevation ramp per point and tier (DSM/DTM comparable), "
+                 "never shared across points",
+                 ha="center", va="bottom", fontsize=8, color="#666666")
+        # JPEG q85 (owner 2026-08-30): the sheets are photo-heavy
+        fp = outdir / f"{site_name}_{subset_tag}.jpg"
+        fig.savefig(fp, dpi=dpi, pil_kwargs={"quality": 85})
+        plt.close(fig)
+    finally:
+        for src in owned:
+            src.close()
+    logger.info("wrote %s (%d points x %d tiers x %d layers)",
+                fp, nrow, ntier, npanel)
+    return fp
 
 
 def point_context_gallery(points, layers, outdir, site_name, *,
@@ -587,109 +994,12 @@ def point_context_gallery(points, layers, outdir, site_name, *,
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import rasterio
-    from rasterio.warp import transform as _rio_transform
-    from rasterio.windows import Window
 
-    from .plot import add_scalebar, hillshade
+    from .plot import add_scalebar
 
-    def _window(src, x, y):
-        # per-axis pixel sizes: transform.a (x) and .e (y) differ on
-        # non-square-pixel rasters (Copilot review, PR #17)
-        px = abs(src.transform.a)
-        py = abs(src.transform.e)
-        halfx = max(4, int(round(half_m / px)))
-        halfy = max(4, int(round(half_m / py)))
-        row, col = src.index(x, y)
-        win = Window(col - halfx, row - halfy, 2 * halfx, 2 * halfy)
-        try:
-            arr = src.read(window=win, boundless=True,
-                           fill_value=src.nodata if src.nodata is not None
-                           else 0).astype("float64")
-        except Exception:
-            # WarpedVRT (the web-basemap panel) refuses boundless reads:
-            # read the in-bounds overlap and pad the rest with NaN
-            arr = np.full((src.count, 2 * halfy, 2 * halfx), np.nan)
-            r0 = max(0, row - halfy)
-            r1 = min(src.height, row + halfy)
-            c0 = max(0, col - halfx)
-            c1 = min(src.width, col + halfx)
-            if r1 > r0 and c1 > c0:
-                sub = src.read(window=Window(c0, r0, c1 - c0, r1 - r0)
-                               ).astype("float64")
-                arr[:, r0 - (row - halfy):r1 - (row - halfy),
-                    c0 - (col - halfx):c1 - (col - halfx)] = sub
-        if src.nodata is not None:
-            arr[arr == src.nodata] = np.nan
-        return arr, [x - halfx * px, x + halfx * px,
-                     y - halfy * py, y + halfy * py], (px, py)
-
-    def _valid_frac(arr, src, kind):
-        # fraction of pixels carrying signal. The all-bands-zero heuristic
-        # applies ONLY to untagged RGB (Byte mosaics fill gaps with 0 and
-        # carry no nodata) — zero is a legitimate value in single-band
-        # products (intensity, elevations near 0 m; Copilot review, PR #25)
-        ok = np.isfinite(arr).all(axis=0)
-        if kind == "rgb" and src.nodata is None:
-            ok &= (arr != 0).any(axis=0)
-            # a web provider's placeholder tile is pure achromatic (gray or
-            # black + text): web-basemap sources only — user orthos may be
-            # legitimately grayscale (KH-9)
-            if (getattr(src, "gc_web_basemap", False) and arr.shape[0] >= 3
-                    and ok.size and np.abs(np.diff(arr[:3], axis=0)).mean()
-                    < WEB_BLANK_CHROMA):
-                return 0.0
-        return float(ok.mean()) if ok.size else 0.0
-
-    def _panel(ax, dss, kind, x0, y0):
-        for i, src in enumerate(dss):
-            x, y = x0, y0
-            if src.crs is not None and points.crs is not None \
-                    and src.crs.to_wkt() != points.crs.to_wkt():
-                xs, ys = _rio_transform(points.crs, src.crs, [x], [y])
-                x, y = xs[0], ys[0]
-            arr, ext, (px, py) = _window(src, x, y)
-            frac = _valid_frac(arr, src, kind)
-            if frac > 0.01 or i == len(dss) - 1:
-                if i:
-                    logger.info("fallback source %d used at (%.0f, %.0f)",
-                                i, x0, y0)
-                break
-        if frac == 0.0:
-            # honest blank, labeled (owner 2026-08-29: bare white panels
-            # read as a bug) — the point is outside every source's data.
-            # RETURN here: stretching an all-NaN window is pure
-            # RuntimeWarning noise (owner 2026-08-30 report)
-            ax.text(0.5, 0.12, "outside data extent", transform=ax.transAxes,
-                    ha="center", fontsize=6.5, color="#888888")
-            return x, y, ext
-        if kind == "rgb":
-            img = arr[:3]
-            lo = np.nanpercentile(img, 0.5, axis=(1, 2))[:, None, None]
-            hi = np.nanpercentile(img, 99.5, axis=(1, 2))[:, None, None]
-            img = np.clip((img - lo) / np.where(hi > lo, hi - lo, 1), 0, 1)
-            ax.imshow(np.moveaxis(np.nan_to_num(img), 0, -1), extent=ext,
-                      zorder=0, interpolation=interp)
-        elif kind == "gray":
-            lo, hi = np.nanpercentile(arr[0], (0.5, 99.5))
-            ax.imshow(arr[0], cmap="gray", vmin=lo, vmax=hi, extent=ext,
-                      zorder=0, interpolation=interp)
-        elif kind == "relief":
-            b = arr[0]
-            lo, hi = np.nanpercentile(b, (1, 99))
-            if hi - lo < 2:  # flat water/lake ice: don't tint pure noise
-                mid = 0.5 * (hi + lo)
-                lo, hi = mid - 1, mid + 1
-            ax.imshow(hillshade(b, dx=px, dy=py, multidirectional=True),
-                      cmap="gray", vmin=0, vmax=1, extent=ext, zorder=0,
-                      interpolation=interp)
-            ax.imshow(b, cmap=cpt_rainbow(), vmin=lo, vmax=hi, alpha=0.4,
-                      extent=ext, zorder=1, interpolation=interp)
-            ax.text(0.03, 0.03, f"z {lo:.0f}..{hi:.0f} m",
-                    transform=ax.transAxes, fontsize=6.5, color="white",
-                    bbox=dict(fc="black", alpha=0.45, pad=1.5))
-        else:
-            raise ValueError(f"unknown layer kind {kind!r}")
-        return x, y, ext
+    # _window / _valid_frac / _panel are module-level helpers, shared
+    # verbatim with :func:`_residual_sheet` (one reader, never a
+    # second divergent copy)
 
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -715,6 +1025,7 @@ def point_context_gallery(points, layers, outdir, site_name, *,
 
         n = len(points)
         npanel = len(srcs)
+        pts_crs = points.crs   # invariant across the sort rebinding below
         if ncell is None:
             ncell = 3 if npanel >= 3 else 4
         # intelligent order (owner 2026-08-13): class first (class_colors key
@@ -764,17 +1075,21 @@ def point_context_gallery(points, layers, outdir, site_name, *,
                         if np.isfinite(v) else "#888888")
                 for j, (tag, chain, kind) in enumerate(srcs):
                     ax = fig.add_subplot(gs[row_i, cell * (npanel + 1) + j])
+                    psrc = None   # the source that rendered: scalebar crs
+                    pkw = dict(pts_crs=pts_crs, half_m=half_m, interp=interp)
                     try:
                         try:
-                            x, y, ext = _panel(ax, chain, kind,
-                                               r.geometry.x, r.geometry.y)
+                            x, y, ext, psrc = _panel(
+                                ax, chain, kind, r.geometry.x, r.geometry.y,
+                                **pkw)
                         except Exception:
                             # ONE retry: web-tile reads fail transiently
                             # (rate limits, dropped connections) and a
                             # second windowed read usually lands
                             ax.clear()
-                            x, y, ext = _panel(ax, chain, kind,
-                                               r.geometry.x, r.geometry.y)
+                            x, y, ext, psrc = _panel(
+                                ax, chain, kind, r.geometry.x, r.geometry.y,
+                                **pkw)
                         # locator = the package marker key's shape for this
                         # point_type, drawn as an outline so the imagery
                         # stays readable (unfilled markers take color=, not
@@ -815,8 +1130,12 @@ def point_context_gallery(points, layers, outdir, site_name, *,
                         label = f"{r[id_col]}" + (f" · {cls}" if cls else "")
                         ax.set_title(label, fontsize=8.5, loc="left")
                     if j == npanel - 1:
+                        # crs= keeps a non-metric grid honestly labeled: a
+                        # ftUS bar spans 25 ftUS = 7.6 m without it (owner
+                        # 2026-08-30, add_scalebar crs=)
                         add_scalebar(ax, length=scale_len,
-                                     label=f"{scale_len} m")
+                                     label=f"{scale_len} m",
+                                     crs=getattr(psrc, "crs", None))
             tags = " | ".join(t for t, _, _ in srcs)
             page_cls = ""
             if class_col and class_col in pts_pg.columns \

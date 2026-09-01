@@ -1338,6 +1338,19 @@ def hillshade_from_raster(path, *, max_px: int = HILLSHADE_MAX_PX):
             return None
         f = max(1, math.ceil(max(src.width, src.height) / max_px))
         h, w = math.ceil(src.height / f), math.ceil(src.width / f)
+        if f > 1 and not src.overviews(1):
+            # the decimated read DECODES EVERY BLOCK when neither the
+            # raster nor its VRT sources carry overviews — on a
+            # multi-GB mosaic this is minutes of silence right after the
+            # stats print (owner 2026-09-01, MDV 159k x 120k px VRT).
+            # Say so BEFORE starting, with the escapes.
+            logger.warning(
+                "deriving the figure hillshade from %s: %dx%d px with NO "
+                "overviews — this reads the full raster once and can take "
+                "minutes on a large mosaic. Faster next time: pre-build "
+                "overviews (gdaladdo -ro ...), pass a pre-rendered "
+                "hillshade (--hs NAME=PATH), or skip figures "
+                "(--no-figures)", path, src.width, src.height)
         z = src.read(1, out_shape=(h, w), masked=True,
                      resampling=Resampling.average).astype("float64").filled(np.nan)
         b = src.bounds
@@ -1605,7 +1618,9 @@ SHEET_SUBSET_TITLES = {
 #: NVA/VVA split legible at a glance); subsets absent here use _INK
 SHEET_SUBSET_TITLE_COLORS = {
     "3dep_nva": "#7B4A12",
-    "3dep_vva": "#2E7D32",
+    # OLIVE, not the BEST-title green (owner 2026-09-01: same green for
+    # 'best' and 'vegetated' conflated the two meanings)
+    "3dep_vva": "#556B2F",
 }
 
 def _label_medians(ax, meds, span):

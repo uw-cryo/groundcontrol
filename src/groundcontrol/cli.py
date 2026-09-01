@@ -370,7 +370,11 @@ def _compound_vertical(crs):
         if "gravity" in axes:
             return True
         txt = ((c.name or "") + " " + axes).lower()
-        return "ellipsoid" not in txt
+        # 'depth' stem too: WKT1 round-trips erase axis DIRECTION as well
+        # as names, so a custom depth CRS reads back as ('Up', up) —
+        # 50/52 EPSG depth verticals carry 'depth' in the name, 0/246
+        # height verticals do (round-5 audit)
+        return "ellipsoid" not in txt and "depth" not in txt
 
     return next((c for c in (pyproj.CRS(s) for s in crs.sub_crs_list)
                  if c.is_vertical and _gravity_height(c)), None)

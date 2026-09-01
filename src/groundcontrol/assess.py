@@ -233,6 +233,24 @@ def transform_control(control, target_crs, *, target_epoch=2010.0,
                 "a compound 'horizontal+vertical' CRS ('EPSG:32616+5703'); a "
                 "height-less target is only valid when source_crs equals it exactly "
                 "(same-frame identity).")
+    # DEPTH targets refuse everywhere, not just the CLI's ensemble branch
+    # (round-5 audit: a NAD83 + EPSG:5715 target landed +1500 m control
+    # at h_ell=-1500, silently — every downstream comparison assumes
+    # height-up). The name stem backstops WKT1 round-trips that erase
+    # axis direction: 50/52 EPSG depth verticals say 'depth' in the
+    # name, 0/246 height verticals do.
+    _depth = any((a.direction or "").lower() == "down"
+                 for a in tgt.axis_info)
+    if not _depth and tgt.is_compound:
+        _depth = any("depth" in (pyproj.CRS(s).name or "").lower()
+                     for s in tgt.sub_crs_list if pyproj.CRS(s).is_vertical)
+    if _depth:
+        raise ValueError(
+            f"target_crs {tgt.name!r} carries a DEPTH-type vertical "
+            "(positive down): heights would land sign-flipped while every "
+            "downstream dz comparison assumes height-up. Pass a "
+            "height-type vertical (e.g. EPSG:5703 NAVD88, EPSG:3855 "
+            "EGM2008).")
     if aoi_bounds_4326 is None:
         aoi_bounds_4326 = tuple(control.to_crs("EPSG:4326").total_bounds)
     t = get_transformer(src, target_crs, aoi_bounds_4326=aoi_bounds_4326)

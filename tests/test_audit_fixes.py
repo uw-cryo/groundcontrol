@@ -205,6 +205,47 @@ def test_vertical_guard_accepts_unit_variant_code_same_datum():
     assert h[0] == pytest.approx(500.0) and h[1] == pytest.approx(500.0)
 
 
+def test_transform_control_refuses_depth_target():
+    # round-5 audit: a depth-type vertical target landed +1500 m control
+    # at h_ell = -1500 silently on every non-ensemble path
+    from groundcontrol.assess import transform_control
+    ctl = gpd.GeoDataFrame({"height": [1500.0]},
+                           geometry=[Point(-111.5, 34.5)], crs="EPSG:26911")
+    with pytest.raises(ValueError, match="DEPTH"):
+        transform_control(ctl, "EPSG:26911+5715", source_crs="EPSG:26911+5715")
+
+
+def test_compound_vertical_discrimination():
+    # _gravity_height was never exercised by the suite through four audit
+    # rounds (round-5 INFO); pin the verified matrix
+    from pyproj.crs import CompoundCRS
+
+    from groundcontrol.cli import _compound_vertical
+    utm = pyproj.CRS.from_epsg(32645)
+
+    def comp(vwkt_or_code):
+        v = (pyproj.CRS.from_epsg(vwkt_or_code)
+             if isinstance(vwkt_or_code, int)
+             else pyproj.CRS(vwkt_or_code))
+        return pyproj.CRS(CompoundCRS(name="x", components=[utm, v]))
+
+    def vert(name):
+        return (f'VERTCRS["{name}",VDATUM["{name} datum"],'
+                'CS[vertical,1],AXIS["Up",up],LENGTHUNIT["metre",1]]')
+
+    # ellipsoidal-family names (incl. post-WKT1 'Up' axes): excluded
+    for nm in ("Height above ellipsoid", "Ellipsoid height",
+               "Ellipsoidal height (unrealized)", "WGS84 ellipsoid"):
+        assert _compound_vertical(comp(vert(nm))) is None, nm
+    # depth: excluded even when WKT1 erased the direction
+    assert _compound_vertical(comp(5715)) is None
+    assert _compound_vertical(comp(vert("Local chart depth"))) is None
+    # genuine geoids, registered or not: datum-defining
+    for nm in ("Nepal Geoid 2020 height", "EGM96 height", "NAVD88 height"):
+        assert _compound_vertical(comp(vert(nm))) is not None, nm
+    assert _compound_vertical(comp(3855)) is not None
+
+
 def test_transform_control_refuses_empty_frame():
     from groundcontrol.assess import transform_control
     ctl = _ctl(["EPSG:6319"]).iloc[0:0]

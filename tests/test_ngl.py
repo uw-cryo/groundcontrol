@@ -566,8 +566,11 @@ def test_parse_schema_valid_and_frame_aliased():
     assert r.geometry.x == pytest.approx(r["native_x"]) == pytest.approx(-115.2582, abs=1e-3)
     assert r.geometry.y == pytest.approx(r["native_y"])
     # native frame, tagged at frame level when uniform (rasuwa 2026-08-29:
-    # crs=None forced a manual set_crs when driving parse directly)
-    assert out.crs is not None and out.crs.to_epsg() == 7912
+    # crs=None forced a manual set_crs when driving parse directly) — the
+    # 2D counterpart of the per-row 3D code: the geometry is 2D and the
+    # epoch lives per-row, so a 3D EPSG:7912 stamp let a bare .to_crs()
+    # silently shift ~1.5 m with no coordinate epoch applied (H5)
+    assert out.crs is not None and out.crs.to_epsg() == 9000
 
 
 def test_parse_igs20_aliases_to_itrf2020():

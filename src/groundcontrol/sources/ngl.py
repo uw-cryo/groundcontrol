@@ -946,8 +946,23 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
     # yields a usable GeoDataFrame without a manual set_crs; mixed codes
     # keep crs=None (per-row horizontal_crs is the authority either way).
     codes = df["horizontal_crs"].dropna().unique()
+    crs_tag = None
+    if len(codes) == 1:
+        # per-row codes are 3D dynamic frames (EPSG:7912/9989) but the
+        # geometry is 2D and the epoch lives per-row in coord_epoch — a 3D
+        # stamp is exactly the shape validate_landing_crs refuses, and it
+        # turned a downstream gdf.to_crs(6318) from a loud TypeError into
+        # a silent ~1.5 m shift with no coordinate epoch applied. Stamp
+        # the 2D counterpart the landing gate demotes to instead.
+        from groundcontrol.sources import validate_landing_crs
+        try:
+            crs_tag = validate_landing_crs(codes[0])
+        except ValueError as exc:  # future frame alias failing the gates:
+            logger.warning("parse: frame-level CRS %s not stampable (%s); "
+                           "leaving crs=None (per-row horizontal_crs is "
+                           "the authority)", codes[0], exc)
     return gpd.GeoDataFrame(
         df,
         geometry=gpd.points_from_xy(df["native_x"], df["native_y"]),
-        crs=codes[0] if len(codes) == 1 else None,
+        crs=crs_tag,
     )

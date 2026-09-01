@@ -101,8 +101,13 @@ def validate_landing_crs(landing_crs) -> str:
             "projected/geocentric/derived landing would stamp a meaning the data "
             "do not have. Compose vertical datums in the assess step "
             "(--target-crs).")
-    datum = lc.datum
-    if datum is not None and "ensemble" in (datum.type_name or "").lower():
+    # scoped to WGS84's ensemble, matching geodesy.is_wgs84_ensemble
+    # (round-2 audit: the broad datum.type_name test here refused the
+    # EPSG:4937 landing the CLI auto-derives for an ETRS89 target, with
+    # a message about a --landing-crs the user never passed — ETRS89's
+    # ~0.1 m intra-ensemble ambiguity is fine to land in)
+    from groundcontrol.geodesy import is_wgs84_ensemble
+    if is_wgs84_ensemble(lc):
         raise ValueError(
             f"landing_crs {_short(landing_crs)} ({lc.name}) is a datum ENSEMBLE "
             "(meter-class ambiguity by definition; the transform provenance "

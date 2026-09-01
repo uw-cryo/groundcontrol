@@ -268,7 +268,6 @@ def transform_control(control, target_crs, *, target_epoch=2010.0,
             vc = control["vertical_crs"].astype("string")
             src_code = (src_vert.to_epsg() if src_vert is not None
                         else src_obj2.to_epsg())
-            unit_scale = np.ones(len(control), dtype="float64")
             # NA = unknown height datum (sources/ngs.py contract: refuse,
             # never guess) — previously let through by vc.notna() & (...)
             incompat_arr = vc.isna().to_numpy(dtype=bool)
@@ -283,24 +282,24 @@ def transform_control(control, target_crs, *, target_epoch=2010.0,
                     continue
                 if src_vert is not None:
                     # orthometric chain: compatible = a vertical CRS on
-                    # the SAME datum. EPSG:6360 (NAVD88 ftUS) is the same
-                    # datum as EPSG:5703 in a different unit — the row's
-                    # vertical_crs declares the datum AND unit of
-                    # 'height', so scale instead of falsely excluding.
+                    # the SAME datum, by datum identity, not code-string
+                    # equality: EPSG:6360 (NAVD88 in ftUS) is the same
+                    # datum as EPSG:5703 and was falsely excluded. NO
+                    # unit scaling: the schema says 'height' is always
+                    # metres and vertical_crs is provenance of the
+                    # ORIGINAL values (round-2 audit: scaling here would
+                    # silently divide schema-compliant metre heights by
+                    # 3.28).
                     if (not v_obj.is_vertical or v_obj.datum is None
                             or src_vert.datum is None
                             or v_obj.datum != src_vert.datum):
                         incompat_arr |= m
                         continue
-                    f_row = v_obj.axis_info[0].unit_conversion_factor
-                    f_src = src_vert.axis_info[0].unit_conversion_factor
-                    if not np.isclose(f_row, f_src):
-                        unit_scale[m] = f_row / f_src
-                        logger.info(
-                            "transform_control: %d row(s) carry %s — the "
-                            "source vertical datum in a different unit; "
-                            "heights scaled by %.10g", int(m.sum()), val,
-                            f_row / f_src)
+                    logger.info(
+                        "transform_control: %d row(s) carry %s — the "
+                        "source vertical datum under a different code; "
+                        "heights are metres per schema, used as-is",
+                        int(m.sum()), val)
                 else:
                     # ellipsoidal chain: compatible = the source frame
                     # itself (per-row codes are aliased 3D frame codes,
@@ -311,9 +310,6 @@ def transform_control(control, target_crs, *, target_epoch=2010.0,
                             or v_obj.datum != src_frame.datum):
                         incompat_arr |= m
             incompat = pd.Series(incompat_arr, index=control.index)
-            if (unit_scale != 1.0).any():
-                H = H.copy()
-                H *= unit_scale
             if incompat.any():
                 H = H.copy()
                 H[incompat.to_numpy(dtype=bool)] = np.nan

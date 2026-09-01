@@ -706,14 +706,17 @@ def test_assess_positional_raster_names_and_default_outdir(tmp_path, monkeypatch
     """`groundcontrol-assess dem.tif`: stem-classified product name and the
     <stem>_groundcontrol default outdir, then the normal 2D-CRS refusal."""
     _forbid_fetch(monkeypatch)
-    dsm = _plane_tif(tmp_path)                      # stem 'plane' -> DSM
-    with pytest.raises(SystemExit, match="product DSM="):
-        _assess([dsm])
+    dem = _plane_tif(tmp_path)         # ambiguous stem 'plane' -> DEM
+    with pytest.raises(SystemExit, match="product DEM="):
+        _assess([dem])
     assert (f"outdir (default): {tmp_path / 'plane_groundcontrol'}"
             in capsys.readouterr().err)
     dtm = _plane_tif(tmp_path, name="site_dtm.tif")  # 'dtm' in stem -> DTM
     with pytest.raises(SystemExit, match="product DTM="):
         _assess([dtm])
+    dsm = _plane_tif(tmp_path, name="site_dsm.tif")  # 'dsm' in stem -> DSM
+    with pytest.raises(SystemExit, match="product DSM="):
+        _assess([dsm])
 
 
 def test_assess_positional_vector_dispatches_to_fetch(tmp_path, monkeypatch):
@@ -892,7 +895,7 @@ def test_vdatum_rebase_samples_under_declared_frame(tmp_path, monkeypatch):
                   "--no-figures"])
     assert rc == 0
     out = gpd.read_parquet(tmp_path / "out" / "r_assessed.parquet")
-    assert np.isfinite(out["dh_DSM_before"]).all()
+    assert np.isfinite(out["dh_DEM_before"]).all()
     # a different GRID under the declaration still refuses
     from groundcontrol.sample import _grid_signature
     assert _grid_signature("EPSG:32610") == _grid_signature(tgt)

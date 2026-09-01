@@ -534,14 +534,33 @@ def _embedded_target_crs(products):
                   f"using ITRF2014 for the transform legs ({crs.name})",
                   file=sys.stderr)
         elif is_wgs84_ensemble(crs):
+            # same structured choices block as the 2D refusal (owner
+            # 2026-09-01: the one-paragraph form was unreadable — users
+            # need to SEE what to type to get results)
+            choices = (
+                "  --vdatum ellipsoid:itrf2014   ITRF2014 ellipsoidal "
+                "heights (SETSM EarthDEM/ArcticDEM/REMA,\n"
+                "                                most modern satellite "
+                "photogrammetry)\n"
+                "  --vdatum ellipsoid:itrf2020   ITRF2020 ellipsoidal "
+                "heights\n"
+                "  --vdatum ellipsoid:g2139      WGS 84 (G2139) "
+                "ellipsoidal heights")
+            import re as _re
+            if _re.search(_PGC_NAME_RE, Path(path).name, _re.I):
+                choices += (
+                    "\nthis filename looks like a PGC SETSM product — "
+                    "presets apply the researched frame:\n"
+                    "  --vdatum earthdem | arcticdem | rema\n"
+                    "(evidence and caveats: docs/vdatum.md)")
             raise SystemExit(
                 f"error: product {name}={path} declares 3D heights on the "
                 f"WGS 84 ENSEMBLE ({crs.name}) — ~2 m of deliberate "
                 "ambiguity, not a realization; transforms to it inherit a "
                 "meter-class member-agnostic chain. State the realization "
-                "the heights are actually on: --vdatum ellipsoid:itrf2014 "
-                "(SETSM EarthDEM/ArcticDEM/REMA), ellipsoid:itrf2020, "
-                "ellipsoid:g2139, ... or pass --target-crs")
+                "the heights are actually on:\n"
+                + choices + "\n"
+                "or pass --target-crs with the full 3D frame")
         seen[name] = crs
     first = next(iter(seen.values()))
     for name, crs in seen.items():
@@ -810,7 +829,14 @@ def assess_dem_main(argv=None) -> int:
     for item in args.inputs:
         kind = _preflight(_classify_input, item)
         if kind == "raster":
-            name = "DTM" if "dtm" in Path(item).stem.lower() else "DSM"
+            stem = Path(item).stem.lower()
+            # generic DEM unless the FILENAME says otherwise (owner
+            # 2026-09-01): an ambiguous filename must not be labeled DSM
+            # — someone could pass a DTM. Assessment rules are identical
+            # for DEM/DSM (surface); only a DTM name switches to the
+            # bare-earth rules.
+            name = ("DTM" if "dtm" in stem
+                    else "DSM" if "dsm" in stem else "DEM")
             if name in products:   # second same-class raster: refused below
                 name = Path(item).stem
             products[name] = item

@@ -295,10 +295,22 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
     cls = [pos_class(ps, ow) for ps, ow in zip(df.get("pos_src", []), own)] \
         if n else []
     surveyed = np.array([c == "surveyed" for c in cls], dtype=bool)
+    military = np.array([c == "military" for c in cls], dtype=bool)
     mdt = pd.to_datetime(df["pos_src_date"], format="%m/%d/%Y",
                          errors="coerce", utc=True) \
         if n else pd.Series([], dtype="datetime64[ns, UTC]")
     extras = [c for c in df.columns if c not in _CONSUMED]
+    # military facilities: pos_class's own contract says "no per-facility
+    # datum can honestly be assumed either way" (DoD pipeline is EGM96
+    # MSL, ~0.45-0.5 m from NAVD88) — never stamp a definite EPSG code on
+    # an ambiguous datum. NA composes fail-loud downstream (the per-row
+    # vertical guard re-targets these via the declared NATIVE frame, so
+    # the context-only military segment and its EGM96 diagnostic survive).
+    height_datum = pd.Series(["NAVD88"] * n, dtype="string")
+    vertical_crs = pd.Series(["EPSG:5703"] * n, dtype="string")
+    if n and military.any():
+        height_datum[military] = "MSL (EGM96 per DoD standard; unverified)"
+        vertical_crs[military] = pd.NA
     out = gpd.GeoDataFrame(
         {
             "id": df["id"].astype("string"),
@@ -306,9 +318,9 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
             # displaced_threshold) pending the point_type split adjudication
             "point_type": df["point_type"].astype("string"),
             "height": pd.to_numeric(df["height"], errors="coerce"),
-            "height_datum": pd.Series(["NAVD88"] * n, dtype="string"),
+            "height_datum": height_datum,
             "horizontal_crs": pd.Series(["EPSG:6318"] * n, dtype="string"),
-            "vertical_crs": pd.Series(["EPSG:5703"] * n, dtype="string"),
+            "vertical_crs": vertical_crs,
             "ref_frame": pd.Series(["NAD83(2011)"] * n, dtype="string"),
             "frame_epoch": np.full(n, 2010.0),
             # plate-fixed published positions; reduced-to-frame-epoch reading

@@ -41,7 +41,7 @@ control landing is printed on every histogram.
 
 `groundcontrol-assess --product DSM=<1 m 3DEP DSM mosaic> --control <cache>
 --target-crs <3D UTM .wkt> --outdir out/ --site-name casagrande` — nothing else.
-The AOI is the mosaic's valid-data footprint, the underlay is a hillshade
+The AOI is the mosaic's grid extent (`--valid-footprint` for the valid-data footprint), the underlay is a hillshade
 computed from the product, and the figure is `validation_dz_figures`: every
 control segment on one map — marker SHAPE carries the class (checkpoints,
 GNSS stars, NGS monuments, FAA chevrons — the same symbology as the control
@@ -97,7 +97,7 @@ the NAD83(2011)+NAVD88 → ellipsoidal-UTM landing is printed on the histogram.
 
 ## 7. Per-point context contact sheets
 
-`figures.context_sheets`, standard in the `assess_products` bundle: contact
+`figures.context_sheets`, opt-in via `--context-sheets` (`sheets=True`): contact
 sheets broken out by what came back (`cors` / `opus` / `gnss_other` /
 `faa_runway` / `3dep_nva` / `3dep_vva`) at two tiers (120 m context + 30 m
 native-pixel). Panels adapt to the available layers — here the FAA surveyed

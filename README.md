@@ -14,8 +14,8 @@ Fetch ground control points for an arbitrary AOI and assess DEM accuracy — wit
 
 ## Status
 
-**v0.1.2 — pre-alpha, quiet release.** The fetch → transform → sample → statistics →
-figures pipeline works end to end (CLI + Python API) and is covered by **450 offline
+**v0.2.0 — pre-alpha, quiet release.** The fetch → transform → sample → statistics →
+figures pipeline works end to end (CLI + Python API) and is covered by **512 offline
 tests** run in CI on Python 3.10/3.12, with the geodesy core additionally adversarially
 audited (independent review agents; math cross-checked against external oracles). The API
 may still move between minor versions — pin the tag if you build on it, and expect sharp
@@ -82,7 +82,7 @@ Two entry points, one input contract.
 |------|---------|-------|
 | bbox string | `--aoi=-115.3,36.0,-114.9,36.3` | `minx,miny,maxx,maxy` in EPSG:4326 lon/lat; use the `=` form for negative longitudes |
 | vector file | `--aoi site.geojson` | GeoJSON preferred; any OGR-readable format (GPKG, Shapefile, KML, FlatGeobuf, ...) and GeoParquet; any CRS; multiple features dissolve into one AOI |
-| elevation raster | `--aoi dsm.tif` | DEM / DSM / DTM in any GDAL format (GeoTIFF, COG, VRT, ...): the AOI is the raster's **valid-data footprint** (band 1's nodata/alpha mask, read at ≤1024 px so edge membership is approximate; untagged NaN counts as valid — set the nodata tag), reprojected from the raster CRS |
+| elevation raster | `--aoi dsm.tif` | DEM / DSM / DTM in any GDAL format (GeoTIFF, COG, VRT, ...): the AOI is the raster's **grid extent** (instant — no mask read), reprojected from the raster CRS; `--valid-footprint` opts into the valid-data footprint instead (band 1's nodata/alpha mask, read at ≤1024 px so edge membership is approximate; untagged NaN counts as valid — set the nodata tag) |
 | in memory (Python) | `fetch_control(gdf, ...)` | GeoDataFrame / GeoSeries / shapely geometry |
 
 **Products** (`--product NAME=PATH`, repeatable) — gridded elevation rasters to assess, in
@@ -119,6 +119,17 @@ the matching declaration: `groundcontrol-assess --control nepal_control.parquet
 --source-crs EPSG:7912 ...` (the default source is the CONUS `EPSG:6318+5703`
 contract, and a mismatched control frame is refused, never reinterpreted).
 
+By default `groundcontrol-fetch` also writes the standard control **figure set** next to
+`--out` — the labeled control map, MIDAS velocity maps and NGL station series where GNSS
+control is present — and fetches web basemap tiles (Esri World Imagery) to underlay them.
+For scripted, batch, or offline runs: `--no-figures` writes only the control file +
+provenance, and `--basemap none` keeps the figures but skips every tile fetch.
+`--context-sheets` opts into the per-point contact sheets (the slow figure component).
+Shared with `groundcontrol-assess`: `--refresh` (force re-download of every shared-cache
+file the run touches; caches otherwise refresh on their own staleness windows), `--quiet`
+(suppress INFO progress logging), and `--valid-footprint` (a raster `--aoi` uses the
+valid-data footprint instead of the default grid extent).
+
 ### Assess your own DEM
 
 Bring-your-own-DEM is the main use case: the product is the only required input
@@ -151,11 +162,14 @@ custom frames, `groundcontrol.geodesy.with_vdatum` / `build_utm_nad83_2011_3d` +
 pair), `--aoi` to restrict or outline the area, `--sources` (default: every provider —
 `3dep,ngs,opus,ngl,faa`), `--control` to reuse a fetched cache, `--hs NAME=PATH` for a
 pre-rendered hillshade on very large mosaics, `--site-name`, `--target-epoch`, and
-sampling `--method`/`--radius`.
+sampling `--method`/`--radius`; `--point-lim`/`--vendor-lim`/`--wide-lim` pin the
+empirical dz color/axis tiers when figures must be comparable across runs.
 
 ### What you get back
 
-Everything lands in `--outdir`, prefixed by the site name:
+For `groundcontrol-assess`, everything lands in `--outdir` (default: `<input stem>_groundcontrol/`
+next to the input), prefixed by the site name; `groundcontrol-fetch` derives both from `--out`
+(files land next to it, prefixed by its stem):
 
 | File | Contents |
 |------|----------|
@@ -216,7 +230,7 @@ like `ground-control` as too similar).
 > this library. Use the git URL below.
 
 ```bash
-pip install git+https://github.com/uw-cryo/groundcontrol.git@v0.1.2
+pip install git+https://github.com/uw-cryo/groundcontrol.git@v0.2.0
 ```
 
 Into an env that already satisfies every entry in `[project] dependencies` of
@@ -281,7 +295,7 @@ Archived on Zenodo — the concept DOI below always resolves to the latest relea
 release also gets its own version DOI. Machine-readable metadata lives in
 [`CITATION.cff`](CITATION.cff) (GitHub's *Cite this repository* button reads it).
 
-> Shean, D. (2026). *groundcontrol* (v0.1.2). Zenodo. https://doi.org/10.5281/zenodo.21846300
+> Shean, D. (2026). *groundcontrol* (v0.2.0). Zenodo. https://doi.org/10.5281/zenodo.21846300
 
 ## Origin
 

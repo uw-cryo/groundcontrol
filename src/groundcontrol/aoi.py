@@ -7,9 +7,10 @@ An AOI reaches the package in one of four shapes and every entry point
 - a vector file in any OGR-readable format (GeoJSON preferred; GPKG,
   Shapefile, ... — whatever :func:`geopandas.read_file` opens);
 - a gridded elevation raster (DEM / DSM / DTM: GeoTIFF, VRT, COG, ...) —
-  the AOI is then the raster's VALID-DATA footprint
-  (:func:`raster_footprint`), so a mosaic with holes fetches control for
-  the covered ground only;
+  the AOI is then the raster's GRID EXTENT (:func:`raster_footprint`;
+  ``valid=True`` / ``--valid-footprint`` opts into the valid-data
+  footprint, so a mosaic with holes fetches control for the covered
+  ground only);
 - a GeoDataFrame / GeoSeries / shapely geometry already in memory.
 
 :func:`resolve_aoi` reduces any of these to ``(bounds_4326, polygon_4326)``

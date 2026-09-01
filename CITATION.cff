@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 title: "groundcontrol"
 repository-code: "https://github.com/uw-cryo/groundcontrol"
-version: 0.1.2
+version: 0.2.0
 date-released: "2026-08-11"
 license: "MIT"
 type: software

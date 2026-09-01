@@ -175,6 +175,13 @@ def transform_control(control, target_crs, *, target_epoch=2010.0,
     import geopandas as gpd
     import pyproj
 
+    if len(control) == 0:
+        # NaN total_bounds otherwise reach PROJ's AreaOfInterest as an
+        # opaque "Invalid latitude"-class error far from the cause
+        raise ValueError(
+            "transform_control: the control frame is empty — nothing to "
+            "transform (check the AOI, source selection, and any "
+            "upstream filters)")
     src = source_crs or CONTROL_LANDING_CRS
     if control.crs is not None:
         assumed = pyproj.CRS(src)
@@ -343,10 +350,16 @@ def transform_control(control, target_crs, *, target_epoch=2010.0,
         else:
             native_ok &= False
         if native_ok.any():
-            for ncrs, idx in control.loc[native_ok].groupby(
-                    "native_crs").groups.items():
-                sub = control.loc[idx]
-                pos = control.index.get_indexer(idx)
+            # positional masks, not label groupby: duplicate index labels
+            # (two caches concatenated) made get_indexer raise
+            # InvalidIndexError and took down the whole transform
+            natmask = native_ok.to_numpy(dtype=bool)
+            ncrs_all = control["native_crs"].astype("string")
+            for ncrs in ncrs_all[natmask].unique():
+                mrow = natmask & (ncrs_all == ncrs).fillna(False).to_numpy(
+                    dtype=bool)
+                pos = np.flatnonzero(mrow)
+                sub = control.iloc[pos]
                 nx = pd.to_numeric(sub["native_x"], errors="coerce").to_numpy("float64")
                 ny = pd.to_numeric(sub["native_y"], errors="coerce").to_numpy("float64")
                 nh = pd.to_numeric(sub["native_h"], errors="coerce").to_numpy("float64")
@@ -365,10 +378,12 @@ def transform_control(control, target_crs, *, target_epoch=2010.0,
                 if not usable.any():
                     continue
                 try:
+                    # the outer AOI bounds are the same physical area and
+                    # already 4326; native x/y may be PROJECTED (UTM
+                    # eastings fed as "degrees" broke candidate selection)
                     t2 = get_transformer(
                         str(ncrs), target_crs,
-                        aoi_bounds_4326=(float(np.nanmin(nx)), float(np.nanmin(ny)),
-                                         float(np.nanmax(nx)), float(np.nanmax(ny))))
+                        aoi_bounds_4326=aoi_bounds_4326)
                     E2, N2, h2, _ = t2.transform(nx[usable], ny[usable],
                                                  nh[usable], tt2[usable],
                                                  errcheck=True)

@@ -40,6 +40,34 @@ FOOTPRINT_MAX_PX = 1024
 FOOTPRINT_MAX_PIECES = 2000
 
 
+def _checked_4326(gdf, src_crs, path):
+    """Reprojected-footprint sanity gate. ``to_crs(4326)`` moves vertices
+    independently, so a projected raster crossing the antimeridian or
+    containing a pole comes back as a self-intersecting ring wrapping the
+    long way around the globe (probed: 200x200 km EPSG:32760 near Fiji ->
+    359.994 deg of longitude that EXCLUDES the raster's own centre and
+    CONTAINS the Atlantic; same for EPSG:3031 at lon 180 and a raster over
+    the South Pole). Every real control point is then dropped and
+    unrelated ones kept — fail loud instead of fetching a global AOI."""
+    import pyproj
+
+    if pyproj.CRS(src_crs).is_geographic:
+        return gdf  # identity-ish reprojection: no vertex-wise wrap
+    b = gdf.total_bounds
+    geom = gdf.geometry.iloc[0]
+    if (b[2] - b[0]) > 180.0 or not geom.is_valid:
+        raise ValueError(
+            f"raster {os.fspath(path)}: its EPSG:4326 footprint spans "
+            f"{b[2] - b[0]:.2f} deg of longitude"
+            + ("" if geom.is_valid else " and is self-intersecting")
+            + " — the raster likely crosses the antimeridian or contains "
+            "a pole, which vertex-wise reprojection cannot represent. "
+            "Pass an explicit AOI instead of the raster footprint "
+            "(--aoi with an EPSG:4326 bbox or vector, split at the "
+            "antimeridian if needed)")
+    return gdf
+
+
 def _grid_extent_gdf(src, path):
     """The raster's grid extent as an EPSG:4326 GeoDataFrame — the
     transform-mapped corner quadrilateral (correct for rotated grids),
@@ -56,7 +84,7 @@ def _grid_extent_gdf(src, path):
         quad = quad.segmentize(span / 200.0)
     gdf = gpd.GeoDataFrame({"source_raster": [os.fspath(path)]},
                            geometry=[quad], crs=src.crs)
-    return gdf.to_crs(4326)
+    return _checked_4326(gdf.to_crs(4326), src.crs, path)
 
 
 def _cap_ring_points(poly, tol0: float, max_points):
@@ -221,7 +249,8 @@ def raster_footprint(path, *, max_px: int = FOOTPRINT_MAX_PX,
                     os.fspath(path), n_ok, int(np.prod(valid.shape)), f)
         gdf = gpd.GeoDataFrame({"source_raster": [os.fspath(path)]},
                                geometry=[poly], crs=src.crs)
-    return gdf.to_crs(4326)
+        src_crs = src.crs
+    return _checked_4326(gdf.to_crs(4326), src_crs, path)
 
 
 #: read straight as vector (no raster probe, which logs a GDAL error line)
@@ -276,11 +305,15 @@ def resolve_aoi(aoi):
     already lon/lat. Multiple features dissolve into one (multi)polygon.
     """
     import geopandas as gpd
+    import numpy as np
     from shapely.geometry.base import BaseGeometry
 
     if isinstance(aoi, BaseGeometry):
         return tuple(float(v) for v in aoi.bounds), aoi
-    if isinstance(aoi, (tuple, list)) and len(aoi) == 4:
+    # ndarray included: gdf.total_bounds is the natural way to hand over a
+    # bbox and it arrives as numpy.ndarray, not tuple/list
+    if (isinstance(aoi, (tuple, list))
+            or (isinstance(aoi, np.ndarray) and aoi.ndim == 1)) and len(aoi) == 4:
         try:  # duck-typed like the original dispatcher (numpy scalars, Decimal, str)
             return tuple(float(v) for v in aoi), None
         except (TypeError, ValueError):
@@ -311,6 +344,16 @@ def union_footprints(paths, *, valid: bool = False):
     parts = [raster_footprint(p, valid=valid) for p in paths]
     if len(parts) == 1:
         return parts[0]
+    for part in parts:
+        # defensive (raster_footprint gates wrapped footprints): a single
+        # invalid part makes GEOS throw an unattributed TopologyException
+        # from union_all — name the raster instead
+        g = part.geometry.iloc[0]
+        if not g.is_valid:
+            raise ValueError(
+                f"footprint of {part['source_raster'].iloc[0]} is not a "
+                "valid polygon; cannot union the product footprints — "
+                "pass an explicit --aoi")
     merged = gpd.GeoDataFrame(pd.concat(parts, ignore_index=True), crs=4326)
     return gpd.GeoDataFrame({"source_raster": [";".join(merged["source_raster"])]},
                             geometry=[merged.union_all()], crs=4326)

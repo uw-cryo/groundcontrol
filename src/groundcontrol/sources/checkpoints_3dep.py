@@ -75,13 +75,20 @@ def cache_write(local: Path, content: str | bytes) -> None:
     # unrelated files created 0666 and the umask left at 0). mkstemp's
     # 0600 carried through os.replace was the round-2 finding.
     fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+    f = None
     try:
         if local.exists():  # a refresh keeps the existing file's mode
             os.fchmod(fd, stat.S_IMODE(local.stat().st_mode))
-        with os.fdopen(fd, "wb" if isinstance(content, bytes) else "w") as f:
+        f = os.fdopen(fd, "wb" if isinstance(content, bytes) else "w")
+        with f:
             f.write(content)
         os.replace(tmp, local)
     except BaseException:
+        if f is None:  # fd never handed to a file object: close it here
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         try:
             os.unlink(tmp)
         except OSError:

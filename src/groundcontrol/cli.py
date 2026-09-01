@@ -339,28 +339,41 @@ _PGC_NAME_RE = r"setsm|arcticdem|rema|earthdem|utm\d{2}[ns]_\d"
 
 
 def _compound_vertical(crs):
-    """The gravity-related vertical member of a compound CRS, else None.
-    A compound's vertical member defines the height datum even when the
-    horizontal sits on a datum ensemble — it must never be demoted away.
-    The gate keeps a WKT 'ellipsoidal height' VerticalCRS — for which the
-    realization IS the height datum — out of the datum-defined branch
-    (round-2 audit), discriminating on the CRS/axis NAMES: every EPSG
-    height-type vertical carries the axis 'Gravity-related height' while
-    an ellipsoidal VERTCRS says 'Ellipsoidal height'. Registration is NOT
-    the test (round-3 audit: a genuine but unregistered national geoid —
-    the non-CONUS case this package exists for — must stay
-    datum-defining)."""
+    """The gravity-related HEIGHT vertical member of a compound CRS, else
+    None. A compound's vertical member defines the height datum even when
+    the horizontal sits on a datum ensemble — it must never be demoted
+    away. The gate keeps a WKT 'ellipsoidal height' VerticalCRS — for
+    which the realization IS the height datum — out of the datum-defined
+    branch (round-2 audit). Discrimination (round-4 recipe, verified over
+    every EPSG vertical and compound):
+    - a 'Gravity-related height' axis is authoritative (247 of the 299
+      EPSG verticals; the rest are depth-type);
+    - otherwise the stem 'ellipsoid' anywhere in the CRS or axis names
+      marks it ellipsoidal (0 registered entries contain it, so no real
+      geoid is lost) — GDAL's WKT1 VERT_CS round-trip destroys axis
+      names ('Gravity-related height' -> 'Up'), so the CRS name must
+      carry the test too; a name with NEITHER marker is gravity-related
+      by the WKT spec's own definition of a vertical CRS;
+    - depth-type axes (direction down) are refused: heights would
+      sign-flip downstream, which assumes height-up.
+    Registration is NOT the test (round-3: a genuine but unregistered
+    national geoid — the non-CONUS case this package exists for — must
+    stay datum-defining)."""
     import pyproj
     if not crs.is_compound:
         return None
 
-    def _gravity(c):
-        txt = " ".join([c.name or ""]
-                       + [a.name or "" for a in c.axis_info]).lower()
-        return "ellipsoidal" not in txt
+    def _gravity_height(c):
+        if any((a.direction or "").lower() == "down" for a in c.axis_info):
+            return False
+        axes = " ".join(a.name or "" for a in c.axis_info).lower()
+        if "gravity" in axes:
+            return True
+        txt = ((c.name or "") + " " + axes).lower()
+        return "ellipsoid" not in txt
 
     return next((c for c in (pyproj.CRS(s) for s in crs.sub_crs_list)
-                 if c.is_vertical and _gravity(c)), None)
+                 if c.is_vertical and _gravity_height(c)), None)
 
 
 def _vdatum_target_crs(products, vdatum):

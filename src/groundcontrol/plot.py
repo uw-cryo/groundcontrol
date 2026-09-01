@@ -166,6 +166,7 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
                           overlay_interp: bool = True, ref_frac: float = 0.12,
                           hs_tif=None, dem_tif=None, cbar_ax=None,
                           show_ref: bool = True, annotate_interp: bool = True,
+                          moving_mm_yr: float | None = None,
                           basemap=None):
     """Horizontal velocity-vector (quiver) map for a GNSS station network.
 
@@ -219,6 +220,18 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
 
     finite = np.isfinite(lon) & np.isfinite(lat) & np.isfinite(ve) & np.isfinite(vn)
 
+    # moving-monument screen (owner 2026-09-01: on-ice TAMDEF stations at
+    # m/yr flattened the MDV bedrock network to invisibility and blew up
+    # the centroid interpolation). None = default MOVING_MONUMENT_MM_YR;
+    # pass 0/inf-like values deliberately to force the split on or off.
+    from groundcontrol.velocity import (MOVING_MONUMENT_MM_YR,
+                                        flag_moving_stations)
+    if moving_mm_yr is None:
+        moving_mm_yr = MOVING_MONUMENT_MM_YR
+    moving = (flag_moving_stations(stations, threshold_mm_yr=moving_mm_yr,
+                                   vel_cols=vel_cols).to_numpy(dtype=bool)
+              & finite)
+
     poly = _resolve_aoi_polygon(aoi)
     if poly is not None:
         minx, miny, maxx, maxy = poly.bounds
@@ -252,6 +265,9 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
     inside = np.zeros(len(lon), dtype=bool)
     inside[np.flatnonzero(sel)[inside_sel]] = True
     buffered = sel & ~inside
+    mov_sel = sel & moving          # drawn direction-only, never to scale
+    inside = inside & ~moving
+    buffered = buffered & ~moving
 
     own_fig = ax is None
     if ax is None:
@@ -332,13 +348,16 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
     cmap = plt.get_cmap("RdYlBu")
     if color_by_vertical:
         vu_mm = vu * vel_to_mm
-        vals = vu_mm[sel]
+        vals = vu_mm[sel & ~moving]
         lim = float(np.nanpercentile(np.abs(vals), 98)) if np.isfinite(vals).any() else 1.0
         lim = max(lim, 0.5)
         norm = plt.Normalize(-lim, lim)
-        q_ref = ax.quiver(lon[sel], lat[sel], ve[sel] * vel_to_mm, vn[sel] * vel_to_mm,
-                          np.where(np.isfinite(vals), vals, 0.0), cmap=cmap, norm=norm,
-                          **qkw)
+        _bg = sel & ~moving
+        _bgv = vu_mm[_bg]
+        q_ref = ax.quiver(lon[_bg], lat[_bg], ve[_bg] * vel_to_mm,
+                          vn[_bg] * vel_to_mm,
+                          np.where(np.isfinite(_bgv), _bgv, 0.0),
+                          cmap=cmap, norm=norm, **qkw)
         # in-AOI station markers carry the SAME RdYlBu vel_u color as their
         # arrows (owner 2026-08-30), black-edged so they read on the ramp
         if inside.any():
@@ -370,13 +389,34 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
                      labelpos="N", coordinates="axes", color="k",
                      fontproperties={"size": 8})
 
+    if mov_sel.any():
+        # moving monuments (on-ice/landslide): DIRECTION-ONLY fixed-length
+        # arrows + open markers + per-station speed labels — drawn to scale
+        # a single glacier arrow flattens the bedrock network to
+        # invisibility (owner 2026-09-01, MDV TAMDEF)
+        u_m, v_m = ve[mov_sel] * vel_to_mm, vn[mov_sel] * vel_to_mm
+        mag_m = np.hypot(u_m, v_m)
+        f_m = np.where(mag_m > 0, 0.75 * ref_mm_yr / mag_m, 0.0)
+        ax.quiver(lon[mov_sel], lat[mov_sel], u_m * f_m, v_m * f_m,
+                  color="#7B2D8E", alpha=0.9, **{**qkw, "width": 0.0028})
+        ax.scatter(lon[mov_sel], lat[mov_sel], s=36, facecolors="none",
+                   edgecolors="#7B2D8E", linewidths=1.3, zorder=4)
+        for x_, y_, mm_, sid_ in zip(lon[mov_sel], lat[mov_sel], mag_m,
+                                     ids[mov_sel]):
+            lbl = (f"{sid_} {mm_ / 1000.0:.1f} m/yr" if mm_ >= 1000
+                   else f"{sid_} {mm_:.0f} mm/yr")
+            ax.annotate(lbl, (x_, y_), xytext=(5, 4),
+                        textcoords="offset points", fontsize=6.2,
+                        color="#7B2D8E", path_effects=halo, zorder=8)
+
     # combined AOI-centroid VERTICAL on the vertical panel (owner
     # 2026-08-30): green star + U ± spread, no arrow, no horizontal numbers
     if poly is not None and overlay_interp and annotate_interp and color_by_vertical:
         from groundcontrol.velocity import DEFAULT_RADIUS_KM as _RKM
         from groundcontrol.velocity import interpolate_velocity
         res = interpolate_velocity(clon, clat, stations, lon_col=lon_col,
-                                   lat_col=lat_col, vel_cols=vel_cols).iloc[0]
+                                   lat_col=lat_col, vel_cols=vel_cols,
+                                   exclude_moving_mm_yr=moving_mm_yr).iloc[0]
         vui = res.get("vel_u", np.nan)
         if np.isfinite(vui):
             ax.scatter([clon], [clat], marker="*", s=210, c="tab:green",
@@ -390,6 +430,9 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
                    f"n={int(res['n_stations_used'])} stations "
                    f"\u2264 {_RKM:g} km\n"
                    f"U {vui * vel_to_mm:+.1f} ± {su_s} mm/yr")
+            _nmov = int(res.get("n_moving_excluded", 0) or 0)
+            if _nmov:
+                ann += f"\n{_nmov} moving monument(s) excluded"
             if res["quality"] not in ("ok", None):
                 ann += f"\n[{res['quality']}]"
             ax.annotate(ann, (clon, clat), xytext=(9, -14),
@@ -403,7 +446,8 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
         from groundcontrol.velocity import DEFAULT_RADIUS_KM as _RKM
         from groundcontrol.velocity import interpolate_velocity
         res = interpolate_velocity(clon, clat, stations, lon_col=lon_col,
-                                   lat_col=lat_col, vel_cols=vel_cols).iloc[0]
+                                   lat_col=lat_col, vel_cols=vel_cols,
+                                   exclude_moving_mm_yr=moving_mm_yr).iloc[0]
         vei, vni = res["vel_e"], res["vel_n"]
         if np.isfinite(vei) and np.isfinite(vni):
             ui, vi = vei * vel_to_mm, vni * vel_to_mm
@@ -434,6 +478,9 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
                    f"{_mm(res.get('vel_spread_n', np.nan))} mm/yr\n"
                    f"H {mag:.1f} ± {_mm(res.get('vel_spread_h', np.nan))} "
                    f"mm/yr @ {az:.0f}°N")
+            _nmov = int(res.get("n_moving_excluded", 0) or 0)
+            if _nmov:
+                ann += f"\n{_nmov} moving monument(s) excluded"
             if res["quality"] not in ("ok", None):
                 ann += f"\n[{res['quality']}]"
             ax.annotate(ann, (clon, clat), xytext=(9, -14),
@@ -464,18 +511,25 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
         if overlay_interp:
             handles.append(Line2D([0], [0], color="tab:green", lw=2.5,
                                   label="interpolated @ AOI centroid"))
+        if mov_sel.any():
+            handles.append(Line2D([0], [0], color="#7B2D8E", lw=2,
+                                  label=f"moving monument (>{moving_mm_yr:g}"
+                                        " mm/yr; direction only)"))
         ax.legend(handles=handles, fontsize=7.5, loc="upper left", framealpha=0.85)
 
     n_in = int(inside.sum())
     n_buf = int(buffered.sum())
+    n_mov = int(mov_sel.sum())
     if title is None:
         title = "MIDAS horizontal velocities"
     ref_note = f"  |  ref {ref_mm_yr:g} mm/yr" if show_ref else ""
     pm_note = ("  |  ± = 1σ station spread"
                if (poly is not None and overlay_interp and annotate_interp)
                else "")
+    mov_note = (f"  |  {n_mov} moving excluded" if n_mov else "")
     ax.set_title(f"{title}\nn={n_in} inside AOI + n={n_buf} within "
-                 f"{buffer_km:g} km buffer{ref_note}{pm_note}", fontsize=10)
+                 f"{buffer_km:g} km buffer{mov_note}{ref_note}{pm_note}",
+                 fontsize=10)
 
     if own_fig:
         # only lay out a figure this function created: a caller-owned axes

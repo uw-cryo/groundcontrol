@@ -235,9 +235,12 @@ def _reference_interpolate(lon, lat, stations, **kw):
                           kw.get("method", "median"), kw.get("idw_power", 1.0),
                           kw.get("spread_threshold_mm_yr", V.DEFAULT_SPREAD_THRESHOLD_MM_YR))
             for a, b in zip(lon_arr, lat_arr)]
-    out = pd.DataFrame.from_records(rows, columns=V.RESULT_COLUMNS)
+    out = pd.DataFrame.from_records(
+        rows, columns=[c for c in V.RESULT_COLUMNS
+                       if c != "n_moving_excluded"])
     out["n_stations_used"] = out["n_stations_used"].astype("int64")
     out["quality"] = out["quality"].astype("string")
+    out["n_moving_excluded"] = 0  # reference: screen off (kw not plumbed)
     out["nearest_sta"] = out["nearest_sta"].astype("string")
     return out
 
@@ -336,3 +339,42 @@ def test_per_row_rejects_unsupported_values(bad):
     st = _uniform(-115.15, 36.10, [-0.1, 0.0, 0.1], 0.02, -0.01, 0.0)
     with pytest.raises(ValueError, match="per_row must be"):
         V.fill_velocities(_gdf([(-115.15, 36.10)]), st, per_row=bad)
+
+
+# ---------------------------------------------------------------------------
+# moving-monument screen (owner 2026-09-01: on-ice TAMDEF monuments blew up
+# the MDV velocity figure and the centroid interpolation)
+# ---------------------------------------------------------------------------
+
+def test_flag_moving_stations_median_relative():
+    st = pd.DataFrame({
+        "lon": [-115.0, -115.1, -115.2, -115.3, -115.4],
+        "lat": [36.0, 36.1, 36.2, 36.3, 36.4],
+        # coherent plate motion ~20 mm/yr never flags; the 4.9 m/yr
+        # glacier monument does (TAMDEF pattern)
+        "vel_e": [0.020, 0.021, 0.019, 0.020, 4.900],
+        "vel_n": [0.005, 0.006, 0.005, 0.004, -1.200],
+        "vel_u": [0.0, 0.0, 0.0, 0.0, -0.3],
+    })
+    mov = V.flag_moving_stations(st)
+    assert mov.tolist() == [False, False, False, False, True]
+
+
+def test_interpolate_velocity_moving_screen_opt_in():
+    st = pd.DataFrame({
+        "sta": ["A", "B", "C", "D", "TYLG"],
+        "lon": [-115.0, -115.05, -115.1, -115.15, -115.05],
+        "lat": [36.0, 36.05, 36.1, 36.15, 36.05],
+        "vel_e": [0.001, 0.002, 0.001, 0.002, 4.900],
+        "vel_n": [0.001, 0.001, 0.002, 0.001, -1.200],
+        "vel_u": [0.0, 0.0, 0.0, 0.0, -0.3],
+    })
+    # default: screen OFF, behavior unchanged - the glacier station blends
+    off = V.interpolate_velocity(-115.05, 36.05, st).iloc[0]
+    assert off["n_moving_excluded"] == 0
+    assert abs(off["vel_e"]) > 0.001  # contaminated toward TYLG
+    # opt-in: TYLG dropped before selection
+    on = V.interpolate_velocity(-115.05, 36.05, st,
+                                exclude_moving_mm_yr=50.0).iloc[0]
+    assert on["n_moving_excluded"] == 1
+    assert abs(on["vel_e"]) <= 0.002 and on["n_stations_used"] == 4

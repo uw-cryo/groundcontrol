@@ -2177,6 +2177,7 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
             ngl_scope = gpd.GeoDataFrame(geometry=[box(*ctl.total_bounds)],
                                          crs=ctl.crs)
             logger.info("MIDAS/NGL figure scope: aoi=None -> control bounds")
+    fig2 = None
     try:
         from .plot import plot_velocity_vectors
         from .sources.ngl import read_midas
@@ -2241,6 +2242,11 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
                 logger.warning("%s skipped: %s", fn.__name__, exc)
     except Exception as exc:  # network etc. — the map figures still ship
         logger.warning("MIDAS velocity figures skipped: %s", exc)
+        if fig2 is not None:
+            # a raise between figure creation and close leaked the figure
+            # (matplotlib holds every open one; repeated failing bundles
+            # accumulate). Closing twice is harmless.
+            plt.close(fig2)
 
     for p_ in out:
         logger.info("wrote %s", p_)

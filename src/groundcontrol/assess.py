@@ -627,7 +627,31 @@ def assess_products(control, products, target_crs, *, outdir, site_name,
                                       source_crs=source_crs)
     artifacts["transform"] = tinfo
     # target_crs IS the declaration of the products' true frame: sampling
-    # accepts the header-vs-declaration datum reinterpretation (same grid)
+    # accepts the header-vs-declaration datum reinterpretation (same grid).
+    # Record any such override in the transform provenance — previously it
+    # existed only as one log line, invisible to the sidecar/stats readers
+    _reinterp = {}
+    for _name, _p in products.items():
+        try:
+            import pyproj as _pp
+            import rasterio as _rio
+            if hasattr(_p, "rio"):
+                _rcrs = _p.rio.crs
+            else:
+                with _rio.open(_p) as _src:
+                    _rcrs = _src.crs
+            if _rcrs is None:
+                continue
+            from groundcontrol.sample import _grid_signature, _horizontal_2d
+            _r = _pp.CRS.from_user_input(_rcrs)
+            _t = _pp.CRS.from_user_input(target_crs)
+            if (not _horizontal_2d(_r).equals(_horizontal_2d(_t))
+                    and _grid_signature(_r) == _grid_signature(_t)):
+                _reinterp[_name] = {"header": _r.name, "declared": _t.name}
+        except Exception:  # provenance annotation only — never block
+            continue
+    if _reinterp:
+        tinfo["datum_reinterpretation"] = _reinterp
     sampled = sample_products(landed, products, method=method, radius=radius,
                               declared_crs=target_crs)
     logger.info("transform + sampling: %.1f s", _time.monotonic() - _t0)

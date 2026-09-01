@@ -377,6 +377,16 @@ def fetch(aoi_bounds_4326, frame: str = "IGS14", epoch=None, time_range=None,
         sel = sel.iloc[:max_stations]
     logger.info("NGL: %d candidate station(s) in bbox %s (frame %s)",
                 len(sel), tuple(aoi_bounds_4326), frame)
+    if not len(sel):
+        # exit BEFORE the catalog-warming pool below: a 0-candidate AOI
+        # must not download the ~40 MB steps/MIDAS catalogs for an empty
+        # list — the hang the 0-station exit further down was written to
+        # prevent, which it sat one block too late to do
+        return {"frame": frame,
+                "epoch": None if epoch is None else float(epoch),
+                "time_range": None if time_range is None
+                else tuple(time_range),
+                "stations": []}
 
     logger.info("NGL: fetching %d daily series (tenv3, %d at a time from "
                 "geodesy.unr.edu — the slow part; each is cached for later "

@@ -83,14 +83,22 @@ def _grid_signature(crs):
     graticule. Two CRSs with equal signatures address the same pixels —
     the reinterpretation test behind ``declared_crs``."""
     h = _horizontal_2d(crs)
+    # prime meridian and axis units are part of the GRID, not the datum:
+    # EPSG:4326 vs EPSG:4807 (Paris PM, grads) or a metre vs US-foot
+    # variant of one projection address different pixels and must never
+    # compare equal (audit: the declared_crs escape accepted a 2.337 deg
+    # PM shift, ~170 km)
+    pm = round(h.prime_meridian.longitude, 9) if h.prime_meridian else 0.0
+    units = tuple(round(a.unit_conversion_factor, 12) for a in h.axis_info)
     if h.is_projected and h.coordinate_operation is not None:
         co = h.coordinate_operation
         return (co.method_name,
                 tuple(sorted((p.name, round(p.value, 9))
                              for p in co.params
-                             if isinstance(p.value, (int, float)))))
+                             if isinstance(p.value, (int, float)))),
+                pm, units)
     if h.is_geographic:
-        return ("geographic",)
+        return ("geographic", pm, units)
     return ("other", h.to_wkt())
 
 
@@ -123,7 +131,7 @@ def _check_crs(gdf, da: xr.DataArray, check_crs: bool,
         if (declared_crs is not None
                 and _horizontal_2d(gdf.crs).equals(_horizontal_2d(declared_crs))
                 and _grid_signature(declared_crs) == _grid_signature(raster_crs)):
-            logger.info(
+            logger.warning(
                 "sampling under the declared frame %r; the raster header "
                 "says %r — same grid, datum reinterpretation (the "
                 "--target-crs/--vdatum contract), not a transform",

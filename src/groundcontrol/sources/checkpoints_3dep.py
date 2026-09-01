@@ -48,15 +48,36 @@ def cache_stale(local: Path, max_age_days: float | None = None) -> bool:
     """ONE staleness rule for every shared-cache file: missing, older than
     ``max_age_days`` (``None`` = never expires), or ``GROUNDCONTROL_REFRESH``
     set in the environment (the CLI ``--refresh`` flag: force re-download
-    of everything this run touches)."""
+    of everything this run touches; ``0``/``false`` disable it)."""
     import time
-    if os.environ.get("GROUNDCONTROL_REFRESH"):
+    if os.environ.get("GROUNDCONTROL_REFRESH", "").strip().lower() not in (
+            "", "0", "false"):
         return True
     if not local.exists():
         return True
     if max_age_days is None:
         return False
     return (time.time() - local.stat().st_mtime) > max_age_days * 86400
+
+
+def cache_write(local: Path, content: str | bytes) -> None:
+    """Atomic write for every shared-cache file: tempfile in the same
+    directory + ``os.replace``. A ``write_text`` interrupted mid-download
+    leaves a 0-byte/truncated file that ``cache_stale`` then trusts for
+    days — for ``ngl_steps.txt`` that read as "checked, no earthquake
+    steps" and silently defeated the Gorkha step guard."""
+    import tempfile
+    fd, tmp = tempfile.mkstemp(dir=local.parent, prefix=local.name + ".")
+    try:
+        with os.fdopen(fd, "wb" if isinstance(content, bytes) else "w") as f:
+            f.write(content)
+        os.replace(tmp, local)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def fetch(aoi_bounds_4326, url: str = PARQUET_URL) -> gpd.GeoDataFrame:
@@ -66,7 +87,7 @@ def fetch(aoi_bounds_4326, url: str = PARQUET_URL) -> gpd.GeoDataFrame:
         logger.info("downloading %s -> %s", url, local)
         r = requests.get(url, timeout=120)
         r.raise_for_status()
-        local.write_bytes(r.content)
+        cache_write(local, r.content)
     return gpd.read_parquet(local, bbox=tuple(aoi_bounds_4326))
 
 

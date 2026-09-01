@@ -75,7 +75,7 @@ import pandas as pd
 import requests
 
 from groundcontrol.crs import decyear, decyear_inv
-from groundcontrol.sources.checkpoints_3dep import cache_dir, cache_stale
+from groundcontrol.sources.checkpoints_3dep import cache_dir, cache_stale, cache_write
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -160,7 +160,7 @@ def _load_index(url: str = INDEX_URL, max_age_days: float = INDEX_MAX_AGE_DAYS) 
         logger.info("downloading %s -> %s", url, local)
         r = requests.get(url, timeout=120)
         r.raise_for_status()
-        local.write_text(r.text)
+        cache_write(local, r.text)
     return parse_dataholdings(local.read_text())
 
 
@@ -295,6 +295,15 @@ def _attach_steps(stations) -> None:
     position-window/ant_m machinery, not epoch propagation."""
     try:
         steps = read_steps()
+        if not len(steps):
+            # the real catalog is ~142k rows; zero rows = empty/truncated
+            # cache (interrupted download). Treating it as "checked, no
+            # steps" silently defeated the Gorkha guard: through=None also
+            # disabled the vintage backstop, so a 2014 point propagated
+            # across the 2015 steps with zero warnings.
+            raise ValueError("steps.txt parsed to zero rows (empty or "
+                             "truncated cache?) — refusing to read that "
+                             "as 'checked, no steps'")
         # vintage from the FULL catalog; per-station epochs only for the
         # FETCHED stations (profiling 2026-08-30: converting the whole
         # 142k-row catalog through per-row decyear() burned ~90 s of CPU
@@ -496,7 +505,7 @@ def _tenv3_text(station: str, frame: str,
         logger.info("downloading %s -> %s", url, local)
         r = requests.get(url, timeout=120)
         r.raise_for_status()
-        local.write_text(r.text)
+        cache_write(local, r.text)
     return local.read_text()
 
 
@@ -566,7 +575,7 @@ def _steps_text(max_age_days: float = INDEX_MAX_AGE_DAYS) -> str:
                     STEPS_URL, local)
         r = requests.get(STEPS_URL, timeout=120)
         r.raise_for_status()
-        local.write_text(r.text)
+        cache_write(local, r.text)
     return local.read_text()
 
 
@@ -678,7 +687,7 @@ def _midas_text(frame: str,
         logger.info("downloading %s -> %s", url, local)
         r = requests.get(url, timeout=300)
         r.raise_for_status()
-        local.write_text(r.text)
+        cache_write(local, r.text)
     return local.read_text()
 
 

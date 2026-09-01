@@ -1233,15 +1233,25 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
         report["models"]["plate"], report["n_noop"],
         report["max_applied_displacement_m"], report["max_residual_bound_m"])
     if report["n_step_unchecked"]:
-        logger.info("propagate_epoch: %d propagated row(s) had no (or stale) "
-                    "earthquake-step evidence — steps not checked for them",
-                    report["n_step_unchecked"])
+        # WARNING, not info: unchecked steps mean earthquake displacement
+        # (Gorkha-class, decimetres) may have been propagated across — the
+        # one alert a bad/absent steps cache leaves behind
+        logger.warning(
+            "propagate_epoch: %d propagated row(s) had no (or stale) "
+            "earthquake-step evidence — steps not checked for them",
+            report["n_step_unchecked"])
     n_novel = report["n_noop"] - report["models"]["step_blocked"]
-    n_nan_dt = report["n_unassessable"] - report["n_step_skipped"]
+    # step rows carry a deliberate NaN residual (displacement unknown, not
+    # velocity-bounded) — they are not "unassessable (NaN Δt)" rows
+    n_nan_dt = (report["n_unassessable"] - report["n_step_skipped"]
+                - report["n_step_propagated"])
     if report["max_residual_bound_m"] > 1e-4 or n_nan_dt:
+        _mb = report["max_residual_bound_m"]
+        _mb_txt = (f"{_mb:.3f} m" if np.isfinite(_mb)
+                   else "n/a (only step-crossing/NaN-Δt rows)")
         warnings.warn(
             f"{n_novel} row(s) left at their own epoch (no usable velocity); "
-            f"un-propagated velocity·Δt bound up to {report['max_residual_bound_m']:.3f} m "
+            f"un-propagated velocity·Δt bound up to {_mb_txt} "
             f"(at rate {residual_rate_m_per_yr} m/yr), {n_nan_dt} row(s) "
             "unassessable (NaN Δt) — see attrs['epoch_propagation']",
             stacklevel=2)

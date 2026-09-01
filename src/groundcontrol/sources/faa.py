@@ -57,7 +57,7 @@ import pandas as pd
 import requests
 
 from groundcontrol.crs import decyear
-from groundcontrol.sources.checkpoints_3dep import cache_dir, cache_stale
+from groundcontrol.sources.checkpoints_3dep import cache_dir, cache_stale, cache_write
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -141,7 +141,7 @@ def fetch(aoi_bounds_4326, cycle: str | None = None) -> dict:
                            cyc, cycles[-1])
             continue
         r.raise_for_status()
-        local.write_bytes(r.content)
+        cache_write(local, r.content)
         break
     else:  # pragma: no cover - loop always breaks or raises
         raise RuntimeError(f"no NASR cycle reachable: {cycles}")

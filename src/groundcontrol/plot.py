@@ -281,6 +281,13 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
         from rasterio.enums import Resampling
         from rasterio.vrt import WarpedVRT
         with rasterio.open(dem_tif) as src, WarpedVRT(src, crs="EPSG:4326") as vrt:
+            if not src.overviews(1) and max(src.width, src.height) > 20000:
+                import warnings as _w
+                _w.warn(
+                    f"velocity map: warping {src.width}x{src.height} px "
+                    "DEM with no overviews to lon/lat at full resolution "
+                    "— can take minutes; pass hs_tif (a pre-rendered or "
+                    "derived hillshade) instead", stacklevel=2)
             dec = max(1, int(np.ceil(max(vrt.width, vrt.height) / 3000)))
             z = vrt.read(1, masked=True,
                          out_shape=(vrt.height // dec, vrt.width // dec),

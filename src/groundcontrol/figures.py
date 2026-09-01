@@ -1361,6 +1361,30 @@ def hillshade_from_raster(path, *, max_px: int = HILLSHADE_MAX_PX):
         [b.left, b.right, b.bottom, b.top]
 
 
+def _memory_hillshade(hs01, extent, crs):
+    """The derived ``(hillshade01, extent)`` tuple as an open ``/vsimem``
+    Byte GeoTIFF (1..255, nodata 0) so downstream warps reuse the
+    ALREADY-DECIMATED array instead of re-scanning the product — passing
+    only ``dem_tif`` made the velocity map warp the full-resolution
+    mosaic per panel (owner 2026-09-01: a 19-Gpx no-overview MDV VRT was
+    scanned three times in one run). Caller opens ``.name`` and closes
+    the returned MemoryFile when the figure is drawn."""
+    from rasterio.io import MemoryFile
+    from rasterio.transform import from_bounds
+
+    a = np.asarray(hs01, dtype="float64")
+    b = np.where(np.isfinite(a), np.clip(a, 0.0, 1.0) * 254 + 1,
+                 0).astype("uint8")
+    h, w = b.shape
+    left, right, bottom, top = extent
+    mem = MemoryFile()
+    with mem.open(driver="GTiff", width=w, height=h, count=1,
+                  dtype="uint8", nodata=0, crs=crs,
+                  transform=from_bounds(left, bottom, right, top, w, h)) as ds:
+        ds.write(b, 1)
+    return mem
+
+
 def _relief(ax, dem_tif, hs_tif, cmap, dem_alpha, fig):
     """Grayscale hillshade underlay from ``hs_tif`` — a pre-rendered Byte
     hillshade path (gdaldem 1..255) or a ``(array01, extent)`` tuple from
@@ -2396,6 +2420,22 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
         axv_ = fig2.add_subplot(gs2[0, 1], sharey=axh_)  # shared latitude
         cax_ = fig2.add_subplot(gs2[0, 2])
         hs_path = hs_tif if isinstance(hs_tif, (str, Path)) else None
+        _hs_mem = None
+        if hs_path is None and isinstance(hs_tif, tuple) \
+                and dem_tif is not None:
+            # reuse the ALREADY-DECIMATED derived hillshade: with only
+            # dem_tif, plot_velocity_vectors warps the full-resolution
+            # product to 4326 once PER PANEL (owner 2026-09-01: 19-Gpx
+            # no-overview MDV VRT scanned three times in one run)
+            try:
+                import rasterio
+                with rasterio.open(dem_tif) as _s:
+                    _crs = _s.crs
+                _hs_mem = _memory_hillshade(hs_tif[0], hs_tif[1], _crs)
+                hs_path = _hs_mem.name
+            except Exception as exc:
+                logger.warning("derived-hillshade reuse failed (%s); the "
+                               "velocity map warps the DEM itself", exc)
         # map buffer = the interpolation search radius (owner 2026-08-31:
         # one consistent area around the site), web hillshade under the
         # DEM's own hillshade so the buffer zone is never blank
@@ -2404,13 +2444,17 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
         vel_bmap = map_basemap
         plot_velocity_vectors(
             st, aoi=ngl_scope, buffer_km=buffer_km, ax=axh_,
-            color_by_vertical=False, hs_tif=hs_path, dem_tif=dem_tif,
+            color_by_vertical=False, hs_tif=hs_path,
+            dem_tif=None if hs_path else dem_tif,
             basemap=vel_bmap, title="Horizontal motion (mm/yr)")
         plot_velocity_vectors(
             st, aoi=ngl_scope, buffer_km=buffer_km, ax=axv_,
-            color_by_vertical=True, hs_tif=hs_path, dem_tif=dem_tif,
+            color_by_vertical=True, hs_tif=hs_path,
+            dem_tif=None if hs_path else dem_tif,
             basemap=vel_bmap, cbar_ax=cax_, show_ref=False,
             title="Vertical motion (mm/yr)")
+        if _hs_mem is not None:  # imshow copied the arrays: safe to free
+            _hs_mem.close()
         plt.setp(axv_.get_yticklabels(), visible=False)
         axv_.set_ylabel("")
         fig2.suptitle("GNSS velocities \u2014 MIDAS (Median Interannual "

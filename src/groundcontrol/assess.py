@@ -748,6 +748,10 @@ def assess_products(control, products, target_crs, *, outdir, site_name,
             sampled, aoi_gdf, outdir, site_name, dem_tif=first,
             hs_tif=(hs.get(next(k for k, p in products.items() if p == first))
                     if isinstance(hs, dict) and first is not None else hs),
+            # --basemap none must silence the AOI-wide web underlays too
+            # (velocity map, AOI-only control map) — previously only the
+            # fetch CLI wired this and assess always fetched
+            map_basemap=None if basemap is None else "esri_hillshade",
             midas_velocities=midas_velocities)
         # per-SOURCE dh map + histogram (family_dz_figures) in each source's
         # subdir (owner 2026-08-30 layout): only families that came back

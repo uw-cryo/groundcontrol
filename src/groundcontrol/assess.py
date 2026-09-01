@@ -403,8 +403,12 @@ def transform_control(control, target_crs, *, target_epoch=2010.0,
                             t2.description)
         n_vert_excluded = int(incompat.sum()) - n_vert_native
         if incompat.any():
-            bad = sorted(control.loc[incompat, "vertical_crs"]
-                         .astype("string").unique())
+            # NA rows are now refused (never guessed), so the note's value
+            # list must survive NA: sorted() raises on pd.NA comparison
+            vc_bad = control.loc[incompat, "vertical_crs"].astype("string")
+            bad = sorted(vc_bad.dropna().unique())
+            if vc_bad.isna().any():
+                bad.append("<NA>")
             vert_note = (
                 f"{int(incompat.sum())} row(s) carry vertical_crs {bad} != "
                 f"the declared source vertical: {n_vert_native} re-targeted "

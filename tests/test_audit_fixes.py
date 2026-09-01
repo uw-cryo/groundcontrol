@@ -175,6 +175,17 @@ def test_vertical_guard_refuses_na():
     assert np.isnan(out["h_ell"].to_numpy()[1])
 
 
+def test_vertical_note_survives_mixed_na_and_codes():
+    # caught on a real cache (COP30_E rerun): >= 2 distinct incompatible
+    # values including NA made the vertical_note's sorted() raise
+    # "boolean value of NA is ambiguous"
+    from groundcontrol.assess import transform_control
+    ctl = _ctl([pd.NA, "EPSG:5703", "EPSG:6319"])
+    out, info = transform_control(ctl, UTM12_3D, source_crs="EPSG:6319")
+    assert info["n_vertical_excluded"] == 2
+    assert "<NA>" in info["vertical_note"]
+
+
 def test_vertical_guard_scales_unit_variant_same_datum():
     from groundcontrol.assess import transform_control
     ft = 0.304800609601219  # US survey foot

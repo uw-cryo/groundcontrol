@@ -721,12 +721,41 @@ def dz_residual_sheets(sampled, products, outdir, site_name, *, rgb=None,
                         sel, layers, sub_out, site_name, tiers=tiers,
                         subset_tag=f"{stag}_dz_{prod}_residual_{ktag}",
                         title=f"{head} — {base_title} {prod}",
+                        title_parts=[
+                            (head, hcol), (" — ", _INK),
+                            (base_title,
+                             SHEET_SUBSET_TITLE_COLORS.get(stag, _INK)),
+                            # NBSP: a plain leading space is trimmed by
+                            # the extent measurement and the segments butt
+                            (f" {prod}", _INK)],
                         id_col="id_disp", title_color=hcol,
                         value_col="dz_val",
                         value_clim=snap_clim(sel["dz_val"]), dpi=dpi)
                     if fp is not None:
                         out.append(fp)
     return out
+
+
+def _title_segments(fig, parts, *, y, fontsize=15):
+    """One CENTERED title line from colored ``(text, color)`` segments —
+    a single suptitle carries one color, but the sheet titles need two
+    (WORST/BEST ink + the subset's NVA/VVA ink). Widths are measured on
+    the Agg renderer and the segments placed back to back."""
+    r = fig.canvas.get_renderer()
+    texts = [fig.text(0.0, y, t, color=c, fontsize=fontsize,
+                      ha="left", va="top") for t, c in parts]
+    ws = [t.get_window_extent(renderer=r).width for t in texts]
+    if sum(ws) > 0.97 * fig.bbox.width:
+        # a narrow sheet (few layers) cannot fit the full-size title —
+        # shrink instead of clipping at the figure edges
+        fs = max(9.0, fontsize * 0.97 * fig.bbox.width / sum(ws))
+        for t in texts:
+            t.set_fontsize(fs)
+        ws = [t.get_window_extent(renderer=r).width for t in texts]
+    x = (fig.bbox.width - sum(ws)) / 2.0
+    for t, w in zip(texts, ws):
+        t.set_position((x / fig.bbox.width, y))
+        x += w
 
 
 def _short_point_ids(points, id_col="id"):
@@ -756,7 +785,7 @@ def _short_point_ids(points, id_col="id"):
 def _residual_sheet(points, layers, outdir, site_name, *, tiers=SHEET_TIERS,
                     subset_tag="residual", title=None, id_col="id",
                     value_col=None, value_clim=None, title_color=None,
-                    dpi=150):
+                    title_parts=None, dpi=150):
     """One TIER-MAJOR residual review page (owner 2026-08-31).
 
     Rows are control points — one point per row, read straight across.
@@ -813,7 +842,9 @@ def _residual_sheet(points, layers, outdir, site_name, *, tiers=SHEET_TIERS,
         max_chars = max((len(str(r[id_col])) for _, r in points.iterrows()),
                         default=8)
         lab_w = max(1.45, min(3.9, 0.088 * max_chars + 0.48))
-        gap_w, head_h, foot_h = 0.30, 1.40, 0.52
+        # head shrank / foot grew 2026-09-01: the subtitle line moved into
+        # the (left-justified) footer
+        gap_w, head_h, foot_h = 0.30, 1.08, 0.68
         fig_w = pw * ntier * npanel + lab_w + gap_w * (ntier - 1) + 0.18
         fig_h = pw * nrow + head_h + foot_h
         fig = plt.figure(figsize=(fig_w, fig_h))
@@ -949,17 +980,27 @@ def _residual_sheet(points, layers, outdir, site_name, *, tiers=SHEET_TIERS,
         tags = " | ".join(t for t, _, _ in srcs)
         ramp = (f"  |  marker: dz ±{value_clim:g} m ({DZ_CMAP})"
                 if value_col is not None and value_clim else "")
-        fig.suptitle(f"{title or subset_tag}: {site_name}", fontsize=15,
-                     y=1.0 - 0.10 / fig_h, color=title_color or _INK)
-        fig.text(0.5, 1.0 - 0.42 / fig_h,
+        if title_parts:
+            # multicolor single-line title: WORST/BEST ink + the subset's
+            # own ink (NVA brown / VVA green), site name appended in _INK
+            _title_segments(fig,
+                            list(title_parts) + [(f": {site_name}", _INK)],
+                            y=1.0 - 0.10 / fig_h, fontsize=15)
+        else:
+            fig.suptitle(f"{title or subset_tag}: {site_name}", fontsize=15,
+                         y=1.0 - 0.10 / fig_h, color=title_color or _INK)
+        # footer, LEFT-justified (owner 2026-09-01): the former centered
+        # subtitle rides here with the relief note
+        fx = 0.10 / fig_w
+        fig.text(fx, 0.38 / fig_h,
                  f"rows = control points, labeled with dz  |  layers: "
-                 f"{tags}{ramp}", ha="center", va="top", fontsize=9.5,
+                 f"{tags}{ramp}", ha="left", va="bottom", fontsize=9.5,
                  color="#444444")
-        fig.text(0.5, 0.14 / fig_h,
+        fig.text(fx, 0.10 / fig_h,
                  "relief = cpt_rainbow over multidirectional hillshade; one "
                  "elevation ramp per point and tier (DSM/DTM comparable), "
                  "never shared across points",
-                 ha="center", va="bottom", fontsize=8, color="#666666")
+                 ha="left", va="bottom", fontsize=8, color="#666666")
         # JPEG q85 (owner 2026-08-30): the sheets are photo-heavy
         fp = outdir / f"{site_name}_{subset_tag}.jpg"
         fig.savefig(fp, dpi=dpi, pil_kwargs={"quality": 85})
@@ -1553,10 +1594,18 @@ SHEET_SUBSET_TITLES = {
     "opus": "OPUS shared solutions",
     "gnss_other": "GNSS semi-continuous / campaign",
     "faa_runway": "FAA runway",
-    "3dep_nva": "3DEP NVA checkpoint",
-    "3dep_vva": "3DEP VVA checkpoint",
+    "3dep_nva": "3DEP Non-vegetated (NVA) checkpoint",
+    "3dep_vva": "3DEP Vegetated (VVA) checkpoint",
     "ngs_monument": "NGS monument",
     "ngs_best": "NGS monument (ngs_best tier)",
+}
+
+#: sheet-title ink per subset (owner 2026-09-01: brown = non-vegetated
+#: ground, green = vegetated — four gallery sheets per product need the
+#: NVA/VVA split legible at a glance); subsets absent here use _INK
+SHEET_SUBSET_TITLE_COLORS = {
+    "3dep_nva": "#7B4A12",
+    "3dep_vva": "#2E7D32",
 }
 
 def _label_medians(ax, meds, span):

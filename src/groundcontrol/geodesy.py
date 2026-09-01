@@ -294,6 +294,10 @@ def rebase_projection_3d(horizontal, base_epsg: int, base_name: str) -> CRS:
     return ProjectedCRS(
         conversion=h.coordinate_operation,
         geodetic_crs=base,
+        # without this, pyproj substitutes its default metre Cartesian CS
+        # and a ftUS grid (six BLM/WGS84-ensemble codes) rebases to metres
+        # while the name still says "(US survey foot)" — 3.28x
+        cartesian_cs=h.coordinate_system,
         name=f"{base_name} / {h.coordinate_operation.name}",
     ).to_3d()
 
@@ -314,6 +318,8 @@ def rebase_projection_2d(horizontal, base_epsg: int, base_name: str) -> CRS:
     return ProjectedCRS(
         conversion=h.coordinate_operation,
         geodetic_crs=base,
+        # keep the source Cartesian CS (units) — see rebase_projection_3d
+        cartesian_cs=h.coordinate_system,
         name=f"{base_name} / {h.coordinate_operation.name}",
     )
 

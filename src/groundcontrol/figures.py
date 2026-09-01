@@ -703,11 +703,16 @@ def dz_residual_sheets(sampled, products, outdir, site_name, *, rgb=None,
                         return []
                 sub_out = Path(outdir) / SOURCE_DIRS.get(stag, stag)
                 base_title = SHEET_SUBSET_TITLES.get(stag, stag)
-                for ktag, idx, head in (
-                        ("largest", worst, "Largest vertical residual"),
-                        ("smallest", best, "Smallest vertical residual")):
+                # RED/GREEN + WORST/BEST wording and filenames (owner
+                # 2026-09-01: make good vs bad unmissable)
+                for ktag, idx, head, hcol in (
+                        ("worst", worst,
+                         "Largest (WORST) vertical residual", "#B02020"),
+                        ("best", best,
+                         "Smallest (BEST) vertical residual", "#1A7A2E")):
                     sel = fin.loc[list(idx)].copy()
                     sel["dz_val"] = dzf[sel.index].astype("float64")
+                    sel["id_disp"] = _short_point_ids(sel)
                     # clim from the SELECTED points, not the population:
                     # every "largest" point sits beyond the population
                     # tier and renders one saturated color (audit
@@ -716,6 +721,7 @@ def dz_residual_sheets(sampled, products, outdir, site_name, *, rgb=None,
                         sel, layers, sub_out, site_name, tiers=tiers,
                         subset_tag=f"{stag}_dz_{prod}_residual_{ktag}",
                         title=f"{head} — {base_title} {prod}",
+                        id_col="id_disp", title_color=hcol,
                         value_col="dz_val",
                         value_clim=snap_clim(sel["dz_val"]), dpi=dpi)
                     if fp is not None:
@@ -723,9 +729,34 @@ def dz_residual_sheets(sampled, products, outdir, site_name, *, rgb=None,
     return out
 
 
+def _short_point_ids(points, id_col="id"):
+    """Display labels for per-point sheet rows: strip the verbose 3DEP
+    project prefix (id = <project>_<project_id>_<name>; raw carries
+    project_id) so the row shows the point NAME the survey used —
+    'CA_SanFrancisco_B23_2331143_UA001' -> 'UA001' (owner 2026-09-01).
+    Full id kept when the pattern is absent or shortening would collide
+    on the page."""
+    ids = points[id_col].astype(str)
+    if "raw" not in points.columns:
+        return ids
+    pid = _raw_field(points["raw"], "project_id")
+    short = []
+    for full, p in zip(ids, pid):
+        s = full
+        if pd.notna(p):
+            tok = f"_{p}_"
+            k = full.find(tok)
+            if k >= 0 and full[k + len(tok):]:
+                s = full[k + len(tok):]
+        short.append(s)
+    short = pd.Series(short, index=points.index, dtype="object")
+    return short.mask(short.duplicated(keep=False), ids)
+
+
 def _residual_sheet(points, layers, outdir, site_name, *, tiers=SHEET_TIERS,
                     subset_tag="residual", title=None, id_col="id",
-                    value_col=None, value_clim=None, dpi=150):
+                    value_col=None, value_clim=None, title_color=None,
+                    dpi=150):
     """One TIER-MAJOR residual review page (owner 2026-08-31).
 
     Rows are control points — one point per row, read straight across.
@@ -919,7 +950,7 @@ def _residual_sheet(points, layers, outdir, site_name, *, tiers=SHEET_TIERS,
         ramp = (f"  |  marker: dz ±{value_clim:g} m ({DZ_CMAP})"
                 if value_col is not None and value_clim else "")
         fig.suptitle(f"{title or subset_tag}: {site_name}", fontsize=15,
-                     y=1.0 - 0.10 / fig_h)
+                     y=1.0 - 0.10 / fig_h, color=title_color or _INK)
         fig.text(0.5, 1.0 - 0.42 / fig_h,
                  f"rows = control points, labeled with dz  |  layers: "
                  f"{tags}{ramp}", ha="center", va="top", fontsize=9.5,
@@ -1315,6 +1346,85 @@ def _relief(ax, dem_tif, hs_tif, cmap, dem_alpha, fig):
     return ext
 
 
+def _legend_corner(bounds, x, y, hs=None):
+    """Map-legend corner with the least conflict: fewest drawn points
+    inside the corner box, ties broken toward the most NODATA background
+    when a hillshade underlay is readable (owner 2026-09-01, SF: the
+    fixed lower-left sat on the city hillshade while the nodata bay
+    filled the lower right). ``bounds`` = (x0, y0, x1, y1) of the extent
+    :func:`_finish_map` will set; ``hs`` = a hillshade path or the
+    ``(hillshade01, extent)`` tuple. Falls back to 'lower left'."""
+    try:
+        x0, y0, x1, y1 = (float(v) for v in bounds)
+    except (TypeError, ValueError):
+        return "lower left"
+    if not np.isfinite([x0, y0, x1, y1]).all() or x1 <= x0 or y1 <= y0:
+        return "lower left"
+    fx = (np.asarray(x, dtype="float64") - x0) / (x1 - x0)
+    fy = (np.asarray(y, dtype="float64") - y0) / (y1 - y0)
+    boxes = {  # generous legend footprint, axes fraction
+        "lower left": (0.0, 0.40, 0.0, 0.32),
+        "lower right": (0.60, 1.0, 0.0, 0.32),
+        "upper left": (0.0, 0.40, 0.68, 1.0),
+        "upper right": (0.60, 1.0, 0.68, 1.0),
+    }
+    valid = None
+    if hs is not None:
+        try:
+            if isinstance(hs, (list, tuple)):
+                arr, ext = hs
+                a = np.asarray(arr, dtype="float64")
+                ex0, ex1, ey0, ey1 = (float(v) for v in ext)
+            else:
+                import rasterio
+                from rasterio.enums import Resampling
+                with rasterio.open(hs) as src:
+                    m = src.read_masks(
+                        1, out_shape=(min(src.height, 256),
+                                      min(src.width, 256)),
+                        resampling=Resampling.average)
+                    a = np.where(m > 0, 1.0, np.nan)
+                    b = src.bounds
+                    ex0, ex1 = b.left, b.right
+                    ey0, ey1 = b.bottom, b.top
+            ny, nx = a.shape
+            gx = ex0 + (np.arange(nx) + 0.5) * (ex1 - ex0) / nx
+            gy = ey1 - (np.arange(ny) + 0.5) * (ey1 - ey0) / ny  # row 0 top
+            fgx = (gx - x0) / (x1 - x0)
+            fgy = (gy - y0) / (y1 - y0)
+            valid = {}
+            for k, (a0, a1, b0, b1) in boxes.items():
+                cell = a[np.ix_((fgy >= b0) & (fgy <= b1),
+                                (fgx >= a0) & (fgx <= a1))]
+                valid[k] = (float(np.isfinite(cell).mean())
+                            if cell.size else 0.0)
+        except Exception:  # scoring aid only — never break the figure
+            valid = None
+
+    def _score(k):
+        a0, a1, b0, b1 = boxes[k]
+        n = int(((fx >= a0) & (fx <= a1)
+                 & (fy >= b0) & (fy <= b1)).sum())
+        # fewest points first; then the corner with the LEAST valid
+        # background (over nodata); dict order keeps lower-left on ties
+        return (n, valid[k] if valid is not None else 0.0)
+
+    return min(boxes, key=_score)
+
+
+def _map_extent(aoi_gdf, points):
+    """The (x0, y0, x1, y1) extent :func:`_finish_map` will impose —
+    for choosing the legend corner BEFORE the legend must exist (the
+    scalebar auto-locator skips the corner a legend already holds)."""
+    if aoi_gdf is not None:
+        return tuple(aoi_gdf.total_bounds)
+    if points is not None and len(points):
+        b = points.total_bounds
+        m = 0.05 * max(b[2] - b[0], b[3] - b[1])
+        return (b[0] - m, b[1] - m, b[2] + m, b[3] + m)
+    return (np.nan,) * 4
+
+
 def _finish_map(ax, aoi_gdf, clip_to_aoi=True, points=None):
     """Ticks off + scalebar. With ``clip_to_aoi`` the axes are limited to the
     AOI bounds and the dashed outline is dropped (redundant when the map IS
@@ -1686,8 +1796,12 @@ def control_map_figure(ctl, aoi_p, outdir, site_name, *, dem_tif=None,
     if not clip_to_aoi:
         handles.append(Line2D([], [], ls="--", color=_INK, alpha=0.45,
                               label="AOI"))
-    leg = ax.legend(handles=handles, loc="lower left", fontsize=9,
-                    framealpha=0.92)
+    leg = ax.legend(handles=handles,
+                    loc=_legend_corner(
+                        _map_extent(aoi_p if clip_to_aoi else None, ctl),
+                        ctl.geometry.x.to_numpy(),
+                        ctl.geometry.y.to_numpy(), hs=hs_tif),
+                    fontsize=9, framealpha=0.92)
     # above the zorder-8 station labels: a label near the corner overprinted
     # the legend box (owner 2026-08-30, Las Vegas BIRD)
     leg.set_zorder(10)
@@ -2151,8 +2265,11 @@ def standard_control_figures(control, aoi, outdir, site_name, *,
                            label=f"ngs_best member ({len(b)})")
             # above the ring scatter (zorder 6): the ngs_best rings drew
             # on top of the legend box (owner 2026-09-01)
-            ax.legend(loc="lower left", fontsize=7.5,
-                      framealpha=0.9).set_zorder(7)
+            ax.legend(loc=_legend_corner(
+                          _map_extent(aoi_p if clip_to_aoi else None, mon),
+                          mon.geometry.x.to_numpy(),
+                          mon.geometry.y.to_numpy(), hs=hs_tif),
+                      fontsize=7.5, framealpha=0.9).set_zorder(7)
             _finish_map(ax, aoi_p, clip_to_aoi)
             ax.set_title(f"NGS monuments by {key}", fontsize=10, color=_INK)
         fig.suptitle(f"NGS monument datasheet attributes (n={len(mon)}): "
@@ -2510,8 +2627,13 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
                             cmap=DZ_CMAP, norm=norm, s=15,
                             edgecolors="#333333", linewidths=0.35, zorder=5)
         if handles:
-            axes[0].legend(handles=handles, loc="lower left", fontsize=7,
-                           framealpha=0.85, borderpad=0.4, handletextpad=0.4)
+            axes[0].legend(
+                handles=handles,
+                loc=_legend_corner(_map_extent(aoi, use),
+                                   use.geometry.x.to_numpy(),
+                                   use.geometry.y.to_numpy(), hs=hs_prod),
+                fontsize=7, framealpha=0.85, borderpad=0.4,
+                handletextpad=0.4)
         sc = _mpl.cm.ScalarMappable(norm=norm, cmap=DZ_CMAP)
         cb = fig.colorbar(sc, cax=cax, extend="both")
         # ticks + label LEFT of the bar: the right side faces the

@@ -964,24 +964,16 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
     # driving parse() directly (the non-CONUS workflow, rasuwa 2026-08-29)
     # yields a usable GeoDataFrame without a manual set_crs; mixed codes
     # keep crs=None (per-row horizontal_crs is the authority either way).
-    codes = df["horizontal_crs"].dropna().unique()
-    crs_tag = None
-    if len(codes) == 1:
-        # per-row codes are 3D dynamic frames (EPSG:7912/9989) but the
-        # geometry is 2D and the epoch lives per-row in coord_epoch — a 3D
-        # stamp is exactly the shape validate_landing_crs refuses, and it
-        # turned a downstream gdf.to_crs(6318) from a loud TypeError into
-        # a silent ~1.5 m shift with no coordinate epoch applied. Stamp
-        # the 2D counterpart the landing gate demotes to instead.
-        from groundcontrol.sources import validate_landing_crs
-        try:
-            crs_tag = validate_landing_crs(codes[0])
-        except ValueError as exc:  # future frame alias failing the gates:
-            logger.warning("parse: frame-level CRS %s not stampable (%s); "
-                           "leaving crs=None (per-row horizontal_crs is "
-                           "the authority)", codes[0], exc)
+    # frame-level CRS is DELIBERATELY None (owner 2026-09-01, reverting
+    # the 2026-08-29 convenience stamp): per-row horizontal_crs is the
+    # authority, the coordinates are dynamic-frame with per-row
+    # coord_epoch, and ANY frame-level stamp lets a naive gdf.to_crs()
+    # move points ~1.4 m with no coordinate epoch applied. With crs=None
+    # a bare to_crs raises loudly instead. Driving parse() directly:
+    # check horizontal_crs, then gdf.set_crs("EPSG:9000") (the 2D
+    # counterpart) yourself if you accept epoch-naive horizontal use.
     return gpd.GeoDataFrame(
         df,
         geometry=gpd.points_from_xy(df["native_x"], df["native_y"]),
-        crs=crs_tag,
+        crs=None,
     )

@@ -377,12 +377,12 @@ def test_resolve_aoi_accepts_ndarray_bbox():
 
 
 # ---------------------------------------------------------------------------
-# H9 — the military datum check must return NaN outside NAVD88 coverage
+# H9 — the EGM96 datum check must return NaN outside NAVD88 coverage
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("lon,lat", [
-    (-157.92, 21.32),   # Hickam AFB, Hawaii — was +14.28 m of fiction
+    (-157.92, 21.32),   # Hawaii airfield — was +14.28 m of fiction
     (85.3, 28.1),       # Nepal — was -38.89
     (-30.0, 30.0),      # mid-Atlantic — was +59.81
 ])
@@ -406,7 +406,7 @@ def test_grid_signature_prime_meridian_and_units():
 
 
 # ---------------------------------------------------------------------------
-# MED — FAA military rows: DoD-pipeline elevations declare EGM96 (owner 2026-09-01)
+# MED — FAA ownership-coded rows: EGM96 elevations declared per source (owner 2026-09-01)
 # ---------------------------------------------------------------------------
 
 
@@ -429,25 +429,25 @@ def test_faa_mil_rows_declare_egm96_never_navd88():
                      "lines": lines})
     raw = [json.loads(r) for r in out["raw"]]
     mil = np.array([r.get("pos_class") == "mil" for r in raw])
-    dod = mil & np.array([str(r.get("elev_src", "")).strip().upper()
-                          in faa.DOD_ELEV_SRC for r in raw])
-    assert mil.any() and (~mil).any() and dod.any()
-    # owner 2026-09-01: DoD-pipeline elevations are EGM96 MSL (multi-
-    # facility verified) — declared, and landed through the geoid + the
-    # ITRF2014 frame tie via ITRF2014-tied natives. Never EPSG:5703.
-    assert out.loc[dod, "vertical_crs"].eq("EPSG:5773").all()
-    assert (out.loc[dod, "height_datum"].str.contains("EGM96")).all()
-    assert out.loc[dod, "native_crs"].eq(faa.MIL_NATIVE_CRS).all()
+    egm = mil & np.array([str(r.get("elev_src", "")).strip().upper()
+                          in faa.EGM96_ELEV_SRC for r in raw])
+    assert mil.any() and (~mil).any() and egm.any()
+    # owner 2026-09-01: these facilities' EGM96 elevations are declared
+    # per source and landed through the geoid + the ITRF2014 frame tie
+    # via ITRF2014-tied natives. Never EPSG:5703.
+    assert out.loc[egm, "vertical_crs"].eq("EPSG:5773").all()
+    assert (out.loc[egm, "height_datum"].str.contains("EGM96")).all()
+    assert out.loc[egm, "native_crs"].eq(faa.MIL_NATIVE_CRS).all()
     # the tie moves the horizontal by the NAD83(2011)->ITRF2014 offset
     # (~1-1.5 m in CONUS), never by nothing and never by a lot
-    dx = (out.loc[dod, "native_x"] - out.loc[dod].geometry.x) * 111320 \
-        * np.cos(np.radians(out.loc[dod].geometry.y))
-    dy = (out.loc[dod, "native_y"] - out.loc[dod].geometry.y) * 111320
+    dx = (out.loc[egm, "native_x"] - out.loc[egm].geometry.x) * 111320 \
+        * np.cos(np.radians(out.loc[egm].geometry.y))
+    dy = (out.loc[egm, "native_y"] - out.loc[egm].geometry.y) * 111320
     shift = np.hypot(dx, dy)
     assert (shift > 0.3).all() and (shift < 3.0).all()
-    assert out.loc[dod, "native_h"].eq(out.loc[dod, "height"]).all()
-    # non-DoD MIL sources stay honestly NA; civil rows stay NAVD88
-    assert out.loc[mil & ~dod, "vertical_crs"].isna().all()
+    assert out.loc[egm, "native_h"].eq(out.loc[egm, "height"]).all()
+    # other elevation sources stay honestly NA; civil rows stay NAVD88
+    assert out.loc[mil & ~egm, "vertical_crs"].isna().all()
     assert out.loc[~mil, "vertical_crs"].eq("EPSG:5703").all()
     assert out.loc[~mil, "native_crs"].eq("EPSG:6349").all()
 

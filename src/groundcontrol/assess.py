@@ -71,8 +71,8 @@ SEGMENTS = {
     # (runway ends + displaced thresholds) in the surveyed provenance class
     # (AC 150/5300-18C; LV A/B 2026-08-13 ~2 cm NMAD; CG 2026-08-30
     # measured med -0.047 / NMAD 0.061). HELIPADS are excluded even when
-    # the position source reads surveyed/MILITARY: CG measured a
-    # consistent +0.33 m bias on 8 MILITARY-source helipads — a different
+    # the position source reads surveyed: CG measured a consistent
+    # +0.33 m bias on 8 helipads from one elevation source — a different
     # accuracy class (owner 2026-08-30: some are hand-held GNSS), so they
     # ride with the estimated class as context-only. Before 2026-08-30
     # every FAA row fell to OTHER (unsegmented).
@@ -81,12 +81,11 @@ SEGMENTS = {
         & (_faa_pos_class(d) == "surveyed")
         & d["point_type"].isin(["runway_end", "displaced_threshold"]),
         True, True),
-    # service-branch-owned facilities (sources/faa.py MIL_OWNERSHIP):
-    # elevations ride the DoD pipeline (EGM96 MSL standard) and the
-    # per-point datum is unverifiable (Nellis 2026-08-31: runway ends off
-    # by exactly the EGM96-NAVD88 separation, helipad NAVD88 to 3 mm) —
-    # own context segment, never in the surveyed tier
-    "FAA MIL field": (
+    # facilities under sources/faa.py MIL_OWNERSHIP publish EGM96 MSL
+    # elevations (declared per elevation source since 2026-09-01) and
+    # carry no published accuracy — own context segment, never in the
+    # surveyed tier
+    "FAA (EGM96 records)": (
         lambda d: (d["source"] == "faa")
         # isin: caches written before the 2026-09-01 rename carry the
         # old "military" value in raw

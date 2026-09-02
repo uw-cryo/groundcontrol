@@ -99,12 +99,10 @@ provenance. `family_dz_figures` family `faa` — the surveyed class (3RD PARTY
 SURVEY / NGS / MILITARY / ARPTS CONTRACTOR, AC 150/5300-18C survey-grade)
 against the 3DEP DSM sits at −0.01 m median; the estimated class (OWNER /
 FAA-EST IMAGERY / ADO) is what its name says, and stays visible as context
-rather than being filtered away upstream. Service-branch-owned facilities
-(NASR ownership MA/MN/MR/CG) are a third class: their DoD-pipeline
-elevations are EGM96 MSL, not NAVD88 (verified across 170 CONUS facilities
-against 3DEP: slope +0.90 on the local EGM96−NAVD88 separation), so they
-declare EGM96 and land through the geoid and the ITRF2014 frame tie; with
-no published accuracy they stay context. The stated 3D transform budget for
+rather than being filtered away upstream. A subset of facilities publishes
+elevations on EGM96 MSL rather than NAVD88; the source declares that datum
+and they land through the geoid, as their own context class. The stated 3D
+transform budget for
 the NAD83(2011)+NAVD88 → ellipsoidal-UTM landing is printed on the histogram.
 
 ![FAA runway control dz](img/casagrande_dz_faa_DSM.png)

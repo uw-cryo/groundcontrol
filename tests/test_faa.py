@@ -5,7 +5,7 @@ Fixture ``faa_apt_sample.txt`` holds 17 real fixed-width records (5 APT +
 (North Las Vegas) with surveyed ends and displaced thresholds, NV53 (a
 hospital heliport, FAA-EST IMAGERY provenance), 5AZ3 (Pegasus Airpark
 AZ, estimated-provenance GA field with displaced thresholds), and LSV
-(Nellis AFB: ownership MA — the MIL provenance class). ``fetch()``
+(ownership MA — the ownership-coded provenance class). ``fetch()``
 is ``@network``; parsing is offline.
 """
 
@@ -73,8 +73,8 @@ def test_provenance_classes_and_accuracy():
     surveyed = cls == "surveyed"
     mil = cls == "mil"
     # LAS/VGT are 3RD PARTY SURVEY; NV53 heliport and 5AZ3 are estimated;
-    # LSV (Nellis AFB, ownership MA) classes mil REGARDLESS of its
-    # MILITARY position source — DoD-pipeline elevations may be EGM96 MSL
+    # LSV (ownership MA) classes mil REGARDLESS of its MILITARY position
+    # source — its elevations are published on EGM96 MSL
     assert set(out.loc[surveyed, "id"].str[:3]) == {"LAS", "VGT"}
     assert set(out.loc[mil, "id"].str[:3]) == {"LSV"}
     assert (~surveyed & ~mil).sum() == 5  # NV53_H1 + four 5AZ3 points
@@ -85,7 +85,7 @@ def test_provenance_classes_and_accuracy():
     # honestly carry no accuracy (never a fabricated bound)
     assert np.allclose(out.loc[surveyed, "acc_h"], faa.ACC_H_SURVEYED)
     assert np.allclose(out.loc[surveyed, "acc_v"], faa.ACC_V_SURVEYED)
-    # MIL rows too: their spec is the DoD pipeline's, not the AC's
+    # mil rows too: their spec is not the AC's
     assert out.loc[~surveyed, "acc_h"].isna().all()
     assert out.loc[~surveyed, "acc_v"].isna().all()
 
@@ -116,8 +116,8 @@ def test_schema_conformance():
     assert (norm["source"] == "faa").all()
     # transformability contract: resolvable horizontal CRS, a DECLARED
     # vertical per row from the source's known set (NAVD88 for the AC
-    # reading, EGM96 for DoD-pipeline MIL elevations; NA only for the
-    # unverified MIL remainder — the per-row guard re-targets the EGM96
+    # reading, EGM96 for the ownership-coded class's own sources; NA only
+    # for the unverified remainder — the per-row guard re-targets the EGM96
     # rows from their natives), non-null coord_epoch (plate-fixed reading)
     assert norm["horizontal_crs"].notna().all()
     assert set(norm["vertical_crs"].dropna().unique()) <= {"EPSG:5703",

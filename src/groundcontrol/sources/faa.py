@@ -32,22 +32,14 @@ geoid at survey time); NASR never publishes ellipsoid height (ARINC 424
 field 5.225 via the CIFP distribution is the only public channel — a
 possible future join, not implemented here).
 
-MILITARY-owned facilities (APT ownership MA/MN/MR/CG; 316 nationally in
-cycle 2026-08-06) are the exception to the NAVD88 reading: their records
-flow from the DoD survey pipeline, whose standard is WGS84/EGM96 MSL.
-Verified 2026-09-01 across 170 CONUS facilities against 3DEP (sandbox
-study, NASR 2026-08-06): per-facility median dz tracks the local
-EGM96-NAVD88 separation with slope +0.90 [+0.80, +0.97] (residual NMAD
-0.14 m; 0.34 m read as NAVD88), EGM96 beats EGM2008, Nellis reproduces
-(+0.49 observed / +0.48 predicted). The NASR elevation source splits the
-class: MILITARY / DOD (NGA) / AVN / NGS sources are EGM96 and DECLARE it
-(``EPSG:5773``, landed through the geoid and the ITRF2014 frame tie);
-3RD PARTY SURVEY sources read NAVD88; anything else stays NA
-(unverified). :func:`pos_class` still classes the whole facility
-``"mil"``: no published accuracy, own segment, outside the surveyed tier.
-Heliports remain a per-facility mixture in the study (Nellis's own pad
-reads NAVD88 while its runway ends read EGM96), so the class rule is the
-DoD standard and the residual is visible, never a silent correction.
+Facilities under ownership codes MA/MN/MR/CG publish elevations from a
+separate survey pipeline referenced to EGM96 MSL rather than NAVD88
+(verified against 3DEP across the cycle's facilities, 2026-09-01). For the
+elevation sources belonging to that pipeline the source declares EGM96
+(``EPSG:5773``) and lands it through the geoid and the ITRF2014 frame tie;
+3RD PARTY SURVEY records read NAVD88; other sources stay NA (unverified).
+:func:`pos_class` classes the whole facility ``"mil"``: no published
+accuracy, own context segment, outside the surveyed tier.
 """
 
 from __future__ import annotations
@@ -90,15 +82,13 @@ SURVEYED_SOURCES = frozenset(
     {"3RD PARTY SURVEY", "NGS", "ARPTS CONTRACTOR", "MILITARY"})
 
 
-#: APT ownership codes for service-branch facilities (MA air force,
-#: MN navy, MR army, CG coast guard)
+#: APT ownership codes whose facilities publish EGM96 MSL elevations
 MIL_OWNERSHIP = {"MA", "MN", "MR", "CG"}
-#: NASR elevation sources that flow from the DoD survey pipeline — EGM96
-#: MSL per the multi-facility study (2026-09-01; see the parse() note).
-DOD_ELEV_SRC = {"MILITARY", "DOD (NGA)", "AVN", "NGS"}
-MIL_EGM96_DATUM = ("EGM96 MSL (DoD standard; multi-facility verified "
-                   "2026-09-01)")
-#: native frame of a DoD-pipeline MIL row: ITRF2014 (2D) + EGM96 height
+#: NASR elevation sources published on EGM96 MSL at those facilities
+#: (verified 2026-09-01; see the parse() note).
+EGM96_ELEV_SRC = {"MILITARY", "DOD (NGA)", "AVN", "NGS"}
+MIL_EGM96_DATUM = "EGM96 MSL (declared per elevation source; verified 2026-09-01)"
+#: native frame of an EGM96-declared row: ITRF2014 (2D) + EGM96 height
 MIL_NATIVE_CRS = "EPSG:9000+5773"
 
 
@@ -138,10 +128,9 @@ def _tie_horizontal_itrf2014(lon, lat, height, aoi_bounds_4326=None):
 def pos_class(src, ownership=None) -> str:
     """Provenance class for a NASR position source string.
 
-    A row at a service-branch-owned facility classes ``"mil"`` regardless
-    of its position source: those elevations flow through the DoD survey
-    pipeline, whose standard vertical reference is EGM96 MSL, not NAVD88
-    (multi-facility verified 2026-09-01; module docstring). The class
+    A row at a facility under :data:`MIL_OWNERSHIP` classes ``"mil"``
+    regardless of its position source: those facilities publish
+    elevations on EGM96 MSL, not NAVD88 (module docstring). The class
     keeps them out of the surveyed accuracy tier (no published accuracy)
     and visible as their own segment; the datum itself is declared per
     elevation source in :func:`parse`."""
@@ -209,7 +198,7 @@ _APT_TYPE = slice(14, 27)      # 00015 L13 facility type (AIRPORT/HELIPORT/..)
 _APT_LOCID = slice(27, 31)     # 00028 L4  location identifier
 _APT_NAME = slice(133, 183)    # 00134 L50 official facility name
 _APT_OWNER = slice(183, 185)   # 00184 L2  ownership: PU/PR public/private,
-                               #           MA/MN/MR/CG military branches
+                               #           MA/MN/MR/CG see MIL_OWNERSHIP
 _APT_USE = slice(185, 187)     # 00186 L2  facility use: PU/PR
 _RWY_SITE = slice(3, 14)       # 00004 L11 site number (joins APT record)
 _RWY_ID = slice(16, 23)        # 00017 L7  runway identification '01L/19R'
@@ -308,7 +297,7 @@ def _rows(lines) -> list[dict]:
                         "pos_src": rec[_shift(_DT_POS_SRC, soff)].strip(),
                         "pos_src_date": rec[_shift(_DT_POS_DATE, soff)].strip(),
                         # same vocabulary as the end's elevation source;
-                        # without it every MIL threshold fell to NA
+                        # without it every threshold of that class fell to NA
                         # (nationwide count, 2026-09-01)
                         "elev_src": rec[_shift(_DT_ELEV_SRC, soff)].strip(),
                         "dt_len_ft": rec[_shift(_DT_LEN, off)].strip(),
@@ -349,21 +338,16 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
                          errors="coerce", utc=True) \
         if n else pd.Series([], dtype="datetime64[ns, UTC]")
     extras = [c for c in df.columns if c not in _CONSUMED]
-    # MIL facilities (owner 2026-09-01, multi-facility study in the
-    # sandbox, NASR 2026-08-06 vs 3DEP/EPQS): elevations from the DoD
-    # pipeline (elev_src MILITARY / DOD (NGA) / AVN / NGS) are EGM96 MSL,
-    # not NAVD88 — 170 facilities track the local EGM96-NAVD88
-    # separation with Theil-Sen slope +0.90 [+0.80, +0.97] (residual
-    # NMAD 0.14 m vs 0.34 m read as NAVD88; Nellis +0.49 observed /
-    # +0.48 predicted). Those rows DECLARE EGM96 (EPSG:5773) and land
-    # through the geoid + the ITRF2014 frame tie (natives below).
-    # elev_src 3RD PARTY SURVEY at a MIL facility reads NAVD88 (17
-    # facilities, residual 0.09 m). Any other source (ADO, blank, ...)
-    # stays NA: unverified, never guessed (NA composes fail-loud
+    # facilities under MIL_OWNERSHIP publish EGM96 MSL elevations for the
+    # sources in EGM96_ELEV_SRC (verified against 3DEP across the cycle's
+    # facilities, 2026-09-01): those rows DECLARE EGM96 (EPSG:5773) and
+    # land through the geoid + the ITRF2014 frame tie (natives below).
+    # 3RD PARTY SURVEY records read NAVD88. Any other source (ADO, blank,
+    # ...) stays NA: unverified, never guessed (NA composes fail-loud
     # downstream; the family figure's EGM96 diagnostic covers them).
     height_datum = pd.Series(["NAVD88"] * n, dtype="string")
     vertical_crs = pd.Series(["EPSG:5703"] * n, dtype="string")
-    # COPIES: to_numpy() can return a view of the column, and the MIL tie
+    # COPIES: to_numpy() can return a view of the column, and the EGM96 tie
     # below writes into these — a view would move the published geometry
     # too (caught by the round-trip test, 2026-09-01)
     native_x = np.array(df["lon"], dtype="float64") if n else np.array([])
@@ -373,16 +357,16 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
         esrc = (df["elev_src"].astype("string").str.strip().str.upper()
                 if "elev_src" in df.columns
                 else pd.Series([pd.NA] * n, dtype="string"))
-        dod = mil & esrc.isin(DOD_ELEV_SRC).fillna(False).to_numpy(dtype=bool)
+        egm = mil & esrc.isin(EGM96_ELEV_SRC).fillna(False).to_numpy(dtype=bool)
         third = mil & esrc.eq("3RD PARTY SURVEY").fillna(False).to_numpy(
             dtype=bool)
-        other = mil & ~dod & ~third
-        height_datum[dod] = MIL_EGM96_DATUM
-        vertical_crs[dod] = "EPSG:5773"
-        height_datum[other] = "MSL (EGM96 per DoD standard; unverified)"
+        other = mil & ~egm & ~third
+        height_datum[egm] = MIL_EGM96_DATUM
+        vertical_crs[egm] = "EPSG:5773"
+        height_datum[other] = "MSL (EGM96 assumed; unverified)"
         vertical_crs[other] = pd.NA
         # (third-party surveys keep the NAVD88 defaults)
-        if dod.any():
+        if egm.any():
             # EGM96 is a WGS84-ellipsoid geoid: NAD83(2011) + EGM96 chains
             # through PROJ's null NAD83(2011)->WGS 84 step and lands 0.9 m
             # low (probed 2026-09-01). The natives therefore carry the
@@ -392,24 +376,23 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
             # applies geoid + frame tie exactly (h to the mm of the
             # explicit EGM96 -> WGS84 -> ITRF2014 -> NAD83(2011) chain).
             xi, yi = _tie_horizontal_itrf2014(
-                native_x[dod], native_y[dod],
+                native_x[egm], native_y[egm],
                 pd.to_numeric(df["height"], errors="coerce").to_numpy(
-                    "float64")[dod],
+                    "float64")[egm],
                 raw.get("aoi_bounds_4326"))
             tied = np.isfinite(xi) & np.isfinite(yi)
-            idx = np.flatnonzero(dod)
+            idx = np.flatnonzero(egm)
             native_x[idx[tied]], native_y[idx[tied]] = xi[tied], yi[tied]
             native_crs[idx[tied]] = MIL_NATIVE_CRS
             if (~tied).any():
                 # no frame tie here (outside the NAD83(2011)-ITRF2014
                 # operation's area or a grid): the datum is still EGM96
                 # but the row cannot be landed honestly -> NA, unverified
-                # (the same fail-loud NA as the non-DoD sources)
+                # (the same fail-loud NA as the other sources)
                 vertical_crs[idx[~tied]] = pd.NA
-                height_datum[idx[~tied]] = ("MSL (EGM96 per DoD standard; "
-                                            "frame tie unavailable here — "
-                                            "unverified)")
-                logger.warning("faa: %d DoD-pipeline MIL row(s) outside "
+                height_datum[idx[~tied]] = ("MSL (EGM96 assumed; frame tie "
+                                            "unavailable here — unverified)")
+                logger.warning("faa: %d EGM96-declared row(s) outside "
                                "the ITRF2014 frame-tie coverage left with "
                                "vertical_crs NA", int((~tied).sum()))
     out = gpd.GeoDataFrame(

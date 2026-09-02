@@ -141,7 +141,7 @@ def test_summarize_dz_segments_nodata_and_applies(tmp_path):
         "3DEP NVA", "3DEP VVA", "GNSS continuous", "GNSS semi-continuous",
         "GNSS campaign (OPUS)", "GNSS campaign (NGL)",
         "GNSS campaign (other)", "GNSS (pre-split)", "NGS monument",
-        "FAA runway surveyed", "FAA MIL field", "FAA other",
+        "FAA runway surveyed", "FAA (EGM96 records)", "FAA other",
         "OTHER (unsegmented)"}
 
 
@@ -558,14 +558,14 @@ def test_faa_segments_route_by_pos_class(tmp_path):
     pts["source"] = "faa"
     pts["point_type"] = ["runway_end", "runway_end", "helipad", "displaced_threshold"]
     # the helipad is SURVEYED-class on paper — it must still route to
-    # context (the CG +0.33 m military-helipad finding)
+    # context (the CG +0.33 m helipad finding)
     pts["raw"] = [json.dumps({"pos_class": c})
                   for c in ("surveyed", "surveyed", "surveyed", "surveyed")]
     pts["h_ell"] = pts["height"]
     sampled = sample_products(pts, {"DSM": dsm})
     stats = summarize_dz(sampled, products=["DSM"]).set_index("segment")
     # survey-grade = PAINTED runway features only: the surveyed HELIPAD is
-    # context (CG 2026-08-30: 8 MILITARY-source helipads measured +0.33 m —
+    # context (CG 2026-08-30: 8 helipads from one elevation source measured +0.33 m —
     # a different accuracy class, some hand-held GNSS per the owner)
     assert stats.loc["FAA runway surveyed", "n"] == 3   # 2 ends + 1 displaced
     assert bool(stats.loc["FAA runway surveyed", "applies"])

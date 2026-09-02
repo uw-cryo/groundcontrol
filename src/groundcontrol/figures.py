@@ -1667,7 +1667,7 @@ def _label_medians(ax, meds, span):
     x0, x1 = ax.get_xlim()
     # a median beyond the shared x-limits has no line to label — its value
     # lives in the stats table; annotating it floated text off-axes
-    # (owner 2026-08-31: FAA military +0.45 vs a +/-0.25 m histogram)
+    # (owner 2026-08-31: an FAA context row at +0.45 vs a +/-0.25 m histogram)
     meds = [m for m in meds if x0 <= m[0] <= x1]
 
     def _side(x):
@@ -2589,7 +2589,7 @@ _SEG_STYLE = {
     "GNSS (pre-split)": "gnss",
     "NGS monument": "monument",
     "FAA runway surveyed": "runway_end",
-    "FAA MIL field": "#8B4E00",
+    "FAA (EGM96 records)": "#8B4E00",
     "FAA other": "#8C6BB1",
     "OTHER (unsegmented)": "gnss",  # never rendered (context, non-GNSS
                                     # label) — placeholder for the sync test
@@ -2778,10 +2778,10 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
                 # renders — context-only ones (applies False for this
                 # product) are dagger-marked below rather than silently
                 # dropped. A string whitelist could not track the growing
-                # SEGMENTS taxonomy: 'FAA military field'/'FAA other'
+                # SEGMENTS taxonomy: the two context-only FAA segments
                 # were plotted on the map and counted in the title's n but
-                # got no histogram and no table row, hiding the military
-                # +0.49 m story this branch was built for (H10b). Empty
+                # got no histogram and no table row, hiding the +0.49 m
+                # datum story this branch was built for (H10b). Empty
                 # segments still drop out below.
                 (ax_s, [lbl for lbl in seg_defs if lbl != "NGS monument"],
                  vendor_lim),
@@ -3007,7 +3007,7 @@ DZ_FAMILIES = {
          lambda d: (d["source"] == "faa")
          & (_raw_field(d["raw"], "pos_class") == "estimated"),
          "#8C6BB1", "v"),
-        ("FAA MIL",
+        ("FAA (EGM96 records)",
          lambda d: (d["source"] == "faa")
          & _raw_field(d["raw"], "pos_class").isin(("mil", "military")),
          "#8B4E00", "^"),
@@ -3019,8 +3019,8 @@ def _egm96_navd88_delta(lon, lat, h):
     """Local (EGM96-as-truth minus NAVD88-as-assumed) difference in
     NAD83(2011) ellipsoidal height for a published orthometric H at
     lon/lat (deg) — the expected dz signature when a NASR elevation is
-    really EGM96 MSL (DoD standard) but was read as NAVD88 (owner
-    2026-08-31, Nellis: +0.479 m predicted, +0.45 observed). WGS84 is
+    really EGM96 MSL but was read as NAVD88 (owner 2026-08-31, reference
+    site: +0.479 m predicted, +0.45 observed). WGS84 is
     taken as ITRF2014 (cm-level for this diagnostic). Returns NaN when
     the PROJ grids are unavailable — diagnostic only, NEVER a correction.
     """
@@ -3031,7 +3031,7 @@ def _egm96_navd88_delta(lon, lat, h):
         # mid-ocean) PROJ otherwise silently substitutes the ballpark
         # vertical transformation, ha == h unchanged, and the "separation"
         # collapses to the bare EGM96 undulation — finite, plausible, and
-        # fiction (probed: Hickam AFB +14.28 m, all fabricated)
+        # fiction (probed: a Hawaii airfield, +14.28 m, all fabricated)
         _, _, ha = Transformer.from_crs(
             "EPSG:6318+5703", "EPSG:6319", always_xy=True,
             allow_ballpark=False).transform(lon, lat, h)
@@ -3149,19 +3149,17 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                     .isna().to_numpy(dtype=bool) \
                     if "vertical_crs" in sampled.columns \
                     else _mil.to_numpy(dtype=bool)
-                # DoD-pipeline rows now DECLARE EGM96 and land through it
-                # (faa.py, owner 2026-09-01); the separation diagnostic
-                # below applies only to rows still carrying an NA datum
+                # EGM96-declared rows land through that datum (faa.py,
+                # owner 2026-09-01); the separation diagnostic below
+                # applies only to rows still carrying an NA datum
                 mil_mask = _na if _na.any() else None
-                fam_note = ("MIL (service-branch-owned) facility: DoD-"
-                            "pipeline elevations are EGM96 MSL, landed "
-                            "through the EGM96 geoid + ITRF2014 frame tie; "
-                            "no published accuracy, own context class"
+                fam_note = ("Elevations published on EGM96 MSL, landed "
+                            "through the geoid and frame tie; no published "
+                            "accuracy, own context class"
                             if not _na.any() else
-                            "MIL (service-branch-owned) facility: "
-                            "elevations may be EGM96 MSL (DoD standard), "
-                            "not NAVD88 — vertical datum unverified for "
-                            "rows with a non-DoD elevation source")
+                            "Elevations may be on EGM96 MSL rather than "
+                            "NAVD88 — datum unverified for rows whose "
+                            "elevation source is not the pipeline's own")
         for prod in products:
             col = f"dh_{prod}_before"
             vva_ctx = False        # VVA drawn on a SURFACE product (dagger)
@@ -3359,7 +3357,7 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                 note = fam_note
                 if mil_mask is not None:
                     # informed-decision aid (owner 2026-08-31): does the
-                    # military median MATCH the local EGM96-NAVD88
+                    # segment median MATCH the local EGM96-NAVD88
                     # separation? Stated, never silently corrected.
                     mv = pd.to_numeric(sampled.loc[mil_mask, col],
                                        errors="coerce").to_numpy("float64")
@@ -3380,14 +3378,14 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                                        if abs(med - dlt) < 0.15 else
                                        "NOT explained by the datum "
                                        "difference")
-                            note += (f". Military median {med:+.2f} m "
+                            note += (f". Segment median {med:+.2f} m "
                                      f"(n={len(mv)}) vs local EGM96-NAVD88 "
                                      f"separation {dlt:+.2f} m: {verdict}")
                         else:
                             # NaN = no non-ballpark chain (outside NAVD88
                             # coverage) — say so rather than dropping the
                             # clause silently
-                            note += (f". Military median {med:+.2f} m "
+                            note += (f". Segment median {med:+.2f} m "
                                      f"(n={len(mv)}); local EGM96-NAVD88 "
                                      "separation unavailable here "
                                      "(outside NAVD88 grid coverage)")

@@ -99,7 +99,12 @@ provenance. `family_dz_figures` family `faa` — the surveyed class (3RD PARTY
 SURVEY / NGS / MILITARY / ARPTS CONTRACTOR, AC 150/5300-18C survey-grade)
 against the 3DEP DSM sits at −0.01 m median; the estimated class (OWNER /
 FAA-EST IMAGERY / ADO) is what its name says, and stays visible as context
-rather than being filtered away upstream. The stated 3D transform budget for
+rather than being filtered away upstream. Service-branch-owned facilities
+(NASR ownership MA/MN/MR/CG) are a third class: their DoD-pipeline
+elevations are EGM96 MSL, not NAVD88 (verified across 170 CONUS facilities
+against 3DEP: slope +0.90 on the local EGM96−NAVD88 separation), so they
+declare EGM96 and land through the geoid and the ITRF2014 frame tie; with
+no published accuracy they stay context. The stated 3D transform budget for
 the NAD83(2011)+NAVD88 → ellipsoidal-UTM landing is printed on the histogram.
 
 ![FAA runway control dz](img/casagrande_dz_faa_DSM.png)
@@ -120,6 +125,21 @@ checkable against the pavement by eye; surveyed / estimated classes never
 share a page. Imagery panels: (c) Esri World Imagery.
 
 ![FAA runway context sheet](img/casagrande_faa_runway_gallery_120m.jpg)
+
+## 7b. Residual review sheets: largest and smallest dz per control subset
+
+Written on every `groundcontrol-assess` run (capped, so a bounded page
+count): for each control subset and product, the six largest and the six
+smallest |dz| points as imagery | lidar intensity | DSM relief | DTM relief
+windows at the two standard tiers, each row labeled with its dz. The
+"largest" page is where a biased control point (a monument on a mast or
+roof, a canopy checkpoint, a moved pad) separates from a product error; the
+"smallest" page, shown here for the 3DEP NVA checkpoints against the DSM,
+is the sanity check that a tight residual is a real match on open, flat
+ground and not a coincidence. `--basemap none` renders them without tiles.
+Imagery panels: (c) Esri World Imagery.
+
+![Residual review sheet: 3DEP NVA smallest dz on the DSM](img/casagrande_3dep_nva_dz_DSM_smallest.jpg)
 
 ## 8. AOI-only, anywhere: Nepal GNSS with no DEM at all
 

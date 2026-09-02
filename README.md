@@ -124,7 +124,9 @@ By default `groundcontrol-fetch` also writes the standard control **figure set**
 control is present — and fetches web basemap tiles (Esri World Imagery) to underlay them.
 For scripted, batch, or offline runs: `--no-figures` writes only the control file +
 provenance, and `--basemap none` keeps the figures but skips every tile fetch.
-`--context-sheets` opts into the per-point contact sheets (the slow figure component).
+`--context-sheets` opts into the full per-point contact sheets (every point; the slow figure
+component). `groundcontrol-assess` always writes the capped residual review sheets (6 largest +
+6 smallest dz per control subset and product), which `--basemap none` renders without tiles.
 Shared with `groundcontrol-assess`: `--refresh` (force re-download of every shared-cache
 file the run touches; caches otherwise refresh on their own staleness windows), `--quiet`
 (suppress INFO progress logging), and `--valid-footprint` (a raster `--aoi` uses the
@@ -178,6 +180,7 @@ next to the input), prefixed by the site name; `groundcontrol-fetch` derives bot
 | `<site>_dz_stats.csv` | one row per product × control segment (3DEP NVA/VVA, GNSS occupation classes, NGS monuments, ...): `n`, `n_valid`, `n_out`, robust `median_m`/`nmad_m`, parametric `mean_m`/`std_m`/`rmse_m`/`le90_m`/`le95_m` after a 3·NMAD gate, `xform_acc_m`, and `applies` (whether that segment validates that product class) |
 | `<site>_validation_dz_<NAME>.png` | per product: dz map over the hillshade + dual-track histograms for the survey-grade segments and the NGS monuments ([example](docs/gallery.md#2b-the-clis-own-output-bring-your-own-dem)) |
 | `<site>_<subset>_gallery_<tier>[_pN].png` | per-point context contact sheets, broken out by what came back — `cors`, `opus`, `gnss_other`, `faa_runway`, `3dep_nva`, `3dep_vva` — at the two standard tiers (120 m context, 30 m native-pixel). Panels adapt to the available layers: RGB imagery (your `--rgb` ortho and/or `--basemap` web tiles, Esri by default, credited on the sheet; `--basemap none` for offline) \| `--intensity` grayscale when given \| shaded relief per product ([example](docs/gallery.md#7-per-point-context-contact-sheets)). `--context-sheets` writes them for either CLI (opt-in — the slow figure component; an AOI-only fetch gets RGB panels only, no DEM required) |
+| `<site>_<subset>_dz_<NAME>_largest.jpg` / `_smallest.jpg` | per product and control subset (`cors`, `opus`, `gnss_other`, `faa_runway`, `3dep_nva`, `3dep_vva`, `ngs_monument`, `ngs_best`): the 6 largest and 6 smallest \|dz\| points as imagery \| intensity \| relief windows at the two tiers, labeled with dz — the review product that separates a biased control point (mast, roof, canopy, moved pad) from a product error. Always written (bounded page count); `--basemap none` for offline |
 
 The CLI also prints the per-source row counts, the selected transform with its stated
 accuracy, and the stats table to stderr.
@@ -202,6 +205,8 @@ What the standard outputs look like on a real site: **[docs/gallery.md](docs/gal
 ![DTM validation: every control segment on one map](docs/img/casagrande_validation_dz_DTM.png)
 
 ![MIDAS GNSS velocities around the site](docs/img/casagrande_midas_velocity.jpg)
+
+![Residual review sheet: the six tightest 3DEP NVA checkpoints on the DSM](docs/img/casagrande_3dep_nva_dz_DSM_smallest.jpg)
 
 ## Not yet implemented
 

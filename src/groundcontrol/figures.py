@@ -2863,6 +2863,45 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         if flagged:
             txt_lines.extend((line_, _MUT, False)
                              for line_ in _caveat_lines(txt_lines))
+        # the MIL row sits ~0.3-0.5 m off on an otherwise tight sheet
+        # (owner 2026-09-01, Casa Grande hero): say WHY on the figure —
+        # the multi-facility study (sandbox 20260901) pins service-branch
+        # runway elevations to EGM96 MSL, but heliports are a per-facility
+        # mixture, so the class is stated, never corrected here
+        _mil_vals = next((vals for lab, vals, _c in table_entries
+                          if lab.startswith("FAA MIL field") and len(vals)),
+                         None)
+        if _mil_vals is not None and "raw" in sampled.columns:
+            _mm = pd.Series(_raw_field(sampled["raw"], "pos_class")
+                            .isin(("mil", "military"))).fillna(False)
+            _mm = _mm.to_numpy(dtype=bool) & np.isfinite(
+                pd.to_numeric(sampled[col], errors="coerce").to_numpy("float64"))
+            if _mm.any():
+                import geopandas as _gpd
+                _mp = sampled.loc[_mm]
+                _ll = _gpd.GeoSeries([_mp.geometry.union_all().centroid],
+                                     crs=sampled.crs).to_crs(4326)
+                _dlt = _egm96_navd88_delta(
+                    float(_ll.x.iloc[0]), float(_ll.y.iloc[0]),
+                    float(np.nanmedian(pd.to_numeric(_mp["height"],
+                                                     errors="coerce"))))
+                _med = float(np.median(_mil_vals))
+                if np.isfinite(_dlt):
+                    _verdict = ("consistent" if abs(_med - _dlt) < 0.15
+                                else "NOT explained by the datum")
+                    _note = (f"† FAA MIL field: service-branch elevations "
+                             f"are EGM96 MSL (DoD standard) read here as "
+                             f"NAVD88 — median {_med:+.2f} m vs local "
+                             f"EGM96−NAVD88 separation {_dlt:+.2f} m: "
+                             f"{_verdict}; heliport datums vary by facility, "
+                             f"so stated, not corrected")
+                else:
+                    _note = (f"† FAA MIL field: service-branch elevations "
+                             f"may be EGM96 MSL (DoD standard); median "
+                             f"{_med:+.2f} m, local separation unavailable "
+                             f"(outside NAVD88 grid coverage)")
+                txt_lines.extend((line_, _MUT, False)
+                                 for line_ in _caveat_lines(txt_lines, _note))
         if "xform_acc_m" in sampled.columns:
             _xa = sampled["xform_acc_m"].to_numpy(dtype="float64")
             if np.isfinite(_xa).any():

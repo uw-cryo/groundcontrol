@@ -101,10 +101,10 @@ SEGMENTS = {
 
 def _faa_egm96(d):
     """Rows whose DECLARED vertical is EGM96 height (EPSG:5773) — the
-    FAA source's second datum; NA-safe (an undeclared datum is False)."""
-    if "vertical_crs" not in d.columns:
-        return pd.Series(False, index=d.index)
-    return d["vertical_crs"].astype("string").eq("EPSG:5773").fillna(False)
+    FAA source's second datum; NA-safe (an undeclared datum is False).
+    The one reader lives in figures (``_egm96_rows``); this delegates."""
+    from groundcontrol.figures import _egm96_rows
+    return _egm96_rows(d)
 
 
 def _faa_pos_class(d):
@@ -419,7 +419,19 @@ def transform_control(control, target_crs, *, target_epoch=2010.0,
                 E[p_use], N[p_use], h_ell[p_use] = E2, N2, h2
                 a2 = t2.accuracy if (t2.accuracy is not None
                                      and t2.accuracy > 0) else float("nan")
-                acc_row[p_use] = a2
+                # the native chain's OWN stated budget (a parse-time geoid +
+                # frame-tie chain records it as raw["native_chain_acc_m"])
+                # composes with this leg: a pure conversion (accuracy 0 ->
+                # NaN) must not erase a known 1 m budget (round-7 audit)
+                nat_acc = np.full(len(p_use), np.nan)
+                if "raw" in sub.columns:
+                    from groundcontrol.figures import _raw_field
+                    nat_acc = pd.to_numeric(
+                        _raw_field(sub["raw"], "native_chain_acc_m"),
+                        errors="coerce").to_numpy("float64")[usable]
+                legs = np.vstack([np.full(len(p_use), a2), nat_acc])
+                acc_row[p_use] = np.where(np.isnan(legs).all(axis=0), np.nan,
+                                          np.nansum(legs, axis=0))
                 n_vert_native += int(usable.sum())
                 logger.info("transform_control: %d row(s) re-targeted from "
                             "native %s (chain: %s)", int(usable.sum()), ncrs,

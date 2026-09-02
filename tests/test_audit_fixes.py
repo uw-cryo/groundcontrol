@@ -426,7 +426,7 @@ def test_faa_mil_rows_declare_egm96_never_navd88():
         lines = f.readlines()
     out = faa.parse({"cycle": "2026-08-06",
                      "aoi_bounds_4326": (-180.0, -90.0, 180.0, 90.0),
-                     "lines": lines})
+                     "lines": lines}, ownership="all")
     raw = [json.loads(r) for r in out["raw"]]
     mil = np.array([r.get("pos_class") == "mil" for r in raw])
     egm = mil & np.array([str(r.get("elev_src", "")).strip().upper()
@@ -453,6 +453,25 @@ def test_faa_mil_rows_declare_egm96_never_navd88():
         assert out.loc[na, "native_crs"].isna().all()
     assert out.loc[~mil, "vertical_crs"].eq("EPSG:5703").all()
     assert out.loc[~mil, "native_crs"].eq("EPSG:6349").all()
+    # the fixture's ownership-coded rows all declare; rewrite one end's
+    # elevation source to an unverified value (ADO) and the row must land
+    # nowhere: NA vertical, NA native_crs AND a NaN native triplet (PR #29
+    # review: usable-looking natives under an NA native_crs)
+    src_sl = faa._END_ELEV_SRC
+    lsv = [i for i, ln in enumerate(lines)
+           if ln.startswith("RWY") and ln[3:14].strip() == "13081.*A"][0]
+    ln = lines[lsv]
+    lines2 = list(lines)
+    lines2[lsv] = ln[:src_sl.start] + "ADO".ljust(16) + ln[src_sl.stop:]
+    out2 = faa.parse({"cycle": "2026-08-06",
+                      "aoi_bounds_4326": (-180.0, -90.0, 180.0, 90.0),
+                      "lines": lines2}, ownership="all")
+    na2 = out2["native_crs"].isna()
+    assert na2.sum() == 1 and out2.loc[na2, "id"].iloc[0].startswith("LSV_")
+    assert out2.loc[na2, "vertical_crs"].isna().all()
+    assert out2.loc[na2, ["native_x", "native_y", "native_h"]].isna().all().all()
+    assert out2.loc[na2, "height"].notna().all()      # the published value stays
+    assert out2.loc[~na2, "native_x"].notna().all()
 
 
 def test_faa_mil_egm96_lands_through_geoid_and_frame_tie():
@@ -473,7 +492,7 @@ def test_faa_mil_egm96_lands_through_geoid_and_frame_tie():
         lines = f.readlines()
     out = faa.parse({"cycle": "2026-08-06",
                      "aoi_bounds_4326": (-116.5, 35.5, -114.5, 36.8),
-                     "lines": lines})
+                     "lines": lines}, ownership="all")
     raw = [json.loads(r) for r in out["raw"]]
     egm = np.array([r.get("pos_class") == "mil" and str(r.get("elev_src", ""))
                     .strip().upper() in faa.EGM96_ELEV_SRC for r in raw])
@@ -495,6 +514,44 @@ def test_faa_mil_egm96_lands_through_geoid_and_frame_tie():
                                     allow_ballpark=False).transform(lon, lat)[:2]
         assert abs(float(landed.geometry.x.iloc[i]) - E) < 0.002
         assert abs(float(landed.geometry.y.iloc[i]) - N) < 0.002
+    # the stated budget is the CHAIN's (geoid 1.0 m + tie), not the NaN of
+    # the pure NAD83(2011) -> target conversion (round-7 MED-1)
+    xa = landed.loc[egm, "xform_acc_m"].to_numpy(dtype="float64")
+    assert np.isfinite(xa).all() and (xa >= 1.0).all()
+    civil = landed.loc[~egm & landed["vertical_crs"].eq("EPSG:5703").to_numpy(),
+                       "xform_acc_m"].to_numpy(dtype="float64")
+    assert np.isfinite(civil).all() and (civil < 0.1).all()
+
+
+def test_faa_egm96_blank_elevation_is_not_a_coverage_failure(caplog):
+    """An EGM96-declared row with a BLANK published elevation keeps its
+    declared datum and simply has nothing to land (NA natives, no
+    'frame tie unavailable' relabel, no coverage WARNING) — round-7 LOW-2."""
+    import logging
+    from pathlib import Path
+
+    from groundcontrol.sources import faa
+    lines = (Path(__file__).parent / "data" / "faa_apt_sample.txt") \
+        .read_text(encoding="latin-1").splitlines(keepends=True)
+    lsv = [i for i, ln in enumerate(lines)
+           if ln.startswith("RWY") and ln[3:14].strip() == "13081.*A"][0]
+    sl = faa._END_ELEV
+    ln = lines[lsv]
+    lines[lsv] = ln[:sl.start] + " " * (sl.stop - sl.start) + ln[sl.stop:]
+    with caplog.at_level(logging.WARNING, logger="groundcontrol.sources.faa"):
+        out = faa.parse({"cycle": "2026-08-06",
+                         "aoi_bounds_4326": (-180.0, -90.0, 180.0, 90.0),
+                         "lines": lines}, ownership="all")
+    blank = out["height"].isna() & out["id"].str.startswith("LSV_")
+    assert blank.sum() == 1
+    assert out.loc[blank, "vertical_crs"].eq("EPSG:5773").all()
+    assert out.loc[blank, "native_crs"].isna().all()
+    assert out.loc[blank, ["native_x", "native_y", "native_h"]].isna().all().all()
+    assert not out.loc[blank, "height_datum"].str.contains("unavailable").any()
+    assert "coverage" not in caplog.text
+    # the other class rows still land through the chain
+    other = out["id"].str.startswith("LSV_") & ~blank
+    assert out.loc[other, "native_crs"].eq("EPSG:6319").all()
 
 
 def test_faa_egm96_chain_unavailable_degrades_to_na(monkeypatch):
@@ -515,10 +572,12 @@ def test_faa_egm96_chain_unavailable_degrades_to_na(monkeypatch):
         lines = f.readlines()
     out = faa.parse({"cycle": "2026-08-06",
                      "aoi_bounds_4326": (-180.0, -90.0, 180.0, 90.0),
-                     "lines": lines})
+                     "lines": lines}, ownership="all")
     assert out["vertical_crs"].eq("EPSG:5773").sum() == 0
     assert out["height_datum"].str.contains("frame tie unavailable").any()
-    assert out.loc[out["vertical_crs"].isna(), "native_crs"].isna().all()
+    na = out["vertical_crs"].isna()
+    assert na.any() and out.loc[na, "native_crs"].isna().all()
+    assert out.loc[na, ["native_x", "native_y", "native_h"]].isna().all().all()
     assert out["vertical_crs"].eq("EPSG:5703").any()      # civil rows untouched
 
 

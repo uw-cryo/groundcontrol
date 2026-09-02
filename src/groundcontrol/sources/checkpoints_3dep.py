@@ -79,7 +79,10 @@ def cache_write(local: Path, content: str | bytes) -> None:
     try:
         if local.exists():  # a refresh keeps the existing file's mode
             os.fchmod(fd, stat.S_IMODE(local.stat().st_mode))
-        f = os.fdopen(fd, "wb" if isinstance(content, bytes) else "w")
+        # text goes out as UTF-8 explicitly (the fdopen default is the
+        # platform locale; Path.write_text, which this replaced, was UTF-8)
+        f = (os.fdopen(fd, "wb") if isinstance(content, bytes)
+             else os.fdopen(fd, "w", encoding="utf-8"))
         with f:
             f.write(content)
         os.replace(tmp, local)

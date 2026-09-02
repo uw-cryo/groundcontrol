@@ -138,11 +138,18 @@ def _aoi_bounds_and_poly(aoi):
 
 
 def fetch_control(aoi, sources=("3dep", "ngs", "opus", "ngl", "faa"),
-                  target_crs=None, target_epoch=None, landing_crs=None):
+                  target_crs=None, target_epoch=None, landing_crs=None,
+                  source_options=None):
     """Fetch control points for an AOI from the requested sources.
 
     Returns ``(GeoDataFrame, status)``. See the dispatcher contract in the
     module docstring; per-source failures degrade gracefully into ``status``.
+
+    ``source_options`` maps a source name to keyword arguments for its
+    ``parse`` (e.g. ``{"faa": {"ownership": "all"}}``); a name that is not
+    a provider, or not in ``sources``, raises (a typo must not become a
+    silently ignored option), and an option the source does not accept
+    degrades that source into ``status`` like any other per-source failure.
 
     ``landing_crs`` overrides the interim HORIZONTAL landing frame (default
     ``EPSG:6318``, the CONUS contract). Required for non-CONUS AOIs: the
@@ -169,6 +176,15 @@ def fetch_control(aoi, sources=("3dep", "ngs", "opus", "ngl", "faa"),
     landing = _INTERIM_LANDING_CRS
     if landing_crs is not None:
         landing = validate_landing_crs(landing_crs)
+    source_options = dict(source_options or {})
+    unknown_opt = sorted(set(source_options) - set(PROVIDERS))
+    if unknown_opt:
+        raise ValueError(f"source_options for unknown source(s) {unknown_opt}; "
+                         f"providers: {sorted(PROVIDERS)}")
+    unrequested = sorted(set(source_options) - set(sources))
+    if unrequested:   # never a silent no-op (round-7 audit)
+        raise ValueError(f"source_options for source(s) {unrequested} that are "
+                         f"not in sources {list(sources)}")
     bounds, poly = _aoi_bounds_and_poly(aoi)
     frames: list[gpd.GeoDataFrame] = []
     status: dict[str, dict] = {}
@@ -208,7 +224,7 @@ def fetch_control(aoi, sources=("3dep", "ngs", "opus", "ngl", "faa"),
         try:
             if name in fetch_err:
                 raise fetch_err[name]
-            gdf = parse(raw[name])
+            gdf = parse(raw[name], **source_options.get(name, {}))
             # per-row quarantine report (e.g. #21 unmapped NGS realizations)
             # — read BEFORE landing/normalize (pandas ops may drop .attrs)
             skipped = dict(getattr(gdf, "attrs", {}).get("skipped") or {})

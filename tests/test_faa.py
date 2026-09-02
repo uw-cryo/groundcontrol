@@ -5,8 +5,9 @@ Fixture ``faa_apt_sample.txt`` holds 17 real fixed-width records (5 APT +
 (North Las Vegas) with surveyed ends and displaced thresholds, NV53 (a
 hospital heliport, FAA-EST IMAGERY provenance), 5AZ3 (Pegasus Airpark
 AZ, estimated-provenance GA field with displaced thresholds), and LSV
-(ownership MA — the ownership-coded provenance class). ``fetch()``
-is ``@network``; parsing is offline.
+(ownership MA — the ownership-coded provenance class, outside the default
+ownership filter: ``parse(..., ownership="all")`` widens to it).
+``fetch()`` is ``@network``; parsing is offline.
 """
 
 import json
@@ -36,8 +37,16 @@ def _raw(bounds=WORLD):
 
 
 def test_parse_counts_and_types():
+    # default ownership filter (PU/PR): the four civil facilities
     out = faa.parse(_raw())
-    assert len(out) == 31
+    assert len(out) == 26
+    assert (out["point_type"] == "runway_end").sum() == 16
+    assert (out["point_type"] == "displaced_threshold").sum() == 9
+    assert sorted(out.loc[out["point_type"] == "helipad", "id"]) == ["NV53_H1"]
+    assert out.attrs["skipped"] == {"n": 5, "reasons": {"ownership filter": 5}}
+    # ownership="all": every facility, LSV's four ends + base pad included
+    out = faa.parse(_raw(), ownership="all")
+    assert len(out) == 31 and "skipped" not in out.attrs
     assert (out["point_type"] == "runway_end").sum() == 20
     assert (out["point_type"] == "displaced_threshold").sum() == 9
     # NV53 H1 (hospital) and LSV H1 (base pad): pad points, not runway ends
@@ -66,8 +75,25 @@ def test_parse_values_las_01l():
     assert r["horizontal_crs"] == "EPSG:6318"
 
 
+def test_ownership_filter():
+    """The filter is a NASR ownership-code set: explicit codes, the
+    comma-separated CLI form (case/space tolerant), 'all', and a fail-loud
+    unknown code (a typo must not silently empty the source)."""
+    pu = faa.parse(_raw(), ownership=("PU",))
+    assert set(pu["id"].str[:3]) == {"LAS", "VGT"}
+    assert pu.attrs["skipped"]["reasons"] == {"ownership filter": 31 - len(pu)}
+    assert len(faa.parse(_raw(), ownership=" pu, Pr ")) == 26
+    assert len(faa.parse(_raw(), ownership="ALL")) == 31
+    with pytest.raises(ValueError, match="unknown code"):
+        faa.parse(_raw(), ownership="PU,XX")
+    with pytest.raises(ValueError):
+        faa.parse(_raw(), ownership="")
+    # an empty AOI with a filter: schema-shaped empty, no skipped report
+    assert len(faa.parse(_raw((0.0, 0.0, 1.0, 1.0)), ownership=("PU",))) == 0
+
+
 def test_provenance_classes_and_accuracy():
-    out = faa.parse(_raw())
+    out = faa.parse(_raw(), ownership="all")
     cls = out["raw"].map(lambda s: json.loads(s)["pos_class"])
     srcs = out["raw"].map(lambda s: json.loads(s).get("pos_src", ""))
     surveyed = cls == "surveyed"
@@ -101,16 +127,23 @@ def test_measurement_datetime_from_pos_src_date():
 
 def test_bbox_filter_and_empty():
     lv = faa.parse(_raw(LV_BBOX))
+    assert set(lv["id"].str[:4]) == {"LAS_", "VGT_", "NV53"}
+    assert len(lv) == 22  # 26 minus the four 5AZ3 (Arizona) points
+    lv = faa.parse(_raw(LV_BBOX), ownership="all")
     assert set(lv["id"].str[:4]) == {"LAS_", "LSV_", "VGT_", "NV53"}
-    assert len(lv) == 27  # 31 minus the four 5AZ3 (Arizona) points
+    assert len(lv) == 27
     empty = faa.parse(_raw((0.0, 0.0, 1.0, 1.0)))
     assert len(empty) == 0
     assert empty.crs is not None
     assert "id" in empty.columns and "height" in empty.columns
 
 
-def test_schema_conformance():
-    out = faa.parse(_raw())
+@pytest.mark.parametrize("ownership,verticals", [
+    (faa.DEFAULT_OWNERSHIP, {"EPSG:5703"}),
+    ("all", {"EPSG:5703", "EPSG:5773"}),
+])
+def test_schema_conformance(ownership, verticals):
+    out = faa.parse(_raw(), ownership=ownership)
     norm = schema.normalize(out, source="faa")
     schema.validate(norm)
     assert (norm["source"] == "faa").all()
@@ -120,8 +153,7 @@ def test_schema_conformance():
     # for the unverified remainder — the per-row guard re-targets the EGM96
     # rows from their natives), non-null coord_epoch (plate-fixed reading)
     assert norm["horizontal_crs"].notna().all()
-    assert set(norm["vertical_crs"].dropna().unique()) <= {"EPSG:5703",
-                                                            "EPSG:5773"}
+    assert set(norm["vertical_crs"].dropna().unique()) == verticals
     assert norm["coord_epoch"].notna().all()
 
 
@@ -159,7 +191,7 @@ def test_fetch_serves_from_cache(tmp_path, monkeypatch):
     raw = faa.fetch(LV_BBOX, cycle=FIXTURE_CYCLE)
     assert raw["cycle"] == FIXTURE_CYCLE
     out = faa.parse(raw)
-    assert len(out) == 27
+    assert len(out) == 22
 
 
 @pytest.mark.network

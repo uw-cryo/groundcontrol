@@ -265,6 +265,139 @@ def _fake_provider(rows):
     return fetch, parse
 
 
+def test_cache_write_text_is_utf8(tmp_path, monkeypatch):
+    """The atomic writer's text branch is explicitly UTF-8 (PR #29 review:
+    fdopen's default is the platform locale; the write_text it replaced
+    was UTF-8) — a cached tenv3/steps line with non-ASCII bytes must round
+    trip on any locale."""
+    import io as _stdio   # os.fdopen's DEFAULT comes from io.text_encoding
+    # emulate a Latin-1 locale: an explicit encoding passes through, an
+    # omitted one (the pre-fix code) resolves to latin-1 and must fail
+    monkeypatch.setattr(_stdio, "text_encoding",
+                        lambda encoding, stacklevel=2: encoding or "latin-1")
+    target = tmp_path / "steps.txt"
+    text = "P123  \u00e9\u2014\u5730 step\n"
+    checkpoints_3dep.cache_write(target, text)
+    assert target.read_bytes() == text.encode("utf-8")
+    assert target.read_text(encoding="utf-8") == text
+    checkpoints_3dep.cache_write(target, b"\xff\xfebytes")     # bytes branch untouched
+    assert target.read_bytes() == b"\xff\xfebytes"
+
+
+def test_fetch_control_source_options(monkeypatch):
+    """Per-source parse options reach the named source's parse; a name that
+    is not a provider raises (a typo is not a silently ignored option); an
+    option the source does not accept degrades THAT source into status."""
+    from groundcontrol import sources
+    seen = {}
+    fetch, parse = _fake_provider(_nepal_rows())
+
+    def parse_opt(raw, flavor="plain"):
+        seen["flavor"] = flavor
+        return parse(raw)
+    monkeypatch.setitem(sources.PROVIDERS, "fake", (fetch, parse_opt))
+    gdf, status = sources.fetch_control((85.0, 28.0, 86.0, 29.0), sources=("fake",),
+                                        landing_crs="EPSG:7912",
+                                        source_options={"fake": {"flavor": "wide"}})
+    assert seen == {"flavor": "wide"} and status["fake"]["n_rows"] == 3
+    gdf, status = sources.fetch_control((85.0, 28.0, 86.0, 29.0), sources=("fake",),
+                                        landing_crs="EPSG:7912")
+    assert seen == {"flavor": "plain"}
+    with pytest.raises(ValueError, match="unknown source"):
+        sources.fetch_control((85.0, 28.0, 86.0, 29.0), sources=("fake",),
+                              source_options={"fakke": {"flavor": "wide"}})
+    with pytest.raises(ValueError, match="not in sources"):   # valid, unrequested
+        sources.fetch_control((85.0, 28.0, 86.0, 29.0), sources=("fake",),
+                              source_options={"ngs": {"flavor": "wide"}})
+    monkeypatch.setitem(sources.PROVIDERS, "fake", (fetch, parse))   # no kwargs
+    gdf, status = sources.fetch_control((85.0, 28.0, 86.0, 29.0), sources=("fake",),
+                                        landing_crs="EPSG:7912",
+                                        source_options={"fake": {"flavor": "wide"}})
+    assert status["fake"]["n_rows"] == 0 and "TypeError" in status["fake"]["error"]
+
+
+def _fixture_faa_provider():
+    """The offline FAA fixture as a provider (no network, no shared cache)."""
+    from pathlib import Path
+
+    from groundcontrol.sources import faa
+    lines = (Path(__file__).parent / "data" / "faa_apt_sample.txt") \
+        .read_text(encoding="latin-1").splitlines(keepends=True)
+
+    def fetch(bounds):
+        return {"cycle": "2026-08-06", "aoi_bounds_4326": tuple(bounds),
+                "lines": lines}
+    return fetch, faa.parse
+
+
+def test_fetch_cli_faa_ownership_flag(monkeypatch, tmp_path, capsys):
+    """--faa-ownership rides to fetch_control as the faa parse option and
+    changes the rows written; the default sends no option (the source
+    default applies); an unrequested faa never appears in source_options;
+    a bad code is preflighted (exit error, nothing fetched) — round-7."""
+    import geopandas as gpd
+
+    from groundcontrol import sources
+    from groundcontrol.cli import fetch_control_main
+    calls = []
+    real = sources.fetch_control
+
+    def spy(*a, **k):
+        calls.append(k.get("source_options"))
+        return real(*a, **k)
+    monkeypatch.setattr(sources, "fetch_control", spy)
+    monkeypatch.setitem(sources.PROVIDERS, "fake", _fake_provider(_nepal_rows()))
+    monkeypatch.setitem(sources.PROVIDERS, "faa", _fixture_faa_provider())
+    out = tmp_path / "c.parquet"
+    nepal = ["--aoi=85.0,28.0,86.0,29.0", "--landing-crs", "EPSG:7912",
+             "--no-figures", "--out", str(out)]
+    lv = ["--aoi=-115.35,35.9,-115.0,36.4", "--no-figures", "--out", str(out)]
+    assert fetch_control_main(nepal + ["--sources", "fake"]) == 0
+    assert fetch_control_main(lv + ["--sources", "faa", "--faa-ownership", "all"]) == 0
+    assert len(gpd.read_parquet(out)) == 27
+    assert fetch_control_main(lv + ["--sources", "faa"]) == 0
+    assert len(gpd.read_parquet(out)) == 22
+    assert calls == [{}, {"faa": {"ownership": "all"}}, {}]
+    with pytest.raises(SystemExit, match="unknown code"):
+        fetch_control_main(lv + ["--sources", "faa", "--faa-ownership", "PU,XX"])
+    assert len(calls) == 3                       # preflight: nothing fetched
+    # the flag is irrelevant without the faa source: no preflight, no option
+    assert fetch_control_main(nepal + ["--sources", "fake",
+                                       "--faa-ownership", "PU,XX"]) == 0
+    assert calls[-1] == {}
+
+
+def test_assess_cache_ownership_warning(tmp_path, capsys):
+    """A reused control cache is not re-filtered: the cache branch warns
+    from the DATA when cached faa rows sit outside --faa-ownership, and
+    from the sidecar's skip count when the flag would widen (round-7)."""
+    import argparse
+    import json
+
+    from groundcontrol.cli import _check_cache_ownership
+    from groundcontrol.sources import faa
+    fetch, _ = _fixture_faa_provider()
+    ctl = faa.parse(fetch((-180.0, -90.0, 180.0, 90.0)), ownership="all")
+    ctl["source"] = "faa"
+    cache = tmp_path / "site_control.parquet"
+    Path(str(cache) + ".provenance.json").write_text(json.dumps(
+        {"status": {"faa": {"n_rows": 26, "n_skipped": 5,
+                            "skip_reasons": {"ownership filter": 5}}}}))
+    ns = argparse.Namespace(faa_ownership="PU,PR")
+    _check_cache_ownership(ctl, cache, ns, ("faa",))
+    err = capsys.readouterr().err
+    assert "holds 5 faa row(s) at facilities outside --faa-ownership PU,PR" in err
+    ns = argparse.Namespace(faa_ownership="all")
+    _check_cache_ownership(ctl[ctl["id"].str[:3] != "LSV"], cache, ns, ("faa",))
+    err = capsys.readouterr().err
+    assert "fetched under an ownership filter (5 faa row(s) skipped)" in err
+    # civil cache, civil flag: silence; faa not requested: silence
+    ns = argparse.Namespace(faa_ownership="PU,PR")
+    _check_cache_ownership(ctl[ctl["id"].str[:3] != "LSV"], cache, ns, ("faa",))
+    _check_cache_ownership(ctl, cache, ns, ("ngs",))
+    assert capsys.readouterr().err == ""
+
+
 def test_fetch_default_landing_degrades_outside_conus(monkeypatch):
     """CHARACTERIZATION (passes on main too — the pre-fix behavior IS the
     fail-loud contract): the Nepal repro (rasuwa session, 753ae54).

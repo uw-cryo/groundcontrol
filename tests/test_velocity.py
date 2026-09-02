@@ -358,6 +358,11 @@ def test_flag_moving_stations_median_relative():
     })
     mov = V.flag_moving_stations(st)
     assert mov.tolist() == [False, False, False, False, True]
+    # fewer than three finite stations: no network reference exists, so a
+    # single mover must not flag BOTH (round-7): nothing flags
+    two = st.iloc[[0, 4]].reset_index(drop=True)
+    assert V.flag_moving_stations(two).tolist() == [False, False]
+    assert V.flag_moving_stations(st.iloc[[4]]).tolist() == [False]
 
 
 def test_interpolate_velocity_moving_screen_opt_in():

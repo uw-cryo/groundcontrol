@@ -15,7 +15,7 @@ Fetch ground control points for an arbitrary AOI and assess DEM accuracy — wit
 ## Status
 
 **v0.2.0 — pre-alpha, quiet release.** The fetch → transform → sample → statistics →
-figures pipeline works end to end (CLI + Python API) and is covered by **521 offline
+figures pipeline works end to end (CLI + Python API) and is covered by **531 offline
 tests** run in CI on Python 3.10/3.12, with the geodesy core additionally adversarially
 audited (independent review agents; math cross-checked against external oracles). The API
 may still move between minor versions — pin the tag if you build on it, and expect sharp
@@ -33,7 +33,7 @@ per-source status report:
 | NGS Data Explorer (NDE) | `ngs` | monumented control, per-realization datum landing |
 | OPUS shared solutions | `opus` | campaign GNSS occupations (`gnss_campaign`): episodic, nothing left on site; NGS monument-stability tier (A/B vs C/D) decoded per record |
 | Nevada Geodetic Lab GNSS | `ngl` | daily `.tenv3` series, `steps.txt` (earthquake-step evidence for epoch propagation), MIDAS velocities; per-station occupation class earned by the station's own record (`gnss_cont` / `gnss_semicont` / `gnss_campaign`) — an occupation-pattern claim, not a quality tier; corroborated curated-network membership (`networks.py`: NGS CORS, IGS) in `raw["networks"]` |
-| FAA NASR runway control | `faa` | photo-identifiable runway ends, displaced thresholds, helipads from the public-domain 28-day NASR subscription; per-point position-source provenance (surveyed vs estimated) with AC 150/5300-18C accuracies on the surveyed class |
+| FAA NASR runway control | `faa` | photo-identifiable runway ends, displaced thresholds, helipads from the public-domain 28-day NASR subscription; per-point position-source provenance (surveyed vs estimated) with AC 150/5300-18C accuracies on the surveyed class; civil facilities by default (NASR ownership `PU`/`PR`), `--faa-ownership all` widens it |
 
 - **One normalized schema** (`schema.py`) — a single canonical control-point GeoDataFrame
   contract: source/id, height + datum provenance, `ref_frame`, `frame_epoch` / `coord_epoch` /
@@ -162,7 +162,8 @@ explicit forms remain: `--product NAME=PATH`, `--target-crs dsm_frame.wkt` (for
 custom frames, `groundcontrol.geodesy.with_vdatum` / `build_utm_nad83_2011_3d` +
 `write_crs_file` produce the WKT). Optional: several products (a DSM/DTM
 pair), `--aoi` to restrict or outline the area, `--sources` (default: every provider —
-`3dep,ngs,opus,ngl,faa`), `--control` to reuse a fetched cache, `--hs NAME=PATH` for a
+`3dep,ngs,opus,ngl,faa`), `--faa-ownership` (NASR ownership codes the `faa` source
+keeps; default `PU,PR`, or `all`), `--control` to reuse a fetched cache, `--hs NAME=PATH` for a
 pre-rendered hillshade on very large mosaics, `--site-name`, `--target-epoch`, and
 sampling `--method`/`--radius`; `--point-lim`/`--vendor-lim`/`--wide-lim` pin the
 empirical dz color/axis tiers when figures must be comparable across runs.

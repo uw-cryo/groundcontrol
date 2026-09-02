@@ -137,7 +137,8 @@ def flag_moving_stations(stations: pd.DataFrame, *,
     coherent plate motion never flags. Vertical is deliberately NOT
     tested: real subsidence reaches tens of mm/yr and must stay in the
     background field. NaN velocities never flag (they cannot contribute
-    to an interpolation anyway).
+    to an interpolation anyway), and fewer than three finite stations
+    flag nothing (no network reference exists).
 
     The reference is the median of the ``stations`` frame PASSED IN — the
     caller picks the network (the standard figure passes the stations
@@ -150,7 +151,13 @@ def flag_moving_stations(stations: pd.DataFrame, *,
     vn = pd.to_numeric(stations[vel_cols[1]], errors="coerce").to_numpy("float64")
     out = np.zeros(len(stations), dtype=bool)
     fin = np.isfinite(ve) & np.isfinite(vn)
-    if not fin.any():
+    if int(fin.sum()) < 3:
+        # one station IS the median; two straddle it symmetrically, so a
+        # single mover flags both and empties the interpolation. No
+        # reference exists below three: flag nothing (round-7 audit)
+        if fin.any():
+            logger.debug("moving-monument screen: %d finite station(s), no "
+                         "network reference — nothing flagged", int(fin.sum()))
         return pd.Series(out, index=stations.index)
     dev_mm = np.hypot(ve[fin] - np.median(ve[fin]), vn[fin] - np.median(vn[fin])) * 1000.0
     out[fin] = dev_mm > threshold_mm_yr

@@ -319,6 +319,42 @@ def test_family_dz_figures_smoke(tmp_path):
     assert all(p.exists() for p in out)
 
 
+def test_budget_line_is_per_drawn_rows():
+    """One number when the drawn rows share a budget; the range when the
+    drawn subclasses carry different chains; None without any (round-7:
+    the figures printed a frame-wide median)."""
+    from groundcontrol.figures import _budget_line
+    assert _budget_line([0.015, 0.015, np.nan]) == "stated 3D transform budget \u00b10.015 m"
+    assert _budget_line([0.015, 1.0]) == ("stated 3D transform budget \u00b10.015\u20131 m "
+                                          "(varies by segment)")
+    assert _budget_line([np.nan, np.nan]) is None
+    assert _budget_line([]) is None
+
+
+def test_family_dz_figures_faa_note_keys_on_datum(tmp_path):
+    """The faa family sheet renders for an ownership-class facility whose
+    rows all read NAVD88 (they fall to 'FAA other', no EGM96 caption), for
+    EGM96-declared rows, and for NA-datum rows (round-7 MED-5)."""
+    from groundcontrol.figures import family_dz_figures
+    n = 8
+    raw = ([json.dumps({"pos_class": "surveyed"})] * 3
+           + [json.dumps({"pos_class": "mil"})] * 5)
+    for vcrs in (["EPSG:5703"] * n,
+                 ["EPSG:5703"] * 3 + ["EPSG:5773"] * 5,
+                 ["EPSG:5703"] * 3 + ["EPSG:5773"] * 2 + [pd.NA] * 3):
+        g = gpd.GeoDataFrame(
+            {"source": ["faa"] * n, "point_type": ["runway_end"] * n, "raw": raw,
+             "vertical_crs": pd.Series(vcrs, dtype="string"),
+             "xform_acc_m": [0.015] * 3 + [1.0] * 5,
+             "height": np.linspace(400.0, 410.0, n),
+             "dz_DSM": np.linspace(-0.1, 0.1, n)},
+            geometry=gpd.points_from_xy(np.linspace(0, 100, n), np.linspace(0, 80, n)),
+            crs="EPSG:32611")
+        out = family_dz_figures(g, None, tmp_path, "faa", products=("DSM",),
+                                families=("faa",))
+        assert [p.name for p in out] == ["faa_dz_faa_DSM.png"] and out[0].exists()
+
+
 def test_validation_dz_figures_accepts_path_aoi(tmp_path):
     # validation_dz_figures must accept a path aoi in any CRS (read + reproject),
     # like its sibling figure functions — not only a pre-reprojected GeoDataFrame

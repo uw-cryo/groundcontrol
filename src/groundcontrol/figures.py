@@ -2871,11 +2871,10 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         if flagged:
             txt_lines.extend((line_, _MUT, False)
                              for line_ in _caveat_lines(txt_lines))
-        if "xform_acc_m" in sampled.columns:
-            _xa = sampled["xform_acc_m"].to_numpy(dtype="float64")
-            if np.isfinite(_xa).any():
-                txt_lines.append(("stated 3D transform budget "
-                                  f"±{np.nanmedian(_xa):g} m", _MUT, False))
+        if "xform_acc_m" in use.columns:     # the DRAWN rows, not the frame
+            _bl = _budget_line(use["xform_acc_m"].to_numpy(dtype="float64"))
+            if _bl:
+                txt_lines.append((_bl, _MUT, False))
         if txt_lines:
             step = min(0.10, 0.97 / len(txt_lines))
             for i, (line, color, bold) in enumerate(txt_lines):
@@ -2929,6 +2928,22 @@ def _opus_tier(d):
     if m.any():
         out[m] = opus_stability_tier(d[m])
     return out
+
+
+def _budget_line(xa) -> str | None:
+    """The stated 3D transform budget line for the rows a figure DRAWS:
+    one number when they share a budget, the range when the drawn
+    subclasses carry different chains (a frame-wide median printed the
+    civil 0.015 m over a 1 m EGM96 chain — round-6/7 audits)."""
+    xa = np.asarray(xa, dtype="float64")
+    xa = xa[np.isfinite(xa)]
+    if not len(xa):
+        return None
+    lo, hi = float(xa.min()), float(xa.max())
+    if np.isclose(lo, hi, rtol=0.0, atol=5e-4):
+        return f"stated 3D transform budget \u00b1{float(np.median(xa)):g} m"
+    return (f"stated 3D transform budget \u00b1{lo:g}\u2013{hi:g} m "
+            "(varies by segment)")
 
 
 def _egm96_rows(d):
@@ -3158,24 +3173,29 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                         else "best = caller-supplied ngs_best mask")
         mil_mask = None
         if fam == "faa" and "raw" in sampled.columns:
+            # the note keys on the DATUM the rows declare, like the segment
+            # (round-7 audit: a class facility whose rows all read NAVD88
+            # lands as "FAA other" and must not be captioned as EGM96)
+            _egm = _egm96_rows(sampled).to_numpy(dtype=bool)
             _mil = pd.Series(_raw_field(sampled["raw"], "pos_class")
                              .isin(("mil", "military"))).fillna(False)
-            if bool(_mil.any()):
-                _na = _mil.to_numpy(dtype=bool) & sampled["vertical_crs"] \
-                    .isna().to_numpy(dtype=bool) \
-                    if "vertical_crs" in sampled.columns \
-                    else _mil.to_numpy(dtype=bool)
-                # EGM96-declared rows land through that datum (faa.py,
-                # owner 2026-09-01); the separation diagnostic below
-                # applies only to rows still carrying an NA datum
-                mil_mask = _na if _na.any() else None
-                fam_note = ("Elevations published on EGM96 MSL, landed "
-                            "through the geoid and frame tie; no published "
-                            "accuracy, own context class"
-                            if not _na.any() else
-                            "Elevations may be on EGM96 MSL rather than "
-                            "NAVD88 — datum unverified for rows whose "
-                            "elevation source is not the pipeline's own")
+            _na = (_mil.to_numpy(dtype=bool)
+                   & sampled["vertical_crs"].isna().to_numpy(dtype=bool)
+                   if "vertical_crs" in sampled.columns
+                   else np.zeros(len(sampled), dtype=bool))
+            notes = []
+            if _egm.any():
+                notes.append("EGM96-declared elevations landed through the "
+                             "geoid and frame tie; no published accuracy, "
+                             "own context class")
+            if _na.any():
+                # the separation diagnostic below applies only to rows
+                # still carrying an NA (unverified) datum
+                mil_mask = _na
+                notes.append("rows with an undeclared datum are unverified "
+                             "context (h_ell not landed)")
+            if notes:
+                fam_note = "; ".join(notes)
         for prod in products:
             col = f"dz_{prod}"
             vva_ctx = False        # VVA drawn on a SURFACE product (dagger)
@@ -3353,13 +3373,17 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                            color=_INK)
             # colored stats lines OUTSIDE the histogram, in their own panel
             # (owner 2026-08-30, matching the validation figure)
-            xa = (sampled["xform_acc_m"].to_numpy(dtype="float64")
-                  if "xform_acc_m" in sampled.columns else np.array([np.nan]))
-            if np.isfinite(xa).any():
-                b = np.nanmedian(xa)
-                if np.isfinite(b):
-                    fam_lines.append((f"stated 3D transform budget ±{b:g} m",
-                                      _MUT))
+            if "xform_acc_m" in sampled.columns and sub_masks:
+                # the rows this family DRAWS (union of its subclasses with a
+                # finite dz on this product), not the whole frame
+                drawn = np.logical_or.reduce(
+                    [np.asarray(m, dtype=bool) for m in sub_masks])
+                drawn &= np.isfinite(pd.to_numeric(sampled[col], errors="coerce")
+                                     .to_numpy(dtype="float64"))
+                _bl = _budget_line(sampled.loc[drawn, "xform_acc_m"]
+                                   .to_numpy(dtype="float64"))
+                if _bl:
+                    fam_lines.append((_bl, _MUT))
             fam_flagged = {lab for lab, vals, _c in fam_entries
                            if lab in ARP_HEIGHT_LABELS and len(vals)
                            and abs(float(np.median(vals)))

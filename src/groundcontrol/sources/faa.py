@@ -48,6 +48,12 @@ other sources stay NA with NA natives, so they land nowhere (h_ell NaN)
 rather than through a guessed datum. :func:`pos_class` classes the whole
 facility ``"mil"``: no published accuracy, own context segment, outside
 the surveyed tier.
+
+:func:`parse` emits the civil facility set by default (NASR ownership
+codes in :data:`DEFAULT_OWNERSHIP`, the AC-surveyed NAVD88 tier);
+``ownership="all"`` (CLI ``--faa-ownership all``) widens it to every
+published facility. Rows outside the set are counted in
+``gdf.attrs['skipped']`` like the NGS realization quarantine.
 """
 
 from __future__ import annotations
@@ -92,6 +98,11 @@ SURVEYED_SOURCES = frozenset(
 
 #: APT ownership codes whose facilities publish EGM96 MSL elevations
 MIL_OWNERSHIP = {"MA", "MN", "MR", "CG"}
+#: the NASR APT ownership vocabulary (layout field 00184)
+OWNERSHIP_CODES = {"PU", "PR"} | MIL_OWNERSHIP
+#: ownership codes :func:`parse` keeps by default: publicly (PU) and
+#: privately (PR) owned civil facilities, the AC 150/5300-18C tier
+DEFAULT_OWNERSHIP = ("PU", "PR")
 #: NASR elevation sources published on EGM96 MSL at those facilities
 #: (verified 2026-09-01; see the parse() note).
 EGM96_ELEV_SRC = {"MILITARY", "DOD (NGA)", "AVN", "NGS"}
@@ -333,21 +344,49 @@ def _rows(lines) -> list[dict]:
 _CONSUMED = {"id", "point_type", "lat", "lon", "height"}
 
 
-def parse(raw: dict) -> gpd.GeoDataFrame:
+def validate_ownership(ownership) -> set[str] | None:
+    """``"all"`` -> None (no filter); else the validated set of codes from
+    an iterable or a comma-separated string. An unknown code fails loud: a
+    typo'd filter would otherwise silently empty the source. The CLIs
+    preflight ``--faa-ownership`` through this before any fetch."""
+    if ownership is None or (isinstance(ownership, str)
+                             and ownership.strip().lower() == "all"):
+        return None
+    codes = ownership.split(",") if isinstance(ownership, str) else ownership
+    codes = {str(c).strip().upper() for c in codes if str(c).strip()}
+    bad = sorted(codes - OWNERSHIP_CODES)
+    if bad or not codes:
+        raise ValueError(f"faa ownership filter: unknown code(s) {bad}; "
+                         f"known {sorted(OWNERSHIP_CODES)} or 'all'")
+    return codes
+
+
+def parse(raw: dict, ownership=DEFAULT_OWNERSHIP) -> gpd.GeoDataFrame:
     """APT/RWY record lines -> schema-shaped GeoDataFrame (native frame).
 
     Emits EVERY runway end / displaced threshold with published coordinates
-    inside the AOI bounds — including estimated-provenance and seaplane/
-    heliport facilities. Quality filtering is an assessment-time decision:
-    use :func:`pos_class` on ``raw['pos_src']`` (and ``raw['fac_type']``)
-    exactly like the NGS ``vertSource`` classes.
+    inside the AOI bounds at facilities whose NASR ownership code is in
+    ``ownership`` (default :data:`DEFAULT_OWNERSHIP`; ``"all"`` for every
+    facility; a comma-separated string or iterable of codes otherwise) —
+    including estimated-provenance and seaplane/heliport facilities.
+    Quality filtering is an assessment-time decision: use
+    :func:`pos_class` on ``raw['pos_src']`` (and ``raw['fac_type']``)
+    exactly like the NGS ``vertSource`` classes. Rows dropped by the
+    ownership filter are counted in ``.attrs['skipped']``.
     """
+    own_keep = validate_ownership(ownership)
     df = pd.DataFrame(_rows(raw["lines"]))
+    n_own_skipped = 0
     if len(df):
         minlon, minlat, maxlon, maxlat = raw["aoi_bounds_4326"]
         keep = ((df["lon"] >= minlon) & (df["lon"] <= maxlon)
                 & (df["lat"] >= minlat) & (df["lat"] <= maxlat))
         df = df[keep].reset_index(drop=True)
+        if own_keep is not None and len(df):
+            in_set = (df["ownership"].astype("string").str.strip().str.upper()
+                      .isin(own_keep).fillna(False).to_numpy(dtype=bool))
+            n_own_skipped = int((~in_set).sum())
+            df = df[in_set].reset_index(drop=True)
     n = len(df)
     if not n:  # schema-shaped empty frame with a valid CRS
         df = pd.DataFrame(columns=["id", "point_type", "lat", "lon", "height",
@@ -394,30 +433,53 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
         native_crs[other] = pd.NA      # undeclared datum lands nowhere
         # (third-party surveys keep the NAVD88 defaults)
         if egm.any():
-            h_ell, chain_acc = _egm96_to_nad83_2011_h(
-                native_x[egm], native_y[egm], native_h[egm], coord_epoch[egm],
-                raw.get("aoi_bounds_4326"))
-            tied = np.isfinite(h_ell)
             idx = np.flatnonzero(egm)
+            # a blank published elevation is not a coverage failure: the
+            # datum stays declared, there is simply nothing to land (NA
+            # natives, no warning) — round-7 audit
+            hin = np.isfinite(native_h[egm])
+            h_ell = np.full(int(egm.sum()), np.nan)
+            chain_acc = np.nan
+            if hin.any():
+                h_ell[hin], chain_acc = _egm96_to_nad83_2011_h(
+                    native_x[egm][hin], native_y[egm][hin],
+                    native_h[egm][hin], coord_epoch[egm][hin],
+                    raw.get("aoi_bounds_4326"))
+            tied = np.isfinite(h_ell)
+            untied = hin & ~tied
             native_h[idx[tied]] = h_ell[tied]
             native_crs[idx[tied]] = MIL_NATIVE_CRS
+            native_crs[idx[~hin]] = pd.NA
             if tied.any():
                 df.loc[df.index[idx[tied]], "native_chain"] = (
                     "EGM96 grid + ITRF2014->NAD83(2011) tie at coord_epoch"
                     f" (stated accuracy {chain_acc:.2f} m)")
-                if "native_chain" not in extras:   # rides into raw
-                    extras.append("native_chain")
-            if (~tied).any():
+                # the NUMBER too: transform_control composes it into
+                # xform_acc_m (the native -> target leg is a pure
+                # conversion, accuracy 0, which alone would read NaN)
+                df.loc[df.index[idx[tied]], "native_chain_acc_m"] = chain_acc
+                for k in ("native_chain", "native_chain_acc_m"):
+                    if k not in extras:   # rides into raw
+                        extras.append(k)
+            if untied.any():
                 # no geoid grid / frame tie here: the datum is still EGM96
                 # but the row cannot be landed honestly -> NA, unverified,
                 # NA natives (the same fail-loud NA as the other sources)
-                vertical_crs[idx[~tied]] = pd.NA
-                native_crs[idx[~tied]] = pd.NA
-                height_datum[idx[~tied]] = ("MSL (EGM96 assumed; frame tie "
-                                            "unavailable here — unverified)")
+                vertical_crs[idx[untied]] = pd.NA
+                native_crs[idx[untied]] = pd.NA
+                height_datum[idx[untied]] = ("MSL (EGM96 assumed; frame tie "
+                                             "unavailable here — unverified)")
                 logger.warning("faa: %d EGM96-declared row(s) outside "
                                "the geoid / frame-tie coverage left with "
-                               "vertical_crs NA", int((~tied).sum()))
+                               "vertical_crs NA", int(untied.sum()))
+    # NA native_crs means "lands nowhere": the native triplet goes NaN with
+    # it, so nothing downstream can mistake the published lon/lat/height
+    # for a landable native (Copilot review, PR #29)
+    no_native = native_crs.isna().to_numpy(dtype=bool)
+    if no_native.any():
+        native_x[no_native] = np.nan
+        native_y[no_native] = np.nan
+        native_h[no_native] = np.nan
     out = gpd.GeoDataFrame(
         {
             "id": df["id"].astype("string"),
@@ -454,4 +516,9 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
         crs="EPSG:6318",
         index=df.index,
     )
+    if n_own_skipped:
+        out.attrs["skipped"] = {"n": n_own_skipped,
+                                "reasons": {"ownership filter": n_own_skipped}}
+        logger.info("faa: %d row(s) at facilities outside the ownership "
+                    "filter %s skipped", n_own_skipped, sorted(own_keep))
     return out

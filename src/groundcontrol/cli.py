@@ -45,6 +45,8 @@ def fetch_control_main(argv=None) -> int:
                    help="comma-separated sources (default: every provider — "
                         "3dep,ngs,opus,ngl,faa; owner 2026-08-30: NGL is "
                         "first-class, not opt-in)")
+    p.add_argument("--faa-ownership", default=_FAA_OWNERSHIP_DEFAULT,
+                   help=_FAA_OWNERSHIP_HELP)
     p.add_argument("--out", required=True, help="output path (.parquet or .csv)")
     p.add_argument("--target-crs", default=None,
                    help="target 3D CRS (NOT YET IMPLEMENTED — interim landing is "
@@ -96,6 +98,7 @@ def fetch_control_main(argv=None) -> int:
     # input, and an --out typo should not pay for it.
     out = _preflight(io.check_export_support, args.out)
     _check_sources(sources)
+    _check_faa_ownership(args, sources)
     if args.landing_crs is not None:
         from groundcontrol.sources import validate_landing_crs
         _validate_crs(args.landing_crs, "--landing-crs")
@@ -105,7 +108,8 @@ def fetch_control_main(argv=None) -> int:
     print(f"querying sources: {', '.join(sources)} ...", file=sys.stderr)
     gdf, status = fetch_control(aoi, sources=sources,
                                 target_crs=args.target_crs, target_epoch=args.target_epoch,
-                                landing_crs=args.landing_crs)
+                                landing_crs=args.landing_crs,
+                                source_options=_source_options(args, sources))
     for name, s in status.items():
         line = f"  {name:6s} {s['n_rows']:6d} rows"
         if s["error"]:
@@ -628,6 +632,66 @@ def _check_rasters(paths, flag):
     return out
 
 
+_FAA_OWNERSHIP_DEFAULT = "PU,PR"
+_FAA_OWNERSHIP_HELP = ("NASR facility ownership codes the faa source keeps, "
+                       "comma-separated, or 'all' (default: %(default)s — "
+                       "publicly and privately owned civil facilities)")
+
+
+def _source_options(args, sources):
+    """Per-source parse options from the CLI flags (only for requested
+    sources, so an unrequested source never appears in status)."""
+    opts = {}
+    if "faa" in sources and args.faa_ownership != _FAA_OWNERSHIP_DEFAULT:
+        opts["faa"] = {"ownership": args.faa_ownership}
+    return opts
+
+
+def _check_faa_ownership(args, sources):
+    """Preflight --faa-ownership like a --sources typo: the dispatcher
+    would degrade a bad code into a status-line error and write a product
+    silently missing the source (round-7 audit)."""
+    if "faa" in sources:
+        from groundcontrol.sources.faa import validate_ownership
+        _preflight(validate_ownership, args.faa_ownership)
+
+
+def _check_cache_ownership(control, cache, args, sources):
+    """A reused control cache is what it was fetched as: --faa-ownership
+    cannot re-filter or widen it. Say so from the DATA (the ownership codes
+    the cached faa rows carry) and, for a widened flag, from the sidecar's
+    recorded skip count — silence here was a contract break (round-7)."""
+    if "faa" not in sources or "source" not in control.columns:
+        return
+    import pandas as pd
+
+    from groundcontrol.sources.faa import validate_ownership
+    keep = validate_ownership(args.faa_ownership)
+    faa_rows = control[control["source"] == "faa"]
+    hint = f"delete {cache} or --refresh to re-fetch"
+    if keep is not None and len(faa_rows) and "raw" in faa_rows.columns:
+        from groundcontrol.figures import _raw_field
+        own = pd.Series(_raw_field(faa_rows["raw"], "ownership")).astype("string")
+        outside = int((~own.str.strip().str.upper().isin(keep)).fillna(True).sum())
+        if outside:
+            print(f"warning: control cache holds {outside} faa row(s) at "
+                  f"facilities outside --faa-ownership {args.faa_ownership} "
+                  f"(a cache is not re-filtered); {hint}", file=sys.stderr)
+    if keep is None:
+        try:
+            import json
+            side = json.loads(Path(str(cache) + ".provenance.json").read_text())
+            skipped = ((side.get("status") or {}).get("faa") or {}) \
+                .get("skip_reasons") or {}
+            n_skip = int(skipped.get("ownership filter") or 0)
+        except Exception:
+            n_skip = 0
+        if n_skip:
+            print(f"warning: control cache was fetched under an ownership "
+                  f"filter ({n_skip} faa row(s) skipped); --faa-ownership all "
+                  f"cannot widen a cache; {hint}", file=sys.stderr)
+
+
 def _check_sources(sources):
     """A typo'd --sources name is not a source failure: the dispatcher would
     degrade it to a status-line error and write a product silently missing
@@ -754,6 +818,8 @@ def assess_dem_main(argv=None) -> int:
                         "from --sources and written here (default: <outdir>/<site-name>_control.parquet)")
     p.add_argument("--sources", default="3dep,ngs,opus,ngl,faa",
                    help="comma-separated fetch sources (default: every provider)")
+    p.add_argument("--faa-ownership", default=_FAA_OWNERSHIP_DEFAULT,
+                   help=_FAA_OWNERSHIP_HELP)
     p.add_argument("--outdir", default=None,
                    help="output directory (default: <input stem>_groundcontrol/ "
                         "next to the first input)")
@@ -882,6 +948,7 @@ def assess_dem_main(argv=None) -> int:
               "(groundcontrol-fetch) with the standard figure set",
               file=sys.stderr)
         argv2 = ["--aoi", pos_vector, "--sources", args.sources,
+                 "--faa-ownership", args.faa_ownership,
                  "--out", str(out / f"{site}_control.parquet"),
                  "--basemap", args.basemap]
         if args.no_figures:
@@ -912,6 +979,7 @@ def assess_dem_main(argv=None) -> int:
              else outdir / f"{site_name}_control.parquet")
     _preflight(_check_control_cache, cache)
     _check_sources(sources)  # also on the cache path: a typo'd name must not become a warning
+    _check_faa_ownership(args, sources)
     products = _check_rasters(products, "--product")
     rgb = None
     if args.rgb:
@@ -1006,6 +1074,7 @@ def assess_dem_main(argv=None) -> int:
                   f"{sorted(missing)} (cache rows: {sorted(have)}); "
                   f"delete {cache} or --refresh to re-fetch",
                   file=sys.stderr)
+        _check_cache_ownership(control, cache, args, sources)
     else:
         if landing is None:
             # AOI outside the NAD83 landing's area of use (Nepal, not CONUS):
@@ -1046,7 +1115,8 @@ def assess_dem_main(argv=None) -> int:
         from groundcontrol.sources import fetch_control
         print(f"querying sources: {', '.join(sources)} ...", file=sys.stderr)
         control, status = fetch_control(aoi, sources=sources,
-                                        landing_crs=landing)
+                                        landing_crs=landing,
+                                        source_options=_source_options(args, sources))
         for name, s in status.items():
             line = f"  {name:6s} {s['n_rows']:6d} rows"
             if s["error"]:
@@ -1099,7 +1169,10 @@ def assess_dem_main(argv=None) -> int:
             command="groundcontrol-assess " + " ".join(argv or sys.argv[1:]))
     except (ValueError, NoTransformPathError) as e:
         # the transform stage's refusals (depth-type targets, unusable
-        # chains) are user-facing decisions, not tracebacks (round-6)
+        # chains) are user-facing decisions, not tracebacks (round-6); the
+        # traceback stays reachable at DEBUG for an internal ValueError,
+        # which otherwise reads like a refusal (round-7)
+        logging.getLogger(__name__).debug("assess_products failed", exc_info=e)
         raise SystemExit(f"error: {e}") from e
 
     t = artifacts["transform"]

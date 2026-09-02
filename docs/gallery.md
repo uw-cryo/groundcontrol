@@ -55,7 +55,12 @@ fetched control (unsampled = outside the data or in a gap). Here 1,593 of
 0.042 m. The DSM+DTM run with context sheets: 190 s end to end, of which
 transform + sampling take 32 s.
 
-![CLI validation figure](img/casagrande_validation_dz_DSM.png)
+![CLI validation figure, DSM](img/casagrande_validation_dz_DSM.png)
+
+The same figure for the bare-earth product: VVA checkpoints now validate
+(the canopy tail is gone), and the NGS monuments tighten.
+
+![CLI validation figure, DTM](img/casagrande_validation_dz_DTM.png)
 
 ## 3. Historic-control quality tiers
 

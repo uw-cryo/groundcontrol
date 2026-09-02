@@ -199,9 +199,9 @@ sampled, stats, artifacts = assess_products(
 
 What the standard outputs look like on a real site: **[docs/gallery.md](docs/gallery.md)**.
 
-![3DEP checkpoint dz](docs/img/casagrande_large_dz_3dep_DTM.png)
+![DTM validation: every control segment on one map](docs/img/casagrande_validation_dz_DTM.png)
 
-![FAA runway control context](docs/img/casagrande_faa_runway_gallery_120m.jpg)
+![MIDAS GNSS velocities around the site](docs/img/casagrande_midas_velocity.jpg)
 
 ## Not yet implemented
 

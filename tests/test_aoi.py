@@ -490,7 +490,7 @@ def test_family_panels_share_one_frame_including_all_gap_panel(tmp_path, monkeyp
         [400100, 400400, 400700, 401000], [3649100, 3649300, 3649600, 3649900]), crs=CRS)
     pts["h_ell"] = pts["height"]
     sampled = sample_products(pts, {"DSM": dem})
-    sampled.loc[sampled["source"] == "ngs", "dh_DSM_before"] = np.nan   # the gap panel
+    sampled.loc[sampled["source"] == "ngs", "dz_DSM"] = np.nan   # the gap panel
     fams = {"two": ("TWO", [("A", lambda d: d["source"] == "ngs", "monument", "o"),
                            ("B", lambda d: d["source"] != "ngs", "NVA", "o")])}
     seen = {}

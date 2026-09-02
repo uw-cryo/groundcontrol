@@ -85,7 +85,7 @@ def _plane_tif(tmp_path, name="plane.tif"):
 
 
 def _landed(offsets, outside=0):
-    """Points on the plane with h_ell = plane - offset (so dh_before = offset)."""
+    """Points on the plane with h_ell = plane - offset (so dz = offset)."""
     n = len(offsets)
     xs = np.linspace(X0 + 2.5, X0 + 8.5, n)
     ys = np.linspace(Y0 + 2.5, Y0 + 5.5, n)
@@ -108,8 +108,8 @@ def test_sample_products_standard_columns_and_values(tmp_path):
     pts = _landed([0.10, -0.20, 0.30, 0.40])
     out = sample_products(pts, {"DSM": dsm, "DTM": dtm})
     for prod in ("DSM", "DTM"):
-        assert {f"h_{prod}", f"dh_{prod}_before"} <= set(out.columns)
-        np.testing.assert_allclose(out[f"dh_{prod}_before"],
+        assert {f"h_{prod}", f"dz_{prod}"} <= set(out.columns)
+        np.testing.assert_allclose(out[f"dz_{prod}"],
                                    [0.10, -0.20, 0.30, 0.40], atol=1e-9)
     assert not any(" minus " in c for c in out.columns)
     assert "h_ell" in out.columns  # input columns ride along
@@ -119,7 +119,7 @@ def test_sample_products_radius_columns(tmp_path):
     dsm = _plane_tif(tmp_path)
     pts = _landed([0.0, 0.0, 0.0, 0.0])
     out = sample_products(pts, {"DSM": dsm}, radius=1.5)
-    assert {"h_DSM", "h_DSM_nmad", "h_DSM_n", "dh_DSM_before"} <= set(out.columns)
+    assert {"h_DSM", "h_DSM_nmad", "h_DSM_n", "dz_DSM"} <= set(out.columns)
     assert (out["h_DSM_n"] > 0).all()
 
 
@@ -159,7 +159,7 @@ def test_gnss_taxonomy_exhaustive_and_styled():
     g = gpd.GeoDataFrame(
         {"source": pd.Series([s for _, s in rows], dtype="string"),
          "point_type": pd.Series([p for p, _ in rows], dtype="string"),
-         "dh_DSM_before": [0.0] * len(rows)},
+         "dz_DSM": [0.0] * len(rows)},
         geometry=gpd.points_from_xy(range(len(rows)), [0.0] * len(rows)),
         crs="EPSG:32611")
     gnss_segs = [fn for lbl, (fn, _, _) in SEGMENTS.items()
@@ -185,7 +185,7 @@ def test_summarize_dz_gnss_routes_by_point_type():
         {"source": ["ngl", "ngl", "ngl", "opus", "ngl", "opus"],
          "point_type": ["gnss_cont", "gnss_semicont", "gnss_campaign",
                         "gnss_campaign", "gnss", "gnss"],
-         "dh_DSM_before": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]},
+         "dz_DSM": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]},
         geometry=gpd.points_from_xy([0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
                                     [0.0] * 6),
         crs="EPSG:32611")
@@ -216,7 +216,7 @@ def test_summarize_dz_unsegmented_row_surfaces():
     g = gpd.GeoDataFrame(
         {"source": pd.Series(["opus", "opus"], dtype="string"),
          "point_type": pd.Series([pd.NA, "gnss_campaign"], dtype="string"),
-         "dh_DSM_before": [0.1, 0.2]},
+         "dz_DSM": [0.1, 0.2]},
         geometry=gpd.points_from_xy([0.0, 1.0], [0.0, 0.0]), crs="EPSG:32611")
     stats = summarize_dz(g)
     seg_n = dict(zip(stats.segment, stats.n))
@@ -250,7 +250,7 @@ def test_assess_products_end_to_end_writes_artifacts(tmp_path):
     xa = sampled["xform_acc_m"].iloc[0]
     assert np.isnan(xa) or xa > 0
     rt = gpd.read_parquet(tmp_path / "out" / "synthsite_assessed.parquet")
-    np.testing.assert_allclose(rt["dh_DSM_before"], [0.10, -0.20, 0.30, 0.40],
+    np.testing.assert_allclose(rt["dz_DSM"], [0.10, -0.20, 0.30, 0.40],
                                atol=1e-9)
 
 
@@ -305,8 +305,8 @@ def test_family_dz_figures_smoke(tmp_path):
     g = gpd.GeoDataFrame(
         {"source": src, "point_type": ptype, "raw": raw,
          "ref_frame": ["NAD83(2011)"] * 6 + ["NAD 83(2011)"] * 3 + ["NAD 83(1986)"] * 3,
-         "dh_DSM_before": np.linspace(-0.1, 0.1, n),
-         "dh_DTM_before": np.append(np.linspace(-0.1, 0.1, n - 1), np.nan)},
+         "dz_DSM": np.linspace(-0.1, 0.1, n),
+         "dz_DTM": np.append(np.linspace(-0.1, 0.1, n - 1), np.nan)},
         geometry=gpd.points_from_xy(np.linspace(0, 100, n), np.linspace(0, 80, n)),
         crs="EPSG:32611")
     best = default_ngs_best(g)
@@ -330,8 +330,8 @@ def test_validation_dz_figures_accepts_path_aoi(tmp_path):
         {"source": ["3dep"] * 4 + ["opus"] * 2 + ["ngs"] * 4,
          "point_type": ["NVA", "NVA", "VVA", "VVA"] + ["gnss_campaign"] * 2
                        + ["monument"] * 4,
-         "dh_DSM_before": np.linspace(-0.1, 0.1, n),
-         "dh_DTM_before": np.linspace(-0.1, 0.1, n)},
+         "dz_DSM": np.linspace(-0.1, 0.1, n),
+         "dz_DTM": np.linspace(-0.1, 0.1, n)},
         geometry=gpd.points_from_xy(np.linspace(0, 100, n),
                                     np.linspace(0, 80, n)),
         crs="EPSG:32611")
@@ -396,7 +396,7 @@ def test_summarize_dz_tolerates_na_point_type():
     df = gpd.GeoDataFrame(
         {"source": pd.array(["3dep", "3dep", None], dtype="string"),
          "point_type": pd.array(["NVA", None, "VVA"], dtype="string"),
-         "dh_DSM_before": [0.1, 0.2, 0.3]},
+         "dz_DSM": [0.1, 0.2, 0.3]},
         geometry=gpd.points_from_xy([0, 1, 2], [0, 0, 0]), crs=CRS)
     stats = summarize_dz(df)  # NA rows are excluded, never a bool-cast crash
     nva = stats[(stats["product"] == "DSM") & (stats.segment == "3DEP NVA")].iloc[0]
@@ -448,7 +448,7 @@ def test_family_dz_ngs_best_na_mask(tmp_path):
          "raw": [json.dumps({"posSource": "ADJUSTED", "vertSource": "RESET"}),
                  json.dumps({"posSource": "ADJUSTED", "vertSource": "GPS OBS"})],
          "ref_frame": pd.array([None, "NAD 83(2011)"], dtype="string"),
-         "dh_DSM_before": [0.05, -0.02]},
+         "dz_DSM": [0.05, -0.02]},
         geometry=gpd.points_from_xy([0, 50], [0, 40]), crs=CRS)
     assert default_ngs_best(g).isna().any()  # the trap this test pins
     out = family_dz_figures(g, None, tmp_path, "na",
@@ -476,12 +476,12 @@ def test_transform_control_accepts_esri_wkt_tag():
 
 
 def test_sample_products_radius_resample_also_guarded(tmp_path):
-    """Dropping only h_/dh_ then re-sampling in radius mode must still raise
+    """Dropping only h_/dz_ then re-sampling in radius mode must still raise
     (h_*_nmad/h_*_n would otherwise duplicate silently)."""
     dsm = _plane_tif(tmp_path, "a-DSM_mos.tif")
     pts = _landed([0.10, -0.20, 0.30, 0.40])
     once = sample_products(pts, {"DSM": dsm}, radius=1.5)
-    stripped = once.drop(columns=["h_DSM", "dh_DSM_before"])
+    stripped = once.drop(columns=["h_DSM", "dz_DSM"])
     with pytest.raises(ValueError, match="already present"):
         sample_products(stripped, {"DSM": dsm}, radius=1.5)
 
@@ -493,7 +493,7 @@ def test_family_dz_misaligned_mask_series_raises(tmp_path):
     g = gpd.GeoDataFrame(
         {"source": ["ngs"] * 4, "point_type": ["monument"] * 4,
          "raw": [None] * 4, "ref_frame": ["NAD 83(2011)"] * 4,
-         "dh_DSM_before": [0.1, 0.2, 0.3, 0.4]},
+         "dz_DSM": [0.1, 0.2, 0.3, 0.4]},
         geometry=gpd.points_from_xy(range(4), range(4)), crs=CRS,
         index=[2, 5, 7, 9])
     bad = pd.Series([True, True, False, False])  # RangeIndex

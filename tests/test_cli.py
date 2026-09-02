@@ -895,7 +895,7 @@ def test_vdatum_rebase_samples_under_declared_frame(tmp_path, monkeypatch):
                   "--no-figures"])
     assert rc == 0
     out = gpd.read_parquet(tmp_path / "out" / "r_assessed.parquet")
-    assert np.isfinite(out["dh_DEM_before"]).all()
+    assert np.isfinite(out["dz_DEM"]).all()
     # a different GRID under the declaration still refuses
     from groundcontrol.sample import _grid_signature
     assert _grid_signature("EPSG:32610") == _grid_signature(tgt)

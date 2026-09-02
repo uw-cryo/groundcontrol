@@ -670,8 +670,8 @@ def dz_residual_sheets(sampled, products, outdir, site_name, *, rgb=None,
                 logger.warning("ngs_best residual subset skipped: %s", exc)
     if not subsets:
         return []
-    dz_cols = [(c[len("dh_"):-len("_before")], c) for c in sampled.columns
-               if c.startswith("dh_") and c.endswith("_before")]
+    dz_cols = [(c[len("dz_"):], c) for c in sampled.columns
+               if c.startswith("dz_")]
     out = []
     with ExitStack() as stack:
         layers = None   # built lazily: only when some subset has residuals
@@ -2607,7 +2607,7 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
     item 5; requested by David 2026-07-15 after the SF run).
 
     One figure per product: (a) map of control points over shaded relief
-    colored by ``dh_<product>_before`` (product - control, RdBu_r); (b)
+    colored by ``dz_<product>`` (product - control, RdBu_r); (b)
     histograms for the survey-grade segments (vendor NVA/VVA, the GNSS
     occupation classes); (c) histogram for NGS monuments after a
     ``ngs_nmad_gate``-NMAD filter.
@@ -2648,7 +2648,7 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         for lbl, (fn, in_dsm, in_dtm) in _SEGMENTS.items()
     }
     for prod in products:
-        col = f"dh_{prod}_before"
+        col = f"dz_{prod}"
         if col not in sampled.columns:
             logger.warning("validation_dz: no column %s, skipping %s", col, prod)
             continue
@@ -3161,7 +3161,7 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                             "NAVD88 — datum unverified for rows whose "
                             "elevation source is not the pipeline's own")
         for prod in products:
-            col = f"dh_{prod}_before"
+            col = f"dz_{prod}"
             vva_ctx = False        # VVA drawn on a SURFACE product (dagger)
             if col not in sampled.columns:
                 logger.warning("family_dz: no column %s, skipping %s/%s",

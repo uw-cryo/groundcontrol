@@ -470,9 +470,10 @@ def sample_products(gdf, products, *, method="linear", radius=None, block=4096,
 
     ``products`` maps a short product name (e.g. ``"DSM"``) to a raster path
     (or DataArray) **in the same CRS as** ``gdf`` (asserted per raster). Adds,
-    per product: ``h_<name>`` (sampled height) and ``dh_<name>_before``
-    (product minus control ``h_ell``; the ``_before`` suffix is the
-    co-registration convention shared with figures.validation_dz_figures).
+    per product: ``h_<name>`` (sampled height) and ``dz_<name>`` (product
+    minus control, in the product's vertical reference — ellipsoidal or
+    orthometric, whichever the product declares; the figures label it
+    "dz = <name> − control").
     Radius mode also carries ``h_<name>_nmad`` / ``h_<name>_n``. NaN where the
     raster has nodata or the point is outside — points in a merge-mosaic gap
     (e.g. a missing DTM tile) stay NaN and are reported, never dropped.
@@ -481,7 +482,7 @@ def sample_products(gdf, products, *, method="linear", radius=None, block=4096,
 
     out = gdf
     for name, r in products.items():
-        clash = [c for c in (f"h_{name}", f"dh_{name}_before",
+        clash = [c for c in (f"h_{name}", f"dz_{name}",
                              f"h_{name}_nmad", f"h_{name}_n") if c in out.columns]
         if clash:
             raise ValueError(
@@ -514,17 +515,17 @@ def sample_products(gdf, products, *, method="linear", radius=None, block=4096,
             elif c.endswith("_n"):
                 rename[c] = f"h_{name}_n"
             elif " minus " in c:
-                rename[c] = f"dh_{name}_before"
+                rename[c] = f"dz_{name}"
         out = out.rename(columns=rename)
-        n_fin = int(np.isfinite(out[f"dh_{name}_before"].to_numpy(dtype="float64")).sum())
+        n_fin = int(np.isfinite(out[f"dz_{name}"].to_numpy(dtype="float64")).sum())
         logger.info("sampled %s: %d/%d points finite", name, n_fin, len(out))
     return out
 
 
 def summarize_dz(sampled, products=None, segments=SEGMENTS):
-    """Tidy per-product, per-segment stats table for ``dh_<prod>_before``.
+    """Tidy per-product, per-segment stats table for ``dz_<prod>``.
 
-    ``products`` defaults to every ``dh_*_before`` column present. Returns a
+    ``products`` defaults to every ``dz_*`` column present. Returns a
     DataFrame with one row per (product, segment) plus an ``ALL`` segment.
     Dual-track reporting (owner 2026-07-16; ASPRS Ed.2/LBS-2024 vocabulary):
     robust ``median_m``/``nmad_m`` over all finite residuals, then the
@@ -539,8 +540,8 @@ def summarize_dz(sampled, products=None, segments=SEGMENTS):
     from groundcontrol.accuracy import error_report
 
     if products is None:
-        products = [c[len("dh_"):-len("_before")] for c in sampled.columns
-                    if c.startswith("dh_") and c.endswith("_before")]
+        products = [c[len("dz_"):] for c in sampled.columns
+                    if c.startswith("dz_")]
     budget = float("nan")
     if "xform_acc_m" in sampled.columns:
         xa = sampled["xform_acc_m"].to_numpy(dtype="float64")
@@ -548,7 +549,7 @@ def summarize_dz(sampled, products=None, segments=SEGMENTS):
             budget = float(np.nanmedian(xa))
     rows = []
     for prod in products:
-        col = f"dh_{prod}_before"
+        col = f"dz_{prod}"
         v_all = sampled[col].to_numpy(dtype="float64")
         is_dtm = is_dtm_product(prod)
         for label, (maskfn, in_dsm, in_dtm) in list(segments.items()) + [

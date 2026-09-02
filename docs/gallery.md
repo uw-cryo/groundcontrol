@@ -12,7 +12,7 @@ spans 1940s leveling to 2020s GNSS).
 
 ## 1. Multi-source control fetch
 
-`fetch_control` on a ~60 km AOI: 1,707 points from five sources in one
+`fetch_control` on a ~60 km AOI: 1,717 points from five sources in one
 normalized schema — 3DEP checkpoints, NGS monuments, OPUS campaign GNSS, and
 FAA runway control (rotated runway-end chevrons, helipad H-rings) — over the
 product hillshade. Sparse named classes carry labels (CORS/GNSS station ids
@@ -50,8 +50,8 @@ GNSS stars, NGS monuments, FAA chevrons — the same symbology as the control
 map), color stays the dz ramp — plus the survey-grade histograms (3DEP NVA
 checkpoints, OPUS campaign GNSS, FAA surveyed runway points) and the
 NGS-monument histogram after a 3·NMAD gate; the title counts sampled against
-fetched control (unsampled = outside the data or in a gap). Here 1,593 of
-1,725 control points over the 60 km mosaic, NVA median −0.040 m / NMAD
+fetched control (unsampled = outside the data or in a gap). Here 1,585 of
+1,717 control points over the 60 km mosaic, NVA median −0.040 m / NMAD
 0.042 m. The DSM+DTM run with context sheets: 190 s end to end, of which
 transform + sampling take 32 s.
 
@@ -99,11 +99,12 @@ provenance. `family_dz_figures` family `faa` — the surveyed class (3RD PARTY
 SURVEY / NGS / MILITARY / ARPTS CONTRACTOR, AC 150/5300-18C survey-grade)
 against the 3DEP DSM sits at −0.01 m median; the estimated class (OWNER /
 FAA-EST IMAGERY / ADO) is what its name says, and stays visible as context
-rather than being filtered away upstream. A subset of facilities publishes
-elevations on EGM96 MSL rather than NAVD88; the source declares that datum
-and they land through the geoid, as their own context class. The stated 3D
-transform budget for
-the NAD83(2011)+NAVD88 → ellipsoidal-UTM landing is printed on the histogram.
+rather than being filtered away upstream. The source keeps civil facilities
+by default (NASR ownership `PU`/`PR`; `--faa-ownership all` widens it); some
+facilities outside that set publish elevations on EGM96 MSL rather than
+NAVD88, and the source declares that datum so they land through the geoid,
+as their own context class. The stated 3D transform budget for the
+NAD83(2011)+NAVD88 → ellipsoidal-UTM landing is printed on the histogram.
 
 ![FAA runway control dz](img/casagrande_dz_faa_DSM.png)
 

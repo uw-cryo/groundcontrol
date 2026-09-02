@@ -297,7 +297,10 @@ def transform_control(control, target_crs, *, target_epoch=2010.0,
                         else src_obj2.to_epsg())
             # NA = unknown height datum (sources/ngs.py contract: refuse,
             # never guess) — previously let through by vc.notna() & (...)
-            incompat_arr = vc.isna().to_numpy(dtype=bool)
+            # a fresh WRITABLE array: pandas 3 (copy-on-write) hands back a
+            # read-only view from to_numpy() and the |= below raised
+            # "output array is read-only" (CI py3.12, pandas 3.0.5)
+            incompat_arr = np.array(vc.isna(), dtype=bool)
             for val in vc.dropna().unique():
                 m = (vc == val).fillna(False).to_numpy(dtype=bool)
                 if src_code is not None and str(val) == f"EPSG:{src_code}":

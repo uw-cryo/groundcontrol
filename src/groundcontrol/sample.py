@@ -77,8 +77,40 @@ def _horizontal_2d(crs) -> pyproj.CRS:
     return crs.to_2d()
 
 
-def _check_crs(gdf, da: xr.DataArray, check_crs: bool) -> None:
-    """Fail loud on point/raster frame disagreement (never silently mis-sample)."""
+def _grid_signature(crs):
+    """The map GRID a CRS describes, datum-blind: projection method +
+    parameters for a projected CRS, a marker for a plain geographic
+    graticule. Two CRSs with equal signatures address the same pixels —
+    the reinterpretation test behind ``declared_crs``."""
+    h = _horizontal_2d(crs)
+    # prime meridian and axis units are part of the GRID, not the datum:
+    # EPSG:4326 vs EPSG:4807 (Paris PM, grads) or a metre vs US-foot
+    # variant of one projection address different pixels and must never
+    # compare equal (audit: the declared_crs escape accepted a 2.337 deg
+    # PM shift, ~170 km)
+    pm = round(h.prime_meridian.longitude, 9) if h.prime_meridian else 0.0
+    units = tuple(round(a.unit_conversion_factor, 12) for a in h.axis_info)
+    if h.is_projected and h.coordinate_operation is not None:
+        co = h.coordinate_operation
+        return (co.method_name,
+                tuple(sorted((p.name, round(p.value, 9))
+                             for p in co.params
+                             if isinstance(p.value, (int, float)))),
+                pm, units)
+    if h.is_geographic:
+        return ("geographic", pm, units)
+    return ("other", h.to_wkt())
+
+
+def _check_crs(gdf, da: xr.DataArray, check_crs: bool,
+               declared_crs=None) -> None:
+    """Fail loud on point/raster frame disagreement (never silently
+    mis-sample). ``declared_crs``: the frame the caller DECLARED the
+    raster to actually be in (--target-crs / --vdatum semantics — the
+    header's datum is overridden, the grid is not): points matching the
+    declaration are accepted when the declaration addresses the same
+    grid as the header (same projection, datum-blind); a different grid
+    still refuses."""
     raster_crs = da.rio.crs
     if not check_crs:
         msg = (
@@ -96,6 +128,16 @@ def _check_crs(gdf, da: xr.DataArray, check_crs: bool) -> None:
             "(expert use) to override."
         )
     if not _horizontal_2d(gdf.crs).equals(_horizontal_2d(raster_crs)):
+        if (declared_crs is not None
+                and _horizontal_2d(gdf.crs).equals(_horizontal_2d(declared_crs))
+                and _grid_signature(declared_crs) == _grid_signature(raster_crs)):
+            logger.warning(
+                "sampling under the declared frame %r; the raster header "
+                "says %r — same grid, datum reinterpretation (the "
+                "--target-crs/--vdatum contract), not a transform",
+                pyproj.CRS.from_user_input(declared_crs).name,
+                pyproj.CRS.from_user_input(raster_crs).name)
+            return
         raise ValueError(
             "points and raster are in different CRSs — refusing to silently mis-sample. "
             f"points: {pyproj.CRS.from_user_input(gdf.crs).name!r}; "
@@ -153,6 +195,42 @@ def _radius_stats(arr, xc, yc, xq, yq, radius):
     return med, nmad, cnt
 
 
+
+#: max wasted pixels a group read may spend per point before it is split
+#: (owner 2026-08-30, Las Vegas 0.5 m VRT: fixed 4096-px blocks read 1.5 GB
+#: — 241 windows up to 13 Mpx — to sample 671 scattered points needing ~6 kpx;
+#: ~30 s per product)
+_PER_POINT_PX = 256 * 256
+
+
+def _point_windows(rows, cols, idx, halo_r, halo_c, H, W, block):
+    """Yield ``(idx, rr0, rr1, cc0, cc1)`` read groups for the point set.
+
+    Recursive spatial split: a group is read in one window when the tight
+    bbox (+halo) fits the ``block``-squared memory cap AND wastes at most
+    ``_PER_POINT_PX`` pixels per point; otherwise it splits at the midpoint
+    of the longer point-span axis (both halves provably non-empty) and
+    recurses. Dense clusters still amortize into one read; isolated points
+    read a few-pixel window instead of a multi-megapixel tile. A group
+    whose points share one pixel (or a lone point with a big radius halo)
+    can no longer split and is yielded regardless of the waste cap.
+    """
+    sr, sc = rows[idx], cols[idx]
+    rr0, rr1 = max(0, int(sr.min()) - halo_r), min(H, int(sr.max()) + halo_r + 1)
+    cc0, cc1 = max(0, int(sc.min()) - halo_c), min(W, int(sc.max()) + halo_c + 1)
+    area = (rr1 - rr0) * (cc1 - cc0)
+    rspan, cspan = int(sr.max() - sr.min()), int(sc.max() - sc.min())
+    if (area <= block * block and area <= len(idx) * _PER_POINT_PX) \
+            or (rspan == 0 and cspan == 0):
+        yield idx, rr0, rr1, cc0, cc1
+        return
+    v = sr if rspan >= cspan else sc
+    cut = (int(v.min()) + int(v.max())) // 2  # span > 0: both halves non-empty
+    lo = v <= cut
+    yield from _point_windows(rows, cols, idx[lo], halo_r, halo_c, H, W, block)
+    yield from _point_windows(rows, cols, idx[~lo], halo_r, halo_c, H, W, block)
+
+
 def _sample_windowed(src_fn: str, xs_pt, ys_pt, method: str, block: int, radius=None):
     """Block-wise windowed sampling from the raster's source file (memory-safe).
 
@@ -186,17 +264,8 @@ def _sample_windowed(src_fn: str, xs_pt, ys_pt, method: str, block: int, radius=
         inb = finite & (rows >= 0) & (rows < H) & (cols >= 0) & (cols < W)
         if not inb.any():
             return vals if radius is None else (r_med, r_nmad, r_cnt)
-        rmin, rmax = rows[inb].min(), rows[inb].max()
-        cmin, cmax = cols[inb].min(), cols[inb].max()
-        for r0 in range(rmin, rmax + 1, block):
-            for c0 in range(cmin, cmax + 1, block):
-                sel = inb & (rows >= r0) & (rows < r0 + block) & (cols >= c0) & (cols < c0 + block)
-                if not sel.any():
-                    continue
-                sr, sc = rows[sel], cols[sel]
-                # tile + halo, clamped to the dataset (window never leaves it)
-                rr0, rr1 = max(0, sr.min() - halo_r), min(H, sr.max() + halo_r + 1)
-                cc0, cc1 = max(0, sc.min() - halo_c), min(W, sc.max() + halo_c + 1)
+        for idx, rr0, rr1, cc0, cc1 in _point_windows(
+                rows, cols, np.where(inb)[0], halo_r, halo_c, H, W, block):
                 win = Window(cc0, rr0, cc1 - cc0, rr1 - rr0)
                 arr = ds.read(1, window=win).astype("float64")
                 arr = _mask_nodata(arr, nodata)
@@ -205,7 +274,6 @@ def _sample_windowed(src_fn: str, xs_pt, ys_pt, method: str, block: int, radius=
                 xc = wt.c + (np.arange(nx) + 0.5) * wt.a
                 yc = wt.f + (np.arange(ny) + 0.5) * wt.e
                 arr, xc, yc = _ascending(arr, xc, yc)
-                idx = np.where(sel)[0]
                 if radius is not None:
                     m, s, c = _radius_stats(arr, xc, yc, xs_pt[idx], ys_pt[idx], radius)
                     r_med[idx], r_nmad[idx], r_cnt[idx] = m, s, c
@@ -252,7 +320,8 @@ def _sample_in_memory(da: xr.DataArray, xs_pt, ys_pt, method: str, radius=None):
 
 
 def sample_raster(gdf, r, col: str = "height", method: str = "linear", diff: bool = False,
-                  block: int = 4096, check_crs: bool = True, radius=None):
+                  block: int = 4096, check_crs: bool = True, radius=None,
+                  declared_crs=None):
     """Sample raster ``r`` at the points of ``gdf``; return a copy with new column(s).
 
     Parameters
@@ -330,7 +399,7 @@ def sample_raster(gdf, r, col: str = "height", method: str = "linear", diff: boo
             "higher-order methods need a larger tile halo and seam validation)"
         )
     da = _squeeze_band(_open_dataarray(r))
-    _check_crs(gdf, da, check_crs)
+    _check_crs(gdf, da, check_crs, declared_crs=declared_crs)
     src_fn = da.encoding.get("source")
     name = da.name or (Path(src_fn).stem if src_fn else "sampled")
 

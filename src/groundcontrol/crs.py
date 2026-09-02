@@ -392,6 +392,18 @@ def land_horizontal(gdf, target: str = "EPSG:6318", datum_col: str = "horizontal
         if pd.isna(datum) or str(datum).upper().replace(" ", "") == tgt_norm:
             out.loc[idx, "transform_id"] = f"land:identity:{target}"
             continue
+        if is_dynamic_frame(target) and not is_dynamic_frame(datum):
+            # sibling of the dynamic-SOURCE tt rule below (rasuwa round,
+            # 2026-08-29): a plate-fixed subset entering a dynamic target
+            # rides a time-dependent Helmert that an omitted tt evaluates
+            # at the operation's fixed t_epoch — fabricated epoch motion.
+            # Until D6 lands a target-epoch semantics for landing, refuse.
+            raise ValueError(
+                f"cannot land subset {datum!r} (not a dynamic frame) into the "
+                f"dynamic frame {target!r}: the time-dependent leg needs a "
+                "declared target epoch (D6, not yet implemented) — an omitted "
+                "tt would land at the operation's t_epoch. Land this source in "
+                "a plate-fixed frame, or assess it separately.")
         bounds = tuple(sub.geometry.total_bounds)  # subset AOI, in degrees (B7a)
         t = get_transformer(datum, target, aoi_bounds_4326=bounds)
         xs = sub.geometry.x.to_numpy()
@@ -794,10 +806,92 @@ def check_frame_epoch_reduced(gdf, *, tol_yr: float = 1e-6, on_violation: str = 
     return bad
 
 
+def _harvest_step_epochs(gdf, step_epochs):
+    """Per-row earthquake-step epochs for :func:`propagate_epoch`'s guard.
+
+    ``step_epochs="raw"``: read each row's ``raw`` JSON keys ``"eq_steps"``
+    (None/absent = not checked) and ``"eq_steps_through"`` (catalog vintage,
+    decimal year — an interval extending past it counts as unchecked); a
+    mapping: look up by the stringified ``id`` column (keys coerced too).
+    Corrupt evidence (non-list, non-finite entries) RAISES naming the row —
+    it must never read as a clean check. Returns ``(steps, through)`` lists
+    (len(gdf)); mapping mode has no vintage.
+    """
+    import json
+
+    def _clean(steps, through, who):
+        if steps is None:
+            return None, None
+        if not isinstance(steps, (list, tuple)):
+            raise ValueError(
+                f"eq_steps for {who} is {type(steps).__name__!r}, expected a "
+                "list of decimal years — corrupt step evidence must never "
+                "read as a clean check")
+        vals = []
+        for s in steps:
+            # bool/str are corrupt evidence even when float() would accept
+            # them (True -> epoch 1.0!; audit r2 finish, 2026-08-30)
+            f = float("nan")
+            if not isinstance(s, (bool, str)):
+                try:
+                    f = float(s)
+                except (TypeError, ValueError):
+                    f = float("nan")
+            if not np.isfinite(f):
+                raise ValueError(
+                    f"eq_steps for {who} contains a non-numeric or non-finite "
+                    f"entry {s!r} — corrupt step evidence must never read as a "
+                    "clean check")
+            vals.append(f)
+        t = None
+        if through is not None:
+            if isinstance(through, (bool, str)):
+                raise ValueError(
+                    f"eq_steps_through for {who} is {through!r} (non-numeric)")
+            t = float(through)
+            if not np.isfinite(t):
+                raise ValueError(f"eq_steps_through for {who} is non-finite")
+        return vals, t
+
+    n = len(gdf)
+    ids = (gdf["id"].astype("string").fillna("?").tolist()
+           if "id" in gdf.columns else [f"row {i}" for i in range(n)])
+    if isinstance(step_epochs, str) and step_epochs == "raw":
+        if "raw" not in gdf.columns:
+            return [None] * n, [None] * n
+        steps_out, through_out = [], []
+        for i, v in enumerate(gdf["raw"]):
+            steps = through = None
+            if isinstance(v, str) and "eq_steps" in v:  # cheap gate before parse
+                try:
+                    d = json.loads(v)
+                except ValueError:
+                    d = {}
+                if isinstance(d, dict):
+                    steps = d.get("eq_steps")
+                    through = d.get("eq_steps_through")
+            elif isinstance(v, dict):
+                steps = v.get("eq_steps")
+                through = v.get("eq_steps_through")
+            s, t = _clean(steps, through, ids[i])
+            steps_out.append(s)
+            through_out.append(t)
+        return steps_out, through_out
+    if hasattr(step_epochs, "get"):  # {id: [decimal_years]}
+        if "id" not in gdf.columns:
+            raise ValueError("step_epochs mapping needs an 'id' column to join on")
+        mapping = {str(k): v for k, v in dict(step_epochs).items()}
+        out = [_clean(mapping.get(str(i)), None, str(i))[0] for i in ids]
+        return out, [None] * n
+    raise ValueError(f"step_epochs must be 'raw', a mapping, or None; "
+                     f"got {type(step_epochs).__name__}")
+
+
 def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "height",
                     coord_epoch_col: str = "coord_epoch",
                     vel_cols=("vel_e", "vel_n", "vel_u"), plate_model=None,
                     on_nan_epoch: str = "raise",
+                    step_epochs="raw", on_step_crossing: str = "skip",
                     residual_rate_m_per_yr: float = PLATE_MOTION_RATE_BOUND,
                     qc_frame_epoch: bool = True,
                     allow_static_frame: bool = False):
@@ -834,6 +928,23 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
         ``'skip'`` leaves it un-propagated with a warning (§8 test 9 policy flag).
     residual_rate_m_per_yr : reporting-only rate for the un-propagated
         ``velocity·Δt`` bound (see :data:`PLATE_MOTION_RATE_BOUND`).
+    step_epochs : evidence for the earthquake-step guard. ``"raw"``
+        (default): each row's ``raw`` JSON key ``"eq_steps"`` (decimal-year
+        list; the ngl source attaches it — ``[]`` = checked-none, null/absent
+        = not checked); or a ``{id: [decimal_years]}`` mapping; or ``None``
+        to disable the guard entirely.
+    on_step_crossing : what to do when a row's ``[coord_epoch,
+        target_epoch]`` interval strictly contains an earthquake step —
+        secular velocity misses the coseismic displacement entirely
+        (Gorkha-class steps are 0.1-2 m; rasuwa 2026-08-29). ``'skip'``
+        (default): leave the row at its own epoch with
+        ``epoch_residual_m=NaN`` (an un-modeled step CANNOT be bounded) and
+        a WARNING; ``'raise'``: fail loud naming the stations/events;
+        ``'propagate'``: expert override — move the row anyway (the step
+        lands in dz) with a WARNING and a report count. Owner deferred the
+        default to the library (2026-08-30): skip matches the no-velocity
+        tier's honesty pattern. Rows whose step evidence is absent are
+        propagated and counted as ``n_step_unchecked``.
     qc_frame_epoch : run :func:`check_frame_epoch_reduced` (warn) first.
     allow_static_frame : stage 2 is intra-DYNAMIC-frame motion; in a
         plate-fixed frame (NAD83(2011), ...) plate motion is ~zero by
@@ -849,7 +960,11 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
     ``transform_id`` appended with a ``prop:`` tag, a durable per-row
     ``epoch_residual_m`` column (the schema column that survives export/concat;
     0.0 = epoch-reconciled, >0 = velocity·Δt bound for rows left un-propagated,
-    NaN = not assessable — NaN ``coord_epoch`` under ``on_nan_epoch='skip'``),
+    NaN = not assessable — NaN ``coord_epoch`` under ``on_nan_epoch='skip'``,
+    or a row whose interval crossed an earthquake step: the un-modeled step
+    displacement cannot be bounded, in BOTH step modes — a propagated
+    crossing additionally carries ``prop:per_point[STEP-UNMODELED]`` in
+    ``transform_id``),
     and a ``gdf.attrs['epoch_propagation']`` report (counts, models used, max
     applied displacement, and the surfaced residual-bound array).
     """
@@ -886,6 +1001,9 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
         "residual_rate_m_per_yr": float(residual_rate_m_per_yr),
         "max_residual_bound_m": 0.0,
         "residual_bound_m": [0.0] * n if n <= PER_ROW_PROVENANCE_MAX else None,
+        "on_step_crossing": (None if step_epochs is None else on_step_crossing),
+        "n_step_skipped": 0, "n_step_propagated": 0, "n_step_unchecked": 0,
+        "step_events": {},
     }
     if n == 0:
         out["epoch_residual_m"] = np.zeros(0)
@@ -973,6 +1091,62 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
         movable = movable & ~nan_epoch
         model_label[nan_epoch] = "none"
 
+    # ---- earthquake-step guard (see on_step_crossing) --------------------
+    step_crossed = np.zeros(n, dtype=bool)
+    step_unchecked = np.zeros(n, dtype=bool)
+    step_events: dict = {}
+    if on_step_crossing not in ("skip", "raise", "propagate"):
+        raise ValueError("on_step_crossing must be 'skip', 'raise' or "
+                         f"'propagate', got {on_step_crossing!r}")
+    if step_epochs is not None:
+        would_move = movable & np.isfinite(dt) & (dt != 0.0)
+        if would_move.any():
+            row_steps, row_through = _harvest_step_epochs(out, step_epochs)
+            ids = (out["id"].astype("string").fillna("?").tolist()
+                   if "id" in out.columns else [str(i) for i in range(n)])
+            lo = np.minimum(ce, target_epoch)
+            hi = np.maximum(ce, target_epoch)
+            for i in np.flatnonzero(would_move):
+                if row_steps[i] is None:
+                    step_unchecked[i] = True
+                    continue
+                crossed = [s for s in row_steps[i] if lo[i] < s < hi[i]]
+                if crossed:
+                    step_crossed[i] = True
+                    step_events[ids[i]] = sorted(
+                        set(step_events.get(ids[i], [])) | set(crossed))
+                elif row_through[i] is not None and hi[i] > row_through[i]:
+                    # the catalog only covers events through its vintage: an
+                    # interval extending past it is CHECKED only partially
+                    # (audit r1 M-3: a fresh event would read as clean)
+                    step_unchecked[i] = True
+        if step_crossed.any():
+            named = ", ".join(f"{k} ({', '.join(f'{e:.2f}' for e in v)})"
+                              for k, v in list(step_events.items())[:8])
+            more = "" if len(step_events) <= 8 else f" (+{len(step_events) - 8} more)"
+            msg = (f"{int(step_crossed.sum())} row(s) would be propagated across "
+                   f"earthquake step(s) in steps.txt: {named}{more} — secular "
+                   "velocity misses the coseismic displacement entirely")
+            if on_step_crossing == "raise":
+                raise ValueError(
+                    msg + ". Use a position window on the target side of the "
+                    "event, apply an event displacement model, or pass "
+                    "on_step_crossing='skip'/'propagate'.")
+            if on_step_crossing == "skip":
+                warnings.warn(
+                    msg + "; left at their own epoch with epoch_residual_m=NaN "
+                    "(an un-modeled step cannot be bounded). "
+                    "on_step_crossing='propagate' overrides.", stacklevel=2)
+                movable = movable & ~step_crossed
+                # distinct tier label: these rows HAVE a usable velocity —
+                # counting them as "none" made the closing no-velocity
+                # warning lie (audit r1 M-1)
+                model_label[step_crossed] = "step_blocked"
+            else:  # 'propagate' (expert override)
+                warnings.warn(
+                    msg + "; propagated anyway (on_step_crossing='propagate') — "
+                    "the un-modeled step lands in dz.", stacklevel=2)
+
     moved = movable
     lon2, lat2, h2 = lon.copy(), lat.copy(), h.copy()
     disp = np.zeros(n)
@@ -1006,6 +1180,11 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
     # schema.normalize's NaN for never-propagated frames)
     col_bound = bound.copy()
     col_bound[noop & ~np.isfinite(dt)] = np.nan
+    # a step-crossing row's displacement is UNKNOWN, not bounded by
+    # velocity x delta-t — never fabricate a bound (skip mode) or claim
+    # epoch-reconciled 0.0 (propagate mode: the un-modeled step just landed
+    # in the coordinates; audit r1 HIGH — the durable column must say so)
+    col_bound[step_crossed] = np.nan
     out["epoch_residual_m"] = col_bound
 
     # transform_id: append a compact provenance tag (chain-ordered)
@@ -1015,7 +1194,9 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
                  f"prop:plate[{getattr(plate_model, 'name', 'plate')}]->{target_epoch:g}",
                  f"prop:per_point->{target_epoch:g}"),
         "prop:noop",
-    )
+    ).astype(object)  # object dtype: fixed-width <U would silently truncate
+    tag[step_crossed & ~moved] = "prop:noop[step]"
+    tag[step_crossed & moved] = f"prop:per_point[STEP-UNMODELED]->{target_epoch:g}"
     if "transform_id" in out.columns:
         existing = out["transform_id"].tolist()
         chained = [t if pd.isna(e) else f"{e}+{t}" for e, t in zip(existing, tag)]
@@ -1028,6 +1209,7 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
             "per_point": int((model_label == "per_point").sum()),
             "plate": int((model_label == "plate").sum()),
             "none": int((model_label == "none").sum()),
+            "step_blocked": int((model_label == "step_blocked").sum()),
         },
         max_applied_displacement_m=float(disp.max()),
         # report mirrors the durable column exactly: NaN = unassessable Δt
@@ -1036,6 +1218,11 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
                               if np.isfinite(col_bound).any() else float("nan")),
         residual_bound_m=_per_row(col_bound),
         n_unassessable=int(np.isnan(col_bound).sum()),
+        on_step_crossing=(None if step_epochs is None else on_step_crossing),
+        n_step_skipped=int((step_crossed & ~moved).sum()),
+        n_step_propagated=int((step_crossed & moved).sum()),
+        n_step_unchecked=int(step_unchecked.sum()),
+        step_events={k: v for k, v in list(step_events.items())[:50]},
     )
     out.attrs["epoch_propagation"] = report
 
@@ -1045,11 +1232,27 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
         target_epoch, report["n_propagated"], n, report["models"]["per_point"],
         report["models"]["plate"], report["n_noop"],
         report["max_applied_displacement_m"], report["max_residual_bound_m"])
-    if report["max_residual_bound_m"] > 1e-4 or report["n_unassessable"]:
+    if report["n_step_unchecked"]:
+        # WARNING, not info: unchecked steps mean earthquake displacement
+        # (Gorkha-class, decimetres) may have been propagated across — the
+        # one alert a bad/absent steps cache leaves behind
+        logger.warning(
+            "propagate_epoch: %d propagated row(s) had no (or stale) "
+            "earthquake-step evidence — steps not checked for them",
+            report["n_step_unchecked"])
+    n_novel = report["n_noop"] - report["models"]["step_blocked"]
+    # step rows carry a deliberate NaN residual (displacement unknown, not
+    # velocity-bounded) — they are not "unassessable (NaN Δt)" rows
+    n_nan_dt = (report["n_unassessable"] - report["n_step_skipped"]
+                - report["n_step_propagated"])
+    if report["max_residual_bound_m"] > 1e-4 or n_nan_dt:
+        _mb = report["max_residual_bound_m"]
+        _mb_txt = (f"{_mb:.3f} m" if np.isfinite(_mb)
+                   else "n/a (only step-crossing/NaN-Δt rows)")
         warnings.warn(
-            f"{report['n_noop']} row(s) left at their own epoch (no usable velocity); "
-            f"un-propagated velocity·Δt bound up to {report['max_residual_bound_m']:.3f} m "
-            f"(at rate {residual_rate_m_per_yr} m/yr), {report['n_unassessable']} row(s) "
+            f"{n_novel} row(s) left at their own epoch (no usable velocity); "
+            f"un-propagated velocity·Δt bound up to {_mb_txt} "
+            f"(at rate {residual_rate_m_per_yr} m/yr), {n_nan_dt} row(s) "
             "unassessable (NaN Δt) — see attrs['epoch_propagation']",
             stacklevel=2)
     return out

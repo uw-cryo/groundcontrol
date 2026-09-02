@@ -40,7 +40,6 @@ from __future__ import annotations
 import functools
 import json
 import logging
-import time
 
 import pandas as pd
 import requests
@@ -137,8 +136,8 @@ def parse_igs(records: list[dict]) -> pd.DataFrame:
 
 
 def _stale(local) -> bool:
-    return (not local.exists()
-            or (time.time() - local.stat().st_mtime) > LIST_MAX_AGE_DAYS * 86400)
+    from groundcontrol.sources.checkpoints_3dep import cache_stale
+    return cache_stale(local, LIST_MAX_AGE_DAYS)
 
 
 def cors_members(df: pd.DataFrame) -> pd.DataFrame:

@@ -324,8 +324,9 @@ everything up in that frame. Rationale:
   use a plate-fixed datum — and no single hardcoded pivot fits real deliveries. The **first
   application** assesses commercial stereo DSMs delivered in two frames: **UTM / ITRF2008
   epoch 2005.0 / HAE** and **UTM / NAD83(2011) / HAE**. ICESat-2 ATL03 is ITRF2014 through
-  release 006 and **ITRF2020 from v7** (ATL24 v001 User Guide p.6; frame follows the ATL03
-  inputs — release-dependent, so record/verify per granule release).
+  release 006 and **ITRF2020 (reference epoch 2015.0) from v007 — NOT ITRF2014** (owner
+  directive 2026-08-29; ATL24 v001 User Guide p.6; frame follows the ATL03 inputs —
+  release-dependent, so record/verify per granule release).
 - **NAD83(2011) will itself be replaced by NATRF2022** (NSRS modernization; reference epoch
   2020.00 — verified naming per NGS FAQ; zero EPSG/PROJ records exist yet) — the transform
   machinery must be realization-agnostic from the start, not special-cased to today's frames.

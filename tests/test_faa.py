@@ -1,11 +1,13 @@
 """FAA NASR runway source: offline parse/fixture tests + live fetch.
 
-Fixture ``faa_apt_sample.txt`` holds 13 real fixed-width records (4 APT +
-9 RWY) captured from the live 2026-08-06 cycle: LAS (Harry Reid) and VGT
+Fixture ``faa_apt_sample.txt`` holds 17 real fixed-width records (5 APT +
+12 RWY) captured from the live 2026-08-06 cycle: LAS (Harry Reid) and VGT
 (North Las Vegas) with surveyed ends and displaced thresholds, NV53 (a
-hospital heliport, FAA-EST IMAGERY provenance), and 5AZ3 (Pegasus Airpark
-AZ, estimated-provenance GA field with displaced thresholds). ``fetch()``
-is ``@network``; parsing is offline.
+hospital heliport, FAA-EST IMAGERY provenance), 5AZ3 (Pegasus Airpark
+AZ, estimated-provenance GA field with displaced thresholds), and LSV
+(ownership MA — the ownership-coded provenance class, outside the default
+ownership filter: ``parse(..., ownership="all")`` widens to it).
+``fetch()`` is ``@network``; parsing is offline.
 """
 
 import json
@@ -35,12 +37,21 @@ def _raw(bounds=WORLD):
 
 
 def test_parse_counts_and_types():
+    # default ownership filter (PU/PR): the four civil facilities
     out = faa.parse(_raw())
     assert len(out) == 26
     assert (out["point_type"] == "runway_end").sum() == 16
     assert (out["point_type"] == "displaced_threshold").sum() == 9
-    # NV53 H1 is a hospital helipad: pad point, not a runway end
-    assert list(out.loc[out["point_type"] == "helipad", "id"]) == ["NV53_H1"]
+    assert sorted(out.loc[out["point_type"] == "helipad", "id"]) == ["NV53_H1"]
+    assert out.attrs["skipped"] == {"n": 5, "reasons": {"ownership filter": 5}}
+    # ownership="all": every facility, LSV's four ends + base pad included
+    out = faa.parse(_raw(), ownership="all")
+    assert len(out) == 31 and "skipped" not in out.attrs
+    assert (out["point_type"] == "runway_end").sum() == 20
+    assert (out["point_type"] == "displaced_threshold").sum() == 9
+    # NV53 H1 (hospital) and LSV H1 (base pad): pad points, not runway ends
+    assert sorted(out.loc[out["point_type"] == "helipad", "id"]) == \
+        ["LSV_H1", "NV53_H1"]
     assert out.crs is not None and out.crs.to_epsg() == 6318
     # every point carries coordinates; heights all present in this sample
     assert out.geometry.notna().all()
@@ -64,19 +75,43 @@ def test_parse_values_las_01l():
     assert r["horizontal_crs"] == "EPSG:6318"
 
 
+def test_ownership_filter():
+    """The filter is a NASR ownership-code set: explicit codes, the
+    comma-separated CLI form (case/space tolerant), 'all', and a fail-loud
+    unknown code (a typo must not silently empty the source)."""
+    pu = faa.parse(_raw(), ownership=("PU",))
+    assert set(pu["id"].str[:3]) == {"LAS", "VGT"}
+    assert pu.attrs["skipped"]["reasons"] == {"ownership filter": 31 - len(pu)}
+    assert len(faa.parse(_raw(), ownership=" pu, Pr ")) == 26
+    assert len(faa.parse(_raw(), ownership="ALL")) == 31
+    with pytest.raises(ValueError, match="unknown code"):
+        faa.parse(_raw(), ownership="PU,XX")
+    with pytest.raises(ValueError):
+        faa.parse(_raw(), ownership="")
+    # an empty AOI with a filter: schema-shaped empty, no skipped report
+    assert len(faa.parse(_raw((0.0, 0.0, 1.0, 1.0)), ownership=("PU",))) == 0
+
+
 def test_provenance_classes_and_accuracy():
-    out = faa.parse(_raw())
+    out = faa.parse(_raw(), ownership="all")
     cls = out["raw"].map(lambda s: json.loads(s)["pos_class"])
     srcs = out["raw"].map(lambda s: json.loads(s).get("pos_src", ""))
     surveyed = cls == "surveyed"
-    # LAS/VGT are 3RD PARTY SURVEY; NV53 heliport and 5AZ3 are estimated
+    mil = cls == "mil"
+    # LAS/VGT are 3RD PARTY SURVEY; NV53 heliport and 5AZ3 are estimated;
+    # LSV (ownership MA) classes mil REGARDLESS of its MILITARY position
+    # source — its elevations are published on EGM96 MSL
     assert set(out.loc[surveyed, "id"].str[:3]) == {"LAS", "VGT"}
-    assert (~surveyed).sum() == 5  # NV53_H1 + four 5AZ3 points
-    assert set(srcs[~surveyed]) == {"FAA-EST IMAGERY", "ADO"}
+    assert set(out.loc[mil, "id"].str[:3]) == {"LSV"}
+    assert (~surveyed & ~mil).sum() == 5  # NV53_H1 + four 5AZ3 points
+    assert set(srcs[~surveyed & ~mil]) == {"FAA-EST IMAGERY", "ADO"}
+    own = out["raw"].map(lambda s: json.loads(s).get("ownership"))
+    assert set(own[mil]) == {"MA"} and set(own[surveyed]) == {"PU"}
     # spec accuracy attaches to the surveyed class ONLY; estimated rows
     # honestly carry no accuracy (never a fabricated bound)
     assert np.allclose(out.loc[surveyed, "acc_h"], faa.ACC_H_SURVEYED)
     assert np.allclose(out.loc[surveyed, "acc_v"], faa.ACC_V_SURVEYED)
+    # mil rows too: their spec is not the AC's
     assert out.loc[~surveyed, "acc_h"].isna().all()
     assert out.loc[~surveyed, "acc_v"].isna().all()
 
@@ -94,21 +129,31 @@ def test_bbox_filter_and_empty():
     lv = faa.parse(_raw(LV_BBOX))
     assert set(lv["id"].str[:4]) == {"LAS_", "VGT_", "NV53"}
     assert len(lv) == 22  # 26 minus the four 5AZ3 (Arizona) points
+    lv = faa.parse(_raw(LV_BBOX), ownership="all")
+    assert set(lv["id"].str[:4]) == {"LAS_", "LSV_", "VGT_", "NV53"}
+    assert len(lv) == 27
     empty = faa.parse(_raw((0.0, 0.0, 1.0, 1.0)))
     assert len(empty) == 0
     assert empty.crs is not None
     assert "id" in empty.columns and "height" in empty.columns
 
 
-def test_schema_conformance():
-    out = faa.parse(_raw())
+@pytest.mark.parametrize("ownership,verticals", [
+    (faa.DEFAULT_OWNERSHIP, {"EPSG:5703"}),
+    ("all", {"EPSG:5703", "EPSG:5773"}),
+])
+def test_schema_conformance(ownership, verticals):
+    out = faa.parse(_raw(), ownership=ownership)
     norm = schema.normalize(out, source="faa")
     schema.validate(norm)
     assert (norm["source"] == "faa").all()
-    # transformability contract: resolvable horizontal CRS, uniform
-    # non-null vertical CRS, non-null coord_epoch (plate-fixed reading)
+    # transformability contract: resolvable horizontal CRS, a DECLARED
+    # vertical per row from the source's known set (NAVD88 for the AC
+    # reading, EGM96 for the ownership-coded class's own sources; NA only
+    # for the unverified remainder — the per-row guard re-targets the EGM96
+    # rows from their natives), non-null coord_epoch (plate-fixed reading)
     assert norm["horizontal_crs"].notna().all()
-    assert norm["vertical_crs"].nunique() == 1
+    assert set(norm["vertical_crs"].dropna().unique()) == verticals
     assert norm["coord_epoch"].notna().all()
 
 

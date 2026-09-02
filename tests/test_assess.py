@@ -85,7 +85,7 @@ def _plane_tif(tmp_path, name="plane.tif"):
 
 
 def _landed(offsets, outside=0):
-    """Points on the plane with h_ell = plane - offset (so dh_before = offset)."""
+    """Points on the plane with h_ell = plane - offset (so dz = offset)."""
     n = len(offsets)
     xs = np.linspace(X0 + 2.5, X0 + 8.5, n)
     ys = np.linspace(Y0 + 2.5, Y0 + 5.5, n)
@@ -108,8 +108,8 @@ def test_sample_products_standard_columns_and_values(tmp_path):
     pts = _landed([0.10, -0.20, 0.30, 0.40])
     out = sample_products(pts, {"DSM": dsm, "DTM": dtm})
     for prod in ("DSM", "DTM"):
-        assert {f"h_{prod}", f"dh_{prod}_before"} <= set(out.columns)
-        np.testing.assert_allclose(out[f"dh_{prod}_before"],
+        assert {f"h_{prod}", f"dz_{prod}"} <= set(out.columns)
+        np.testing.assert_allclose(out[f"dz_{prod}"],
                                    [0.10, -0.20, 0.30, 0.40], atol=1e-9)
     assert not any(" minus " in c for c in out.columns)
     assert "h_ell" in out.columns  # input columns ride along
@@ -119,7 +119,7 @@ def test_sample_products_radius_columns(tmp_path):
     dsm = _plane_tif(tmp_path)
     pts = _landed([0.0, 0.0, 0.0, 0.0])
     out = sample_products(pts, {"DSM": dsm}, radius=1.5)
-    assert {"h_DSM", "h_DSM_nmad", "h_DSM_n", "dh_DSM_before"} <= set(out.columns)
+    assert {"h_DSM", "h_DSM_nmad", "h_DSM_n", "dz_DSM"} <= set(out.columns)
     assert (out["h_DSM_n"] > 0).all()
 
 
@@ -141,6 +141,7 @@ def test_summarize_dz_segments_nodata_and_applies(tmp_path):
         "3DEP NVA", "3DEP VVA", "GNSS continuous", "GNSS semi-continuous",
         "GNSS campaign (OPUS)", "GNSS campaign (NGL)",
         "GNSS campaign (other)", "GNSS (pre-split)", "NGS monument",
+        "FAA runway surveyed", "FAA (EGM96 records)", "FAA other",
         "OTHER (unsegmented)"}
 
 
@@ -158,7 +159,7 @@ def test_gnss_taxonomy_exhaustive_and_styled():
     g = gpd.GeoDataFrame(
         {"source": pd.Series([s for _, s in rows], dtype="string"),
          "point_type": pd.Series([p for p, _ in rows], dtype="string"),
-         "dh_DSM_before": [0.0] * len(rows)},
+         "dz_DSM": [0.0] * len(rows)},
         geometry=gpd.points_from_xy(range(len(rows)), [0.0] * len(rows)),
         crs="EPSG:32611")
     gnss_segs = [fn for lbl, (fn, _, _) in SEGMENTS.items()
@@ -184,7 +185,7 @@ def test_summarize_dz_gnss_routes_by_point_type():
         {"source": ["ngl", "ngl", "ngl", "opus", "ngl", "opus"],
          "point_type": ["gnss_cont", "gnss_semicont", "gnss_campaign",
                         "gnss_campaign", "gnss", "gnss"],
-         "dh_DSM_before": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]},
+         "dz_DSM": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]},
         geometry=gpd.points_from_xy([0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
                                     [0.0] * 6),
         crs="EPSG:32611")
@@ -215,7 +216,7 @@ def test_summarize_dz_unsegmented_row_surfaces():
     g = gpd.GeoDataFrame(
         {"source": pd.Series(["opus", "opus"], dtype="string"),
          "point_type": pd.Series([pd.NA, "gnss_campaign"], dtype="string"),
-         "dh_DSM_before": [0.1, 0.2]},
+         "dz_DSM": [0.1, 0.2]},
         geometry=gpd.points_from_xy([0.0, 1.0], [0.0, 0.0]), crs="EPSG:32611")
     stats = summarize_dz(g)
     seg_n = dict(zip(stats.segment, stats.n))
@@ -249,7 +250,7 @@ def test_assess_products_end_to_end_writes_artifacts(tmp_path):
     xa = sampled["xform_acc_m"].iloc[0]
     assert np.isnan(xa) or xa > 0
     rt = gpd.read_parquet(tmp_path / "out" / "synthsite_assessed.parquet")
-    np.testing.assert_allclose(rt["dh_DSM_before"], [0.10, -0.20, 0.30, 0.40],
+    np.testing.assert_allclose(rt["dz_DSM"], [0.10, -0.20, 0.30, 0.40],
                                atol=1e-9)
 
 
@@ -304,8 +305,8 @@ def test_family_dz_figures_smoke(tmp_path):
     g = gpd.GeoDataFrame(
         {"source": src, "point_type": ptype, "raw": raw,
          "ref_frame": ["NAD83(2011)"] * 6 + ["NAD 83(2011)"] * 3 + ["NAD 83(1986)"] * 3,
-         "dh_DSM_before": np.linspace(-0.1, 0.1, n),
-         "dh_DTM_before": np.append(np.linspace(-0.1, 0.1, n - 1), np.nan)},
+         "dz_DSM": np.linspace(-0.1, 0.1, n),
+         "dz_DTM": np.append(np.linspace(-0.1, 0.1, n - 1), np.nan)},
         geometry=gpd.points_from_xy(np.linspace(0, 100, n), np.linspace(0, 80, n)),
         crs="EPSG:32611")
     best = default_ngs_best(g)
@@ -316,6 +317,42 @@ def test_family_dz_figures_smoke(tmp_path):
                            for fam in ("3dep", "gnss", "ngs_best")
                            for prod in ("DSM", "DTM"))
     assert all(p.exists() for p in out)
+
+
+def test_budget_line_is_per_drawn_rows():
+    """One number when the drawn rows share a budget; the range when the
+    drawn subclasses carry different chains; None without any (round-7:
+    the figures printed a frame-wide median)."""
+    from groundcontrol.figures import _budget_line
+    assert _budget_line([0.015, 0.015, np.nan]) == "stated 3D transform budget \u00b10.015 m"
+    assert _budget_line([0.015, 1.0]) == ("stated 3D transform budget \u00b10.015\u20131 m "
+                                          "(varies by segment)")
+    assert _budget_line([np.nan, np.nan]) is None
+    assert _budget_line([]) is None
+
+
+def test_family_dz_figures_faa_note_keys_on_datum(tmp_path):
+    """The faa family sheet renders for an ownership-class facility whose
+    rows all read NAVD88 (they fall to 'FAA other', no EGM96 caption), for
+    EGM96-declared rows, and for NA-datum rows (round-7 MED-5)."""
+    from groundcontrol.figures import family_dz_figures
+    n = 8
+    raw = ([json.dumps({"pos_class": "surveyed"})] * 3
+           + [json.dumps({"pos_class": "mil"})] * 5)
+    for vcrs in (["EPSG:5703"] * n,
+                 ["EPSG:5703"] * 3 + ["EPSG:5773"] * 5,
+                 ["EPSG:5703"] * 3 + ["EPSG:5773"] * 2 + [pd.NA] * 3):
+        g = gpd.GeoDataFrame(
+            {"source": ["faa"] * n, "point_type": ["runway_end"] * n, "raw": raw,
+             "vertical_crs": pd.Series(vcrs, dtype="string"),
+             "xform_acc_m": [0.015] * 3 + [1.0] * 5,
+             "height": np.linspace(400.0, 410.0, n),
+             "dz_DSM": np.linspace(-0.1, 0.1, n)},
+            geometry=gpd.points_from_xy(np.linspace(0, 100, n), np.linspace(0, 80, n)),
+            crs="EPSG:32611")
+        out = family_dz_figures(g, None, tmp_path, "faa", products=("DSM",),
+                                families=("faa",))
+        assert [p.name for p in out] == ["faa_dz_faa_DSM.png"] and out[0].exists()
 
 
 def test_validation_dz_figures_accepts_path_aoi(tmp_path):
@@ -329,8 +366,8 @@ def test_validation_dz_figures_accepts_path_aoi(tmp_path):
         {"source": ["3dep"] * 4 + ["opus"] * 2 + ["ngs"] * 4,
          "point_type": ["NVA", "NVA", "VVA", "VVA"] + ["gnss_campaign"] * 2
                        + ["monument"] * 4,
-         "dh_DSM_before": np.linspace(-0.1, 0.1, n),
-         "dh_DTM_before": np.linspace(-0.1, 0.1, n)},
+         "dz_DSM": np.linspace(-0.1, 0.1, n),
+         "dz_DTM": np.linspace(-0.1, 0.1, n)},
         geometry=gpd.points_from_xy(np.linspace(0, 100, n),
                                     np.linspace(0, 80, n)),
         crs="EPSG:32611")
@@ -395,7 +432,7 @@ def test_summarize_dz_tolerates_na_point_type():
     df = gpd.GeoDataFrame(
         {"source": pd.array(["3dep", "3dep", None], dtype="string"),
          "point_type": pd.array(["NVA", None, "VVA"], dtype="string"),
-         "dh_DSM_before": [0.1, 0.2, 0.3]},
+         "dz_DSM": [0.1, 0.2, 0.3]},
         geometry=gpd.points_from_xy([0, 1, 2], [0, 0, 0]), crs=CRS)
     stats = summarize_dz(df)  # NA rows are excluded, never a bool-cast crash
     nva = stats[(stats["product"] == "DSM") & (stats.segment == "3DEP NVA")].iloc[0]
@@ -447,7 +484,7 @@ def test_family_dz_ngs_best_na_mask(tmp_path):
          "raw": [json.dumps({"posSource": "ADJUSTED", "vertSource": "RESET"}),
                  json.dumps({"posSource": "ADJUSTED", "vertSource": "GPS OBS"})],
          "ref_frame": pd.array([None, "NAD 83(2011)"], dtype="string"),
-         "dh_DSM_before": [0.05, -0.02]},
+         "dz_DSM": [0.05, -0.02]},
         geometry=gpd.points_from_xy([0, 50], [0, 40]), crs=CRS)
     assert default_ngs_best(g).isna().any()  # the trap this test pins
     out = family_dz_figures(g, None, tmp_path, "na",
@@ -475,12 +512,12 @@ def test_transform_control_accepts_esri_wkt_tag():
 
 
 def test_sample_products_radius_resample_also_guarded(tmp_path):
-    """Dropping only h_/dh_ then re-sampling in radius mode must still raise
+    """Dropping only h_/dz_ then re-sampling in radius mode must still raise
     (h_*_nmad/h_*_n would otherwise duplicate silently)."""
     dsm = _plane_tif(tmp_path, "a-DSM_mos.tif")
     pts = _landed([0.10, -0.20, 0.30, 0.40])
     once = sample_products(pts, {"DSM": dsm}, radius=1.5)
-    stripped = once.drop(columns=["h_DSM", "dh_DSM_before"])
+    stripped = once.drop(columns=["h_DSM", "dz_DSM"])
     with pytest.raises(ValueError, match="already present"):
         sample_products(stripped, {"DSM": dsm}, radius=1.5)
 
@@ -492,7 +529,7 @@ def test_family_dz_misaligned_mask_series_raises(tmp_path):
     g = gpd.GeoDataFrame(
         {"source": ["ngs"] * 4, "point_type": ["monument"] * 4,
          "raw": [None] * 4, "ref_frame": ["NAD 83(2011)"] * 4,
-         "dh_DSM_before": [0.1, 0.2, 0.3, 0.4]},
+         "dz_DSM": [0.1, 0.2, 0.3, 0.4]},
         geometry=gpd.points_from_xy(range(4), range(4)), crs=CRS,
         index=[2, 5, 7, 9])
     bad = pd.Series([True, True, False, False])  # RangeIndex
@@ -546,3 +583,120 @@ def test_transform_control_2d_identity_still_allowed():
     out, _ = transform_control(g, "EPSG:32611", source_crs="EPSG:32611",
                                aoi_bounds_4326=(-120.0, 32.0, -119.0, 33.0))
     np.testing.assert_allclose(out["h_ell"], g["height"])
+
+
+def test_faa_segments_route_by_pos_class(tmp_path):
+    """Owner figure review 2026-08-30: FAA rows previously fell to OTHER.
+    Surveyed validates both product classes; estimated is context-only."""
+    import json
+    dsm = _plane_tif(tmp_path, "b-DSM_mos.tif")
+    pts = _landed([0.05, 0.05, 0.05, 0.05]).rename(columns={"h_ell": "height"})
+    pts["source"] = "faa"
+    pts["point_type"] = ["runway_end", "runway_end", "helipad", "displaced_threshold"]
+    # the helipad is SURVEYED-class on paper — it must still route to
+    # context (the CG +0.33 m helipad finding)
+    pts["raw"] = [json.dumps({"pos_class": c})
+                  for c in ("surveyed", "surveyed", "surveyed", "surveyed")]
+    pts["h_ell"] = pts["height"]
+    sampled = sample_products(pts, {"DSM": dsm})
+    stats = summarize_dz(sampled, products=["DSM"]).set_index("segment")
+    # survey-grade = PAINTED runway features only: the surveyed HELIPAD is
+    # context (CG 2026-08-30: 8 helipads from one elevation source measured +0.33 m —
+    # a different accuracy class, some hand-held GNSS per the owner)
+    assert stats.loc["FAA runway surveyed", "n"] == 3   # 2 ends + 1 displaced
+    assert bool(stats.loc["FAA runway surveyed", "applies"])
+    assert stats.loc["FAA other", "n"] == 1             # the surveyed helipad
+    assert not bool(stats.loc["FAA other", "applies"])
+    assert stats.loc["OTHER (unsegmented)", "n"] == 0
+
+
+def test_assess_bundle_includes_labeled_control_map(tmp_path):
+    """The standard figure bundle carries the all-sources labeled control
+    map (owner 2026-08-30: prototyped in July, never formally included)."""
+    dsm = _plane_tif(tmp_path, "a-DSM_mos.tif")
+    pts = _landed([0.1, -0.1, 0.2, 0.0]).rename(columns={"h_ell": "height"})
+    _, _, art = assess_products(pts, {"DSM": dsm}, CRS, source_crs=CRS,
+                                outdir=tmp_path / "out", site_name="cm",
+                                basemap=None, midas_velocities=False)
+    names = [p.name for p in art["control_figures"]]
+    assert "cm_control_map.png" in names
+    assert (tmp_path / "out" / "cm_control_map.png").exists()
+
+
+def test_transform_control_masks_mismatched_vertical_rows():
+    """Mixed-vertical cache (ngl in the defaults, 2026-08-30): rows whose
+    vertical_crs disagrees with the declared source vertical get h_ell=NaN
+    (positions keep the horizontal leg) — never a silently mis-applied
+    geoid. Compatible rows are byte-identical to a compatible-only run."""
+    import warnings as _w
+    pts = _control_6319(4)  # helper frame; retag as a NAVD88-landed cache
+    pts = pts.rename(columns={"h_ell": "height"}) if "h_ell" in pts.columns else pts
+    pts = pts.set_crs("EPSG:6318", allow_override=True)
+    pts["vertical_crs"] = ["EPSG:5703", "EPSG:5703", "EPSG:7912", "EPSG:5703"]
+    with _w.catch_warnings():
+        _w.simplefilter("ignore")
+        out, info = transform_control(pts, "EPSG:6341+5703",
+                                      source_crs="EPSG:6318+5703")
+        ref, _ = transform_control(pts.drop(columns=["vertical_crs"]),
+                                   "EPSG:6341+5703", source_crs="EPSG:6318+5703")
+    assert info["n_vertical_excluded"] == 1
+    assert "EPSG:7912" in info["vertical_note"]
+    assert np.isnan(out["h_ell"].iloc[2])
+    ok = [0, 1, 3]
+    np.testing.assert_allclose(out["h_ell"].iloc[ok], ref["h_ell"].iloc[ok])
+    # the horizontal leg still lands the excluded row (maps/sheets valid)
+    assert out.geometry.iloc[2].x == ref.geometry.iloc[2].x
+
+
+def test_transform_control_native_retarget_for_mismatched_vertical():
+    """Owner 2026-08-30 ("I need to see the dz values"): a vertically-
+    mismatched row WITH native 3D coordinates is re-targeted through its
+    NATIVE frame's chain (per-row coord_epoch tt for a dynamic frame);
+    rows without natives stay masked. Routing proven via a recording
+    transformer fake."""
+    import warnings as _w
+
+    import groundcontrol.assess as A
+    calls = []
+
+    class _T:
+        def __init__(self, src):
+            self.src = src
+            self.accuracy = 0.02
+            self.description = f"fake {src}"
+            self.definition = "fake"
+
+        def transform(self, x, y, z, t, errcheck=True):
+            calls.append((self.src, np.asarray(t).copy()))
+            return (np.asarray(x) + 1.0, np.asarray(y) + 1.0,
+                    np.asarray(z) + 100.0, np.asarray(t))
+
+    real = A.get_transformer
+    A.get_transformer = lambda src, tgt, aoi_bounds_4326=None: _T(str(src))
+    try:
+        pts = _control_6319(4).rename(columns={"h_ell": "height"},
+                                      errors="ignore")
+        pts = pts.set_crs("EPSG:6318", allow_override=True)
+        pts["vertical_crs"] = ["EPSG:5703", "EPSG:7912", "EPSG:7912", "EPSG:5703"]
+        pts["native_x"] = pts.geometry.x
+        pts["native_y"] = pts.geometry.y
+        pts["native_h"] = [np.nan, 500.0, 510.0, np.nan]
+        pts["native_crs"] = [None, "EPSG:7912", "EPSG:7912", None]
+        pts["coord_epoch"] = [np.nan, 2022.3, np.nan, np.nan]  # row 2: no epoch
+        with _w.catch_warnings():
+            _w.simplefilter("ignore")
+            out, info = A.transform_control(pts, "EPSG:6341+5703",
+                                            source_crs="EPSG:6318+5703")
+    finally:
+        A.get_transformer = real
+    # row 1: dynamic native chain, tt = its coord_epoch, h from native+100
+    assert info["n_vertical_native"] == 1
+    assert info["n_vertical_excluded"] == 1        # row 2: no coord_epoch
+    assert out["h_ell"].iloc[1] == 600.0
+    assert np.isnan(out["h_ell"].iloc[2])
+    assert out["xform_acc_m"].iloc[1] == 0.02
+    srcs = [c[0] for c in calls]
+    assert "EPSG:7912" in srcs                     # the native chain ran
+    tt_native = calls[[i for i, s in enumerate(srcs)
+                       if s == "EPSG:7912"][0]][1]
+    assert tt_native.tolist() == [2022.3]          # per-row epoch, not 2010

@@ -12,8 +12,10 @@ KML export lands behind the ``[kml]`` extra (plan packaging note).
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -99,6 +101,113 @@ def _compound_export_crs(gdf):
         return None
 
 
+_EXPORT_FORMATS = (".parquet", ".csv")
+
+
+def _unsupported_format_msg(suffix: str) -> str:
+    return (f"unsupported export format {suffix!r} (use .parquet or .csv; "
+            "KML arrives with the [kml] extra)")
+
+
+def expand_user_path(path) -> Path:
+    """``Path(path).expanduser()`` that fails as ValueError (``~nosuchuser``
+    raises RuntimeError, which no CLI error handler expects)."""
+    try:
+        return Path(path).expanduser()
+    except RuntimeError as e:
+        raise ValueError(f"{path}: cannot expand '~' ({e})") from e
+
+
+def check_parquet_engine(what="parquet I/O") -> None:
+    """Raise a loud, actionable ImportError if ``pyarrow.parquet`` is not importable.
+
+    ``what`` names the consumer for the message (a path or a description).
+    ``pyarrow`` is a declared dependency, but an env can still lack a working
+    ``pyarrow.parquet``: a ``--no-deps`` install, or conda-forge's minimal
+    ``pyarrow-core`` build, which owns the ``pyarrow`` distribution metadata
+    (so pip reports the requirement satisfied) yet ships without the
+    ``libparquet`` library. Unlike geopandas' optional-dependency wrapper
+    (``raise ... from None``) the original ImportError is chained, so
+    "missing" and "broken build" stay distinguishable.
+    """
+    what = what.name if isinstance(what, Path) else str(what)
+    try:
+        import pyarrow.parquet  # noqa: F401
+    except ImportError as e:
+        raise ImportError(
+            f"'pyarrow.parquet' failed to import ({e}); it is needed for {what}. "
+            "pyarrow is a required dependency of groundcontrol. "
+            "In a conda env: conda install -c conda-forge pyarrow (the full package; "
+            "pyarrow-core satisfies pip's check but lacks libparquet, so 'pip install "
+            "pyarrow' reports it already satisfied). Otherwise: pip install pyarrow. "
+            "Verify with: python -c 'import pyarrow.parquet'") from e
+
+
+def sidecar_path(path) -> Path:
+    """The provenance sidecar written next to an export."""
+    path = Path(path)
+    return path.with_name(path.name + ".provenance.json")
+
+
+def check_export_support(path, *, sidecar=True) -> Path:
+    """Fail loud -- and early -- if ``path`` cannot be written in this environment.
+
+    Checks the format, the parquet engine, and that the product (and, with
+    ``sidecar=True``, its provenance sidecar) can be written: each is
+    either an existing writable file or creatable in an existing writable
+    directory, and neither is a directory. A read-only existing product
+    means "do not overwrite" -- pyarrow unlinks the destination before
+    failing on it, so this check is what keeps a failed write from
+    deleting the previous product; an existing parquet product must also
+    be readable (the provenance embed re-reads it). ``~`` is expanded;
+    symlinks are written through, as the OS does (a link to a missing file
+    is fine when the target's directory exists). Never creates
+    directories: a typo'd directory must fail here, not become a silent
+    write somewhere else. Returns the expanded path. :func:`write` calls
+    this itself; the CLIs call it before any network fetch so the failure
+    costs nothing.
+    """
+    path = expand_user_path(path)
+    if path.is_dir():  # before the suffix check: "is a directory" is the better message
+        raise IsADirectoryError(f"cannot write {path.name}: {path} is a directory")
+    suffix = path.suffix.lower()
+    if suffix not in _EXPORT_FORMATS:
+        raise ValueError(_unsupported_format_msg(suffix))
+    if suffix == ".parquet":
+        check_parquet_engine(path)
+    if not path.parent.is_dir():
+        raise FileNotFoundError(
+            f"cannot write {path.name}: output directory {path.parent} does not exist")
+    targets = [path, sidecar_path(path)] if sidecar else [path]
+    for target in targets:
+        if target.is_dir():
+            raise IsADirectoryError(f"cannot write {target.name}: {target} is a directory")
+        if target.exists():
+            need = os.W_OK | (os.R_OK if target == path and suffix == ".parquet" else 0)
+            if not os.access(target, need):
+                raise PermissionError(
+                    f"cannot write {target.name}: {target} exists and is read-only "
+                    "(not overwriting)")
+            continue
+        real = target
+        if target.is_symlink():
+            try:
+                real = Path(os.path.realpath(target, strict=True))
+            except OSError as e:
+                if e.errno == errno.ELOOP:
+                    raise OSError(f"cannot write {target.name}: {target} is a symlink "
+                                  "loop") from e
+                real = Path(os.path.realpath(target))  # ENOENT: dangling, handled below
+        if not real.parent.is_dir():
+            raise FileNotFoundError(
+                f"cannot write {target.name}: {target} is a symlink into a missing "
+                f"directory ({real.parent})")
+        if not os.access(real.parent, os.W_OK):
+            raise PermissionError(
+                f"cannot write {target.name}: output directory {real.parent} is not writable")
+    return path
+
+
 def write(gdf, path, status: dict | None = None, command: str | None = None) -> Path:
     """Write control points to ``path`` (.parquet or .csv) + provenance sidecar.
 
@@ -106,9 +215,11 @@ def write(gdf, path, status: dict | None = None, command: str | None = None) -> 
     the provenance; CSV adds ``x``/``y`` columns (geometry dropped) with a
     ``# provenance:`` header comment pointing at the sidecar. When the heights'
     vertical datum is uniform, the GeoParquet CRS is promoted to the compound
-    form (see :func:`_compound_export_crs`).
+    form (see :func:`_compound_export_crs`). :func:`check_export_support`
+    runs first, so the write itself only fails for reasons the preflight
+    cannot see (disk full, a device error, a concurrent change).
     """
-    path = Path(path)
+    path = check_export_support(path)
     suffix = path.suffix.lower()
     if suffix == ".parquet":
         compound = _compound_export_crs(gdf)
@@ -116,21 +227,17 @@ def write(gdf, path, status: dict | None = None, command: str | None = None) -> 
             gdf = gdf.set_crs(compound, allow_override=True)
             logger.info("export CRS promoted to compound: %s", compound.name)
     provenance = build_provenance(gdf, status=status, command=command)
+    sidecar = sidecar_path(path)
     if suffix == ".parquet":
         gdf.to_parquet(path)
         _embed_parquet_metadata(path, provenance)
-    elif suffix == ".csv":
+    else:  # .csv (check_export_support already rejected anything else)
         df = gdf.copy()
         df["x"] = df.geometry.x
         df["y"] = df.geometry.y
         with open(path, "w") as f:
-            f.write(f"# provenance: {path.name}.provenance.json "
-                    f"(schema {PROVENANCE_SCHEMA})\n")
+            f.write(f"# provenance: {sidecar.name} (schema {PROVENANCE_SCHEMA})\n")
             df.drop(columns=[df.geometry.name]).to_csv(f, index=False)
-    else:
-        raise ValueError(f"unsupported export format {suffix!r} (use .parquet or .csv; "
-                         "KML arrives with the [kml] extra)")
-    sidecar = path.with_name(path.name + ".provenance.json")
     sidecar.write_text(json.dumps(provenance, indent=1))
     logger.info("wrote %s (+ %s), %d points", path, sidecar.name, len(gdf))
     return path

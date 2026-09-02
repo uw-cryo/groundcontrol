@@ -133,7 +133,8 @@ def test_off_model_plate_is_noop_with_residual_bound():
     with pytest.warns(UserWarning, match="velocity"):
         out = propagate_epoch(g, target_epoch=2025.0, plate_model=ITRF2020PMM(None))
     rep = out.attrs["epoch_propagation"]
-    assert rep["models"] == {"per_point": 0, "plate": 0, "none": 1}
+    assert rep["models"] == {"per_point": 0, "plate": 0, "none": 1,
+                                 "step_blocked": 0}
     assert out["epoch_residual_m"].iloc[0] == pytest.approx(1.6)
     assert out.geometry.x.iloc[0] == -127.5  # un-moved
 
@@ -155,7 +156,8 @@ def test_propagate_epoch_composes_and_midas_wins():
     )
     out = propagate_epoch(g, target_epoch=2025.0, plate_model=ITRF2020PMM("NOAM"))
     rep = out.attrs["epoch_propagation"]
-    assert rep["models"] == {"per_point": 1, "plate": 1, "none": 0}
+    assert rep["models"] == {"per_point": 1, "plate": 1, "none": 0,
+                                 "step_blocked": 0}
     assert rep["plate_model"] == "ITRF2020-PMM[NOAM]+ORB"
     # row 0 pinned by its zero per-point velocity
     assert out.geometry.x.iloc[0] == pytest.approx(LV_LON, abs=1e-15)

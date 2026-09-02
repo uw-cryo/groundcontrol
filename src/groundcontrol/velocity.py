@@ -58,6 +58,11 @@ DEFAULT_MAX_STATIONS = 15
 #: noise and below a genuine cross-fault signal, so uniform/single-block networks pass and
 #: block-straddling selections trip. Configurable per call.
 DEFAULT_SPREAD_THRESHOLD_MM_YR = 4.0
+#: |v_horizontal - network median| gate for the moving-monument screen:
+#: bedrock deviates <= ~20-30 mm/yr from the local network median while
+#: on-ice monuments run 100-5,000 mm/yr (TAMDEF, MDV 2026-08-12) — a
+#: clean separation. Median-relative so coherent plate motion never flags.
+MOVING_MONUMENT_MM_YR = 50.0
 #: IDW distance floor (km) so a station coincident with the target (e.g. a GNSS mark
 #: looking up its own velocity) yields a finite, dominant weight instead of div-by-zero.
 _IDW_EPS_KM = 1e-3
@@ -72,7 +77,11 @@ QUALITY_LOW_DENSITY = "low_density"     # too few stations in radius -> velocity
 RESULT_COLUMNS = (
     "vel_e", "vel_n", "vel_u",          # combined ENU velocity (m/yr)
     "vel_spread_h", "vel_spread_u",     # station-velocity spread (m/yr; NaN if <2 used)
+    "vel_spread_e", "vel_spread_n",     # per-component spread (additive, 2026-08-30:
+                                        # the velocity-map interp label prints E/N)
     "n_stations_used", "nearest_dist_km", "nearest_sta", "quality",
+    "n_moving_excluded",                # stations dropped by the opt-in
+                                        # moving-monument screen (0 = off/none)
 )
 
 #: Station-DataFrame id columns tried (in order) to label the nearest station.
@@ -116,12 +125,63 @@ def _combine_one(sel_vel: np.ndarray, dist_km: np.ndarray, method: str,
     raise ValueError(f"unknown combine method {method!r}; use 'median' or 'idw'")
 
 
+def flag_moving_stations(stations: pd.DataFrame, *,
+                         threshold_mm_yr: float = MOVING_MONUMENT_MM_YR,
+                         vel_cols=("vel_e", "vel_n", "vel_u")) -> pd.Series:
+    """Boolean mask of stations whose HORIZONTAL velocity deviates from
+    the network's component-wise median by more than ``threshold_mm_yr``
+    (mm/yr) — monuments riding a moving surface (glacier ice, landslide)
+    rather than the crust. MIDAS polar networks include on-ice monuments
+    (TAMDEF: Taylor Glacier 4,900 mm/yr beside <20 mm/yr bedrock, MDV
+    2026-08-12); the deviation is measured from the network median so
+    coherent plate motion never flags. Vertical is deliberately NOT
+    tested: real subsidence reaches tens of mm/yr and must stay in the
+    background field. NaN velocities never flag (they cannot contribute
+    to an interpolation anyway), and fewer than three finite stations
+    flag nothing (no network reference exists).
+
+    The reference is the median of the ``stations`` frame PASSED IN — the
+    caller picks the network (the standard figure passes the stations
+    within ~3° of the product). Across a plate boundary that network's
+    bedrock spreads ±25-30 mm/yr about its median, so a landslide mate
+    below the threshold is a known miss (SF 2026-09-01: ORE2/ORE3 at
+    31/36 mm/yr beside OREO at 57 — one site, one purple arrow); a
+    neighbourhood-relative reference is the queued follow-up."""
+    ve = pd.to_numeric(stations[vel_cols[0]], errors="coerce").to_numpy("float64")
+    vn = pd.to_numeric(stations[vel_cols[1]], errors="coerce").to_numpy("float64")
+    out = np.zeros(len(stations), dtype=bool)
+    fin = np.isfinite(ve) & np.isfinite(vn)
+    if int(fin.sum()) < 3:
+        # one station IS the median; two straddle it symmetrically, so a
+        # single mover flags both and empties the interpolation. No
+        # reference exists below three: flag nothing (round-7 audit)
+        if fin.any():
+            logger.debug("moving-monument screen: %d finite station(s), no "
+                         "network reference — nothing flagged", int(fin.sum()))
+        return pd.Series(out, index=stations.index)
+    dev_mm = np.hypot(ve[fin] - np.median(ve[fin]), vn[fin] - np.median(vn[fin])) * 1000.0
+    out[fin] = dev_mm > threshold_mm_yr
+    # the reference is the MEDIAN: it is only "still" while the moving
+    # monuments are a minority. A mover-majority network (a small polar
+    # AOI whose box is mostly on ice) inverts the screen — the bedrock
+    # flags. Say so loudly; the neighbourhood-relative reference is the
+    # queued fix (round-6 audit)
+    n_flag, n_fin = int(out[fin].sum()), int(fin.sum())
+    if n_fin >= 3 and n_flag * 3 > n_fin:
+        logger.warning("moving-monument screen: %d of %d stations flagged — "
+                       "the network is not majority-stable, so the median "
+                       "reference may itself be the moving surface; treat "
+                       "the flags as unreliable", n_flag, n_fin)
+    return pd.Series(out, index=stations.index)
+
+
 def interpolate_velocity(lon, lat, stations: pd.DataFrame, *,
                          radius_km: float = DEFAULT_RADIUS_KM,
                          min_stations: int = DEFAULT_MIN_STATIONS,
                          max_stations: int = DEFAULT_MAX_STATIONS,
                          method: str = "median",
                          spread_threshold_mm_yr: float = DEFAULT_SPREAD_THRESHOLD_MM_YR,
+                         exclude_moving_mm_yr: float | None = None,
                          idw_power: float = 1.0,
                          lon_col: str = "lon", lat_col: str = "lat",
                          vel_cols=("vel_e", "vel_n", "vel_u")) -> pd.DataFrame:
@@ -146,6 +206,15 @@ def interpolate_velocity(lon, lat, stations: pd.DataFrame, *,
     radius_km, min_stations, max_stations : nearest-N-within-radius selection knobs.
     method : ``'median'`` (robust, default) or ``'idw'`` (inverse-distance weighting).
     spread_threshold_mm_yr : horizontal spread gate (see module constant).
+    exclude_moving_mm_yr : OPT-IN moving-monument screen (mm/yr; default
+        ``None`` = off, behavior unchanged). When set, stations flagged by
+        :func:`flag_moving_stations` at this threshold are dropped BEFORE
+        selection and the count is returned as ``n_moving_excluded``.
+        MIDAS polar networks include ON-ICE monuments (TAMDEF: Taylor
+        Glacier 4.9 m/yr) whose velocities are surface motion, not crust —
+        blended into a bedrock interpolation they produced a 24 m epoch-
+        propagation error at MDV (2026-08-12); ``spread_warning`` fires in
+        that situation but the blended velocity is still returned.
     idw_power : IDW exponent (only used for ``method='idw'``).
     lon_col, lat_col, vel_cols : column names in ``stations``.
 
@@ -169,6 +238,13 @@ def interpolate_velocity(lon, lat, stations: pd.DataFrame, *,
     st = stations.reset_index(drop=True)
     coords = st[[lon_col, lat_col, *vel_cols]].apply(pd.to_numeric, errors="coerce")
     st = st.loc[np.isfinite(coords.to_numpy()).all(axis=1)]
+    n_moving = 0
+    if exclude_moving_mm_yr is not None and len(st):
+        _mov = flag_moving_stations(st, threshold_mm_yr=exclude_moving_mm_yr,
+                                    vel_cols=vel_cols)
+        n_moving = int(_mov.sum())
+        if n_moving:
+            st = st.loc[~_mov]
     slon = pd.to_numeric(st[lon_col], errors="coerce").to_numpy(dtype="float64")
     slat = pd.to_numeric(st[lat_col], errors="coerce").to_numpy(dtype="float64")
     svel = np.column_stack([pd.to_numeric(st[c], errors="coerce").to_numpy(dtype="float64")
@@ -204,6 +280,7 @@ def interpolate_velocity(lon, lat, stations: pd.DataFrame, *,
     out["n_stations_used"] = out["n_stations_used"].astype("int64")
     out["quality"] = out["quality"].astype("string")
     out["nearest_sta"] = out["nearest_sta"].astype("string")
+    out["n_moving_excluded"] = n_moving
     return out
 
 
@@ -236,6 +313,8 @@ def _lookup_block(tlon, tlat, slon, slat, sids, svel, radius_km, min_stations,
             "vel_e": np.full(n, np.nan), "vel_n": np.full(n, np.nan),
             "vel_u": np.full(n, np.nan), "vel_spread_h": np.full(n, np.nan),
             "vel_spread_u": np.full(n, np.nan),
+            "vel_spread_e": np.full(n, np.nan),
+            "vel_spread_n": np.full(n, np.nan),
             "n_stations_used": np.zeros(n, dtype="int64"),
             "nearest_dist_km": np.full(n, np.nan),
             "nearest_sta": pd.array([pd.NA] * n, dtype="string"),
@@ -281,6 +360,8 @@ def _lookup_block(tlon, tlat, slon, slat, sids, svel, radius_km, min_stations,
             comb = (w[:, :, None] * np.nan_to_num(sel_vel)).sum(axis=1) / w.sum(axis=1)[:, None]
         spread = np.nanstd(sel_vel, axis=1, ddof=1)               # (n, 3); NaN if < 2 used
     spread_h = np.hypot(spread[:, 0], spread[:, 1])
+    spread_e = spread[:, 0]
+    spread_n = spread[:, 1]
     spread_u = spread[:, 2]
 
     quality = np.full(n, QUALITY_OK, dtype=object)
@@ -294,6 +375,8 @@ def _lookup_block(tlon, tlat, slon, slat, sids, svel, radius_km, min_stations,
     comb[dropped] = np.nan
     spread_h[dropped] = np.nan
     spread_u[dropped] = np.nan
+    spread_e[dropped] = np.nan
+    spread_n[dropped] = np.nan
 
     found = n_used > 0
     nearest_dist = np.where(found, d[:, 0], np.nan)
@@ -304,6 +387,7 @@ def _lookup_block(tlon, tlat, slon, slat, sids, svel, radius_km, min_stations,
     return pd.DataFrame({
         "vel_e": comb[:, 0], "vel_n": comb[:, 1], "vel_u": comb[:, 2],
         "vel_spread_h": spread_h, "vel_spread_u": spread_u,
+        "vel_spread_e": spread_e, "vel_spread_n": spread_n,
         "n_stations_used": n_used,
         "nearest_dist_km": nearest_dist,
         "nearest_sta": pd.array(nearest_sta, dtype="string"),
@@ -320,6 +404,7 @@ def _lookup_one(tlon, tlat, slon, slat, svel, sids, radius_km, min_stations,
     asserts the two agree exactly, so this stays the specification.
     """
     empty = dict(vel_e=np.nan, vel_n=np.nan, vel_u=np.nan, vel_spread_h=np.nan,
+                 vel_spread_e=np.nan, vel_spread_n=np.nan,
                  vel_spread_u=np.nan, n_stations_used=0, nearest_dist_km=np.nan,
                  nearest_sta=pd.NA, quality=QUALITY_LOW_DENSITY)
     if slon.size == 0:
@@ -355,7 +440,9 @@ def _lookup_one(tlon, tlat, slon, slat, svel, sids, radius_km, min_stations,
         quality = QUALITY_OK
 
     return dict(vel_e=float(ve), vel_n=float(vn), vel_u=float(vu),
-                vel_spread_h=spread_h, vel_spread_u=spread_u, n_stations_used=n_used,
+                vel_spread_h=spread_h, vel_spread_u=spread_u,
+                vel_spread_e=spread_e, vel_spread_n=spread_n,
+                n_stations_used=n_used,
                 nearest_dist_km=nearest_dist, nearest_sta=nearest_sta, quality=quality)
 
 
@@ -377,7 +464,10 @@ def fill_velocities(gdf, stations: pd.DataFrame, *,
 
     ``gdf`` must carry geographic (lon/lat degrees) point geometry — the same requirement
     ``propagate_epoch`` enforces. ``**kwargs`` pass straight through to
-    :func:`interpolate_velocity` (radius/min/max/method/spread threshold, etc.).
+    :func:`interpolate_velocity` (radius/min/max/method/spread threshold,
+    ``exclude_moving_mm_yr`` for the moving-monument screen — OFF here by
+    default; the standard velocity FIGURE screens by default, so pass it
+    when the pipeline should apply what the figure shows).
 
     ``vel_cols`` names the three OUTPUT columns written on ``gdf`` (default the schema's
     ``vel_e``/``vel_n``/``vel_u``); the station-side column names are configured on

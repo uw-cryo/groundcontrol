@@ -51,7 +51,7 @@ class TestPointContextGallery:
         fp = point_context_gallery(points, layers, tmp_path, "TEST",
                                    half_m=20, scale_len=10)
         assert len(fp) == 1 and fp[0].exists()
-        assert fp[0].name == "TEST_station_gallery_40m.png"
+        assert fp[0].name == "TEST_station_gallery_40m.jpg"
 
     def test_out_of_footprint_point_survives(self, layers, points, tmp_path):
         # FAR is outside every raster: sheet still writes (panel renders
@@ -76,8 +76,8 @@ class TestPointContextGallery:
                                            "building": "#8B4E00"})
         # two classes -> class-separated pages (owner 2026-08-13)
         assert [f.name for f in fp] == [
-            "TEST_opus_gallery_30m_p1.png",
-            "TEST_opus_gallery_30m_p2.png"]
+            "TEST_opus_gallery_30m_p1.jpg",
+            "TEST_opus_gallery_30m_p2.jpg"]
 
     def test_fallback_chain(self, points, tmp_path, caplog):
         # primary raster does not cover the point (window all fill) -> the

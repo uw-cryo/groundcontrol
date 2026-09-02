@@ -565,7 +565,11 @@ def test_parse_schema_valid_and_frame_aliased():
     # geometry = emitted median position, 2D
     assert r.geometry.x == pytest.approx(r["native_x"]) == pytest.approx(-115.2582, abs=1e-3)
     assert r.geometry.y == pytest.approx(r["native_y"])
-    assert out.crs is None  # native frame; the dispatcher lands it
+    # frame-level CRS deliberately None (owner 2026-09-01): per-row
+    # horizontal_crs is the authority; any stamp let a naive .to_crs()
+    # shift ~1.4 m with no coordinate epoch applied — crs=None makes
+    # that a loud TypeError instead
+    assert out.crs is None
 
 
 def test_parse_igs20_aliases_to_itrf2020():
@@ -754,3 +758,39 @@ def test_fetch_las_vegas_live():
     # and it lands (time-dependent Helmert with per-row tt)
     landed = land_horizontal(out, target="EPSG:6318")
     assert landed.crs.to_epsg() == 6318
+
+
+def test_attach_steps_and_parse_embed_eq_steps(monkeypatch):
+    """fetch's _attach_steps turns steps.txt type-2 rows into per-station
+    decimal-year lists; parse lands them in raw["eq_steps"] (the step-guard
+    evidence). [] = checked-none; a steps failure leaves meta unset -> null."""
+    monkeypatch.setattr(ngl, "read_steps", lambda *a, **k: ngl.parse_steps(_steps_text()))
+    stations = [{"meta": ngl._station_meta(r)} for _, r in _index().iterrows()
+                if r["sta"] in ("APEX", "CLV1", "NVBM", "00NA")]
+    ngl._attach_steps(stations)
+    by = {s["meta"]["sta"]: s["meta"]["eq_steps"] for s in stations}
+    assert by["APEX"] and abs(by["APEX"][0] - decyear(pd.Timestamp("1999-10-16", tz="UTC"))) < 1e-6
+    assert len(by["NVBM"]) >= 2 and by["NVBM"] == sorted(by["NVBM"])  # multi-step
+    assert by["CLV1"] == sorted(by["CLV1"])
+    assert by["00NA"] == []                      # in the index, no steps rows
+    # parse embeds the evidence into raw
+    raw = _raw()
+    for st in raw["stations"]:
+        st["meta"]["eq_steps"] = [2010.5]
+    out = ngl.parse(raw)
+    assert json.loads(out["raw"].iloc[0])["eq_steps"] == [2010.5]
+    # absent meta key -> null (= not checked), never fabricated
+    raw2 = _raw()
+    out2 = ngl.parse(raw2)
+    assert json.loads(out2["raw"].iloc[0])["eq_steps"] is None
+
+
+def test_steps_failure_degrades_without_aborting(monkeypatch, caplog):
+    def _boom(*a, **k):
+        raise OSError("steps.txt fetch failed")
+    monkeypatch.setattr(ngl, "read_steps", _boom)
+    stations = [{"meta": ngl._station_meta(r)} for _, r in _index().iloc[:2].iterrows()]
+    with caplog.at_level("WARNING", logger="groundcontrol.sources.ngl"):
+        ngl._attach_steps(stations)
+    assert "eq_steps not attached" in caplog.text
+    assert all("eq_steps" not in s["meta"] for s in stations)

@@ -67,7 +67,6 @@ import io
 import json
 import logging
 import re
-import time
 from concurrent.futures import ThreadPoolExecutor
 
 import geopandas as gpd
@@ -76,7 +75,7 @@ import pandas as pd
 import requests
 
 from groundcontrol.crs import decyear, decyear_inv
-from groundcontrol.sources.checkpoints_3dep import cache_dir
+from groundcontrol.sources.checkpoints_3dep import cache_dir, cache_stale, cache_write
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -156,13 +155,12 @@ def _load_index(url: str = INDEX_URL, max_age_days: float = INDEX_MAX_AGE_DAYS) 
     """Cached station index (~/.cache/groundcontrol; GROUNDCONTROL_CACHE_DIR
     override), refreshed when older than ``max_age_days``."""
     local = cache_dir() / "ngl_DataHoldings.txt"
-    stale = (not local.exists()
-             or (time.time() - local.stat().st_mtime) > max_age_days * 86400)
+    stale = cache_stale(local, max_age_days)
     if stale:
         logger.info("downloading %s -> %s", url, local)
         r = requests.get(url, timeout=120)
         r.raise_for_status()
-        local.write_text(r.text)
+        cache_write(local, r.text)
     return parse_dataholdings(local.read_text())
 
 
@@ -281,9 +279,62 @@ def _attach_networks(stations) -> None:
         m["networks_checked"] = sorted(tables)
 
 
+def _attach_steps(stations) -> None:
+    """Attach each station's earthquake-step epochs (steps.txt type 2) to
+    ``meta['eq_steps']`` as sorted decimal years — the evidence
+    ``crs.propagate_epoch``'s step guard consumes (owner 2026-08-30).
+    ``[]`` = checked, no earthquake steps (verified honest: steps.txt only
+    lists stations WITH steps); absent/None = NOT checked (a steps fetch
+    failure degrades with a loud warning, never aborts the position fetch —
+    the _attach_networks pattern). ``meta['eq_steps_through']`` carries the
+    catalog vintage (the file's latest type-2 date, decimal year) so the
+    guard can refuse to call an interval extending past it "checked"
+    (audit 2026-08-30: a fresh event would otherwise read as clean).
+    Type-1 (equipment) steps are deliberately OUT of scope here: they are
+    instrumental height jumps, not ground displacement — handled by the
+    position-window/ant_m machinery, not epoch propagation."""
+    try:
+        steps = read_steps()
+        if not len(steps):
+            # the real catalog is ~142k rows; zero rows = empty/truncated
+            # cache (interrupted download). Treating it as "checked, no
+            # steps" silently defeated the Gorkha guard: through=None also
+            # disabled the vintage backstop, so a 2014 point propagated
+            # across the 2015 steps with zero warnings.
+            raise ValueError("steps.txt parsed to zero rows (empty or "
+                             "truncated cache?) — refusing to read that "
+                             "as 'checked, no steps'")
+        # vintage from the FULL catalog; per-station epochs only for the
+        # FETCHED stations (profiling 2026-08-30: converting the whole
+        # 142k-row catalog through per-row decyear() burned ~90 s of CPU
+        # per fetch and GIL-convoyed the other sources)
+        eq_all = steps[steps["type"] == 2]
+        through = decyear(eq_all["date"].max()) if len(eq_all) else None
+        want = {s["meta"]["sta"] for s in stations}
+        mine = steps[steps["sta"].isin(want)]
+        eq = mine[mine["type"] == 2]
+        per_sta = {sta: sorted(decyear(d) for d in grp["date"])
+                   for sta, grp in eq.groupby("sta")}
+        equip = mine[mine["type"] == 1]
+        per_sta_eqp = {sta: sorted(decyear(d) for d in grp["date"])
+                       for sta, grp in equip.groupby("sta")}
+    except Exception as e:
+        logger.warning("NGL steps.txt unavailable (%s: %s): eq_steps not "
+                       "attached — propagate_epoch cannot step-check these "
+                       "rows", type(e).__name__, e)
+        return
+    for s in stations:
+        s["meta"]["eq_steps"] = per_sta.get(s["meta"]["sta"], [])
+        s["meta"]["eq_steps_through"] = through
+        # type-1 EQUIPMENT steps (antenna/radome changes): instrumental
+        # height jumps — figure annotation evidence, never a propagation
+        # guard input (owner 2026-08-30 station-series figure)
+        s["meta"]["equip_steps"] = per_sta_eqp.get(s["meta"]["sta"], [])
+
+
 def fetch(aoi_bounds_4326, frame: str = "IGS14", epoch=None, time_range=None,
           max_stations: int | None = None, with_velocities: bool = True,
-          with_networks: bool = True) -> dict:
+          with_networks: bool = True, with_steps: bool = True) -> dict:
     """Fetch raw per-station NGL data for an AOI.
 
     Parameters
@@ -305,6 +356,11 @@ def fetch(aoi_bounds_4326, frame: str = "IGS14", epoch=None, time_range=None,
         skip — the raw evidence then records null (= not checked). List
         failures degrade to the same null with a loud warning; they never
         abort the position fetch (see :func:`_attach_networks`).
+    with_steps : attach each station's earthquake-step epochs from the
+        cached ``steps.txt`` (one GET at most) to ``meta['eq_steps']`` for
+        :func:`parse` -> ``raw["eq_steps"]`` — consumed by
+        ``crs.propagate_epoch``'s step guard. Same degrade contract:
+        failure -> null (= not checked) with a loud warning.
 
     Returns the raw payload consumed by :func:`parse` (which is pure/offline):
     ``{"frame", "epoch", "time_range", "stations": [{"meta", "tenv3"}, ...]}``
@@ -321,28 +377,71 @@ def fetch(aoi_bounds_4326, frame: str = "IGS14", epoch=None, time_range=None,
         sel = sel.iloc[:max_stations]
     logger.info("NGL: %d candidate station(s) in bbox %s (frame %s)",
                 len(sel), tuple(aoi_bounds_4326), frame)
+    if not len(sel):
+        # exit BEFORE the catalog-warming pool below: a 0-candidate AOI
+        # must not download the ~40 MB steps/MIDAS catalogs for an empty
+        # list — the hang the 0-station exit further down was written to
+        # prevent, which it sat one block too late to do
+        return {"frame": frame,
+                "epoch": None if epoch is None else float(epoch),
+                "time_range": None if time_range is None
+                else tuple(time_range),
+                "stations": []}
+
+    logger.info("NGL: fetching %d daily series (tenv3, %d at a time from "
+                "geodesy.unr.edu — the slow part; each is cached for later "
+                "runs)", len(sel), MAX_WORKERS)
 
     def _get(row):
-        url = TENV3_URL.format(frame=frame, sta=row["sta"])
-        r = requests.get(url, timeout=120)
-        if r.status_code == 404:
-            # indexed station without a series in this frame directory —
-            # skip with a loud warning (not silent: recorded in the log)
-            logger.warning("NGL station %s: no %s tenv3 at %s (404); skipping",
-                           row["sta"], frame, url)
-            return None
-        r.raise_for_status()
-        return {"meta": _station_meta(row), "tenv3": r.text}
+        try:
+            text = _tenv3_text(row["sta"], frame)
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code == 404:
+                # indexed station without a series in this frame directory
+                # — skip with a loud warning (recorded in the log)
+                logger.warning("NGL station %s: no %s tenv3 (404); skipping",
+                               row["sta"], frame)
+                return None
+            raise
+        logger.info("NGL: %s series ready", row["sta"])
+        return {"meta": _station_meta(row), "tenv3": text}
 
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS + 2) as ex:
+        # warm the big shared catalogs CONCURRENTLY with the per-station
+        # pulls (owner 2026-08-30: the ~40 MB steps catalog + MIDAS table
+        # downloaded serially AFTER the tenv3s and read as a hang): the
+        # attach helpers then re-read the warm disk cache in seconds.
+        # Failures are swallowed here on purpose — each attach path
+        # handles and logs its own degrade mode.
+        warm = []
+        if with_velocities:
+            warm.append(ex.submit(_midas_text, _MIDAS_FRAME))
+        if with_steps:
+            warm.append(ex.submit(_steps_text))
         results = list(ex.map(_get, (row for _, row in sel.iterrows())))
+        for f in warm:
+            try:
+                f.result()
+            except Exception:
+                pass
     stations = [s for s in results if s is not None]
+    if not stations:
+        # nothing to enrich: skip the MIDAS/network/steps catalog fetches
+        # entirely (owner 2026-08-30: a 0-candidate Alaska tile hung for
+        # minutes downloading the full steps catalog for an empty list)
+        return {"frame": frame,
+                "epoch": None if epoch is None else float(epoch),
+                "time_range": None if time_range is None
+                else tuple(time_range),
+                "stations": []}
     if with_velocities:
         vmap = _midas_velocity_map(frame)
         for s in stations:
             s["meta"]["midas"] = vmap.get(s["meta"]["sta"])  # None if absent
     if with_networks:
         _attach_networks(stations)
+    if with_steps:
+        _attach_steps(stations)
     return {
         "frame": frame,
         "epoch": None if epoch is None else float(epoch),
@@ -397,17 +496,27 @@ def read_tenv3(station: str, frame: str = "IGS14",
     """
     if frame not in FRAME_TO_EPSG:
         raise ValueError(f"unknown NGL frame {frame!r}; supported: {sorted(FRAME_TO_EPSG)}")
+    return parse_tenv3(_tenv3_text(station, frame, max_age_days))
+
+
+def _tenv3_text(station: str, frame: str,
+                max_age_days: float = INDEX_MAX_AGE_DAYS) -> str:
+    """One station's raw tenv3 text, through the per-station disk cache
+    (``ngl_<STA>_<frame>.tenv3``, DataHoldings staleness pattern). Shared
+    by :func:`read_tenv3` AND :func:`fetch` (owner 2026-08-30: fetch
+    bypassed the cache, so every assess run re-downloaded every series —
+    ~100 s for 9 stations — and the figure stage then downloaded them all
+    AGAIN through read_tenv3). Raises ``requests.HTTPError`` on 404."""
     station = str(station).strip().upper()
     local = cache_dir() / f"ngl_{station}_{frame}.tenv3"
-    stale = (not local.exists()
-             or (time.time() - local.stat().st_mtime) > max_age_days * 86400)
+    stale = cache_stale(local, max_age_days)
     if stale:
         url = TENV3_URL.format(frame=frame, sta=station)
         logger.info("downloading %s -> %s", url, local)
         r = requests.get(url, timeout=120)
         r.raise_for_status()
-        local.write_text(r.text)
-    return parse_tenv3(local.read_text())
+        cache_write(local, r.text)
+    return local.read_text()
 
 
 def parse_steps(text: str) -> pd.DataFrame:
@@ -464,6 +573,22 @@ def parse_steps(text: str) -> pd.DataFrame:
     return df.sort_values(["sta", "date"], kind="stable").reset_index(drop=True)
 
 
+def _steps_text(max_age_days: float = INDEX_MAX_AGE_DAYS) -> str:
+    """Raw steps.txt through the disk cache — download only, NO parsing
+    (the I/O-only warmer :func:`fetch` runs concurrently; parsing 40 MB
+    of text inside the pool convoys the GIL against other sources)."""
+    local = cache_dir() / "ngl_steps.txt"
+    stale = cache_stale(local, max_age_days)
+    if stale:
+        logger.info("downloading %s -> %s (large catalog; first run or "
+                    "stale cache — subsequent runs read the local copy)",
+                    STEPS_URL, local)
+        r = requests.get(STEPS_URL, timeout=120)
+        r.raise_for_status()
+        cache_write(local, r.text)
+    return local.read_text()
+
+
 def read_steps(station: str | None = None,
                max_age_days: float = INDEX_MAX_AGE_DAYS) -> pd.DataFrame:
     """Station step (discontinuity) table — cached download (plan 1.5b/B10).
@@ -480,15 +605,7 @@ def read_steps(station: str | None = None,
     the data half; the step-aware window clipping in :func:`_select_window`
     remains TODO(1.5b).
     """
-    local = cache_dir() / "ngl_steps.txt"
-    stale = (not local.exists()
-             or (time.time() - local.stat().st_mtime) > max_age_days * 86400)
-    if stale:
-        logger.info("downloading %s -> %s", STEPS_URL, local)
-        r = requests.get(STEPS_URL, timeout=120)
-        r.raise_for_status()
-        local.write_text(r.text)
-    steps = parse_steps(local.read_text())
+    steps = parse_steps(_steps_text(max_age_days))
     if station is not None:
         sta = str(station).strip().upper()
         steps = steps[steps["sta"] == sta].reset_index(drop=True)
@@ -566,16 +683,22 @@ def read_midas(frame: str = "IGS14",
     frame = str(frame).strip()
     if not frame:
         raise ValueError("frame must be a non-empty MIDAS frame code, e.g. 'IGS14'")
+    return parse_midas(_midas_text(frame, max_age_days))
+
+
+def _midas_text(frame: str,
+                max_age_days: float = INDEX_MAX_AGE_DAYS) -> str:
+    """Raw MIDAS table text through the disk cache — download only (the
+    I/O-only warmer; see :func:`_steps_text`)."""
     local = cache_dir() / f"ngl_midas_{frame}.txt"
-    stale = (not local.exists()
-             or (time.time() - local.stat().st_mtime) > max_age_days * 86400)
+    stale = cache_stale(local, max_age_days)
     if stale:
         url = MIDAS_URL.format(frame=frame)
         logger.info("downloading %s -> %s", url, local)
         r = requests.get(url, timeout=300)
         r.raise_for_status()
-        local.write_text(r.text)
-    return parse_midas(local.read_text())
+        cache_write(local, r.text)
+    return local.read_text()
 
 
 def _median_lon(lon: np.ndarray) -> float:
@@ -807,6 +930,12 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
                 # partial check must not read as checked-everywhere)
                 "networks": meta.get("networks"),
                 "networks_checked": meta.get("networks_checked"),
+                # earthquake-step epochs (steps.txt type 2, decimal years);
+                # [] = checked-none, null = not checked — the step-guard
+                # evidence for propagate_epoch (owner 2026-08-30)
+                "eq_steps": meta.get("eq_steps"),
+                "eq_steps_through": meta.get("eq_steps_through"),
+                "equip_steps": meta.get("equip_steps"),
                 "n_solutions_used": pos["n_solutions_used"],
                 "window": window_desc,
                 "sig_e_m": pos["sig_e_m"],
@@ -829,10 +958,22 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
                 "vertical_crs", "ref_frame", "native_crs", "raw"):
         df[col] = df[col].astype("string")
     df["measurement_datetime"] = pd.to_datetime(df["measurement_datetime"], utc=True)
+    # native dynamic-frame coordinates; the dispatcher lands them
+    # (crs.land_horizontal passes per-row coord_epoch as tt — TODO(D6)).
+    # The frame-level CRS is tagged when every row shares one code, so
+    # driving parse() directly (the non-CONUS workflow, rasuwa 2026-08-29)
+    # yields a usable GeoDataFrame without a manual set_crs; mixed codes
+    # keep crs=None (per-row horizontal_crs is the authority either way).
+    # frame-level CRS is DELIBERATELY None (owner 2026-09-01, reverting
+    # the 2026-08-29 convenience stamp): per-row horizontal_crs is the
+    # authority, the coordinates are dynamic-frame with per-row
+    # coord_epoch, and ANY frame-level stamp lets a naive gdf.to_crs()
+    # move points ~1.4 m with no coordinate epoch applied. With crs=None
+    # a bare to_crs raises loudly instead. Driving parse() directly:
+    # check horizontal_crs, then gdf.set_crs("EPSG:9000") (the 2D
+    # counterpart) yourself if you accept epoch-naive horizontal use.
     return gpd.GeoDataFrame(
         df,
         geometry=gpd.points_from_xy(df["native_x"], df["native_y"]),
-        # native dynamic-frame coordinates; the dispatcher lands them
-        # (crs.land_horizontal passes per-row coord_epoch as tt — TODO(D6))
         crs=None,
     )

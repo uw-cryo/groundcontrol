@@ -235,6 +235,231 @@ OUTPUT_DATUM_BUILDERS = {
 }
 
 
+def is_wgs84_ensemble(crs) -> bool:
+    """True when the CRS's geodetic datum is the WGS 84 ENSEMBLE — the
+    ~2 m-ambiguity umbrella over Transit..G2296 that EPSG:326xx/327xx and
+    EPSG:4326 carry. An ensemble is not a realization: transforms to it
+    are member-agnostic (PROJ's best CONUS candidate routes through
+    NAD83(HARN) + a GEOID09-era grid at 1.14 m accuracy, measured
+    2026-08-30) and heights against it are ambiguous by construction."""
+    crs = CRS.from_user_input(crs)
+    d = crs.datum
+    if d is None:
+        return False
+    n = (d.name or "").lower()
+    if "ensemble" in n:
+        # Only WGS 84's ensemble. ETRS89 (66 CRSs) and GR96 (32) are also
+        # EPSG datum ensembles, but their intra-ensemble ambiguity is
+        # ~0.1 m while their offset from ITRF2014 is decimetres-and-
+        # growing (0.76 m at Berlin, epoch 2020) — "ambiguous" does not
+        # license a rebase to ITRF.
+        return "world geodetic system 1984" in n or "wgs" in n
+    # GeoTIFF/WKT1 round-trips drop the ENSEMBLE node (rasterio-written
+    # EPSG:32610 reads back as plain 'World Geodetic System 1984'): a
+    # bare WGS 84 datum with no realization suffix IS the ensemble
+    # semantically; realized members carry it ('... 1984 (G2139)').
+    return n in ("world geodetic system 1984", "wgs 84", "wgs_1984",
+                 "wgs84")
+
+
+#: --vdatum "ellipsoid:<realization>" tokens -> (geographic base EPSG,
+#: base name): the escape hatch for WGS84-ensemble products whose heights
+#: are really realization-specific ellipsoidal (SETSM EarthDEM/ArcticDEM/
+#: REMA, Vantor Precision3D). Applied by rebasing the product's OWN map
+#: projection onto the realized base (works for UTM and the polar
+#: stereographic grids alike).
+ELLIPSOID_REALIZATIONS = {
+    "itrf2020": (ITRF2020_EPSG, "ITRF2020"),
+    "itrf2014": (ITRF2014_EPSG, "ITRF2014"),
+    "itrf2008": (ITRF2008_EPSG, "ITRF2008"),
+    "g2139": (WGS84_G2139_EPSG, "WGS 84 (G2139)"),
+    "g1674": (WGS84_G1674_EPSG, "WGS 84 (G1674)"),
+}
+
+
+def rebase_projection_3d(horizontal, base_epsg: int, base_name: str) -> CRS:
+    """The product's own map projection rebuilt on a REALIZED geographic
+    base, promoted to 3D (ellipsoidal heights) — the general form behind
+    the ``ellipsoid:<realization>`` tokens. ``horizontal``: a 2D projected
+    CRS (any conversion: UTM, the NSIDC/Antarctic polar stereographic
+    grids, ...) or a 2D geographic CRS (rebased directly)."""
+    h = CRS.from_user_input(horizontal)
+    base = CRS.from_epsg(base_epsg)
+    if h.is_geographic:
+        return base.to_3d()
+    if not h.is_projected or h.coordinate_operation is None:
+        raise ValueError(
+            f"rebase_projection_3d: '{h.name}' is not a plain projected "
+            "or geographic 2D CRS")
+    return ProjectedCRS(
+        conversion=h.coordinate_operation,
+        geodetic_crs=base,
+        # without this, pyproj substitutes its default metre Cartesian CS
+        # and a ftUS grid (six BLM/WGS84-ensemble codes) rebases to metres
+        # while the name still says "(US survey foot)" — 3.28x
+        cartesian_cs=h.coordinate_system,
+        name=f"{base_name} / {h.coordinate_operation.name}",
+    ).to_3d()
+
+
+def rebase_projection_2d(horizontal, base_epsg: int, base_name: str) -> CRS:
+    """2D companion to :func:`rebase_projection_3d`: the product's own map
+    projection (or geographic graticule) on a realized base, kept 2D — the
+    horizontal member for a compound with an orthometric vertical
+    (COP30: EGM2008 heights on an ensemble EPSG:4326 grid)."""
+    h = CRS.from_user_input(horizontal)
+    base = CRS.from_epsg(base_epsg)
+    if h.is_geographic:
+        return base
+    if not h.is_projected or h.coordinate_operation is None:
+        raise ValueError(
+            f"rebase_projection_2d: '{h.name}' is not a plain projected "
+            "or geographic 2D CRS")
+    return ProjectedCRS(
+        conversion=h.coordinate_operation,
+        geodetic_crs=base,
+        # keep the source Cartesian CS (units) — see rebase_projection_3d
+        cartesian_cs=h.coordinate_system,
+        name=f"{base_name} / {h.coordinate_operation.name}",
+    )
+
+
+def with_vdatum(horizontal, vdatum: str) -> CRS:
+    """Attach a vertical datum to a 2D horizontal CRS -> a full 3D target.
+
+    The CLI's ``--vdatum`` resolver (owner 2026-08-31): most products ship
+    a bare 2D projected CRS (``EPSG:32610``, "NAD83(2011) / UTM zone 10N")
+    and the height datum lives only in the product report — this builds the
+    unambiguous 3D frame from the two pieces instead of making the user
+    hand-write compound strings or WKT.
+
+    ``horizontal``: any pyproj-resolvable strictly-2D geographic/projected
+    CRS. A 3D, compound, vertical-only, or geocentric input is refused —
+    it already declares (or cannot take) a height axis.
+    ``vdatum``: the literal ``"ellipsoid"`` -> the horizontal datum's own
+    ellipsoidal height (``CRS.to_3d()``); ``"ellipsoid:<realization>"``
+    (:data:`ELLIPSOID_REALIZATIONS`: itrf2020/itrf2014/itrf2008/g2139/
+    g1674) -> the same UTM conversion rebuilt on that realized base — the
+    REQUIRED form when the horizontal datum is the WGS 84 ENSEMBLE
+    (:func:`is_wgs84_ensemble`), which is refused bare: the ensemble is
+    ~2 m of deliberate ambiguity, and every transform to it inherits a
+    meter-class member-agnostic chain. Anything else must resolve to a
+    pyproj VERTICAL CRS (``"EPSG:5703"``, ``"NAVD88 height"``,
+    ``"EPSG:3855"`` EGM2008, ...) -> the compound horizontal + vertical
+    (also refused on an ensemble horizontal — the horizontal legs carry
+    the same chain). Anything else raises — never a guess. A geoid MODEL
+    name ("GEOID18", "G1764") is not a CRS; pass the vertical CRS it
+    realizes.
+    """
+    h = CRS.from_user_input(horizontal)
+    dirs = [a.direction.lower() for a in h.axis_info]
+    strictly_2d = (not h.is_compound and not h.is_vertical
+                   and not h.is_geocentric and len(dirs) == 2
+                   and not any(d in ("up", "down") for d in dirs))
+    if not strictly_2d:
+        raise ValueError(
+            f"with_vdatum: horizontal CRS '{h.name}' is not a plain 2D "
+            "horizontal CRS — it already declares (or cannot take) a "
+            "height axis; pass the full 3D frame as target_crs instead")
+    spec = vdatum.strip().lower()
+    _vr = spec.rsplit(":", 1) if ":" in spec else None
+    if (_vr is not None and not spec.startswith("ellipsoid")
+            and _vr[1] in ELLIPSOID_REALIZATIONS):
+        # "<vertical>:<realization>" — an orthometric vertical on a
+        # REBASED horizontal (COP30's EGM2008 heights on an ensemble
+        # EPSG:4326 grid): the realization disambiguates the horizontal
+        # legs; the vertical is datum-defined regardless. A plain
+        # "EPSG:5703" also contains a colon: the branch keys on the
+        # right-hand part being a KNOWN realization token.
+        vpart, token = vdatum.strip().rsplit(":", 1)
+        token = token.lower()
+        if not is_wgs84_ensemble(h):
+            raise ValueError(
+                f"with_vdatum: '{vdatum}' re-bases an ensemble "
+                f"horizontal, but '{h.name}' already names a realization "
+                f"— use plain {vpart!r}")
+        base_epsg, base_name = ELLIPSOID_REALIZATIONS[token]
+        h2 = rebase_projection_2d(h, base_epsg, base_name)
+        try:
+            v = CRS.from_user_input(vpart)
+        except Exception as e:
+            raise ValueError(
+                f"with_vdatum: {vpart!r} does not resolve as a CRS "
+                f"({e})") from e
+        if not v.is_vertical:
+            raise ValueError(
+                f"with_vdatum: {vpart!r} resolves to '{v.name}', which "
+                "is not a vertical CRS")
+        from pyproj.crs import CompoundCRS
+        return CompoundCRS(name=f"{h2.name} + {v.name}",
+                           components=[h2, v])
+    if spec.startswith("ellipsoid:"):
+        token = spec.split(":", 1)[1]
+        if token not in ELLIPSOID_REALIZATIONS:
+            raise ValueError(
+                f"with_vdatum: unknown realization {token!r}; choose one "
+                f"of {sorted(ELLIPSOID_REALIZATIONS)} (or pass the full "
+                "3D frame as target_crs)")
+        if not is_wgs84_ensemble(h):
+            raise ValueError(
+                f"with_vdatum: 'ellipsoid:{token}' re-bases an ensemble "
+                f"horizontal, but '{h.name}' already names a realization "
+                "— use plain 'ellipsoid', or pass target_crs to change "
+                "the frame deliberately")
+        base_epsg, base_name = ELLIPSOID_REALIZATIONS[token]
+        return rebase_projection_3d(h, base_epsg, base_name)
+    if spec == "ellipsoid":
+        if is_wgs84_ensemble(h):
+            raise ValueError(
+                f"with_vdatum: '{h.name}' sits on the WGS 84 ENSEMBLE — "
+                "~2 m of deliberate ambiguity, not a realization, and for "
+                "ELLIPSOIDAL heights the realization IS the height datum; "
+                "a bare 'ellipsoid' would silently accept a meter-class "
+                "member-agnostic transform chain. State the realization "
+                "the heights are actually on: 'ellipsoid:itrf2014' (SETSM "
+                "EarthDEM/ArcticDEM/REMA and most modern satellite "
+                "photogrammetry), 'ellipsoid:itrf2020', 'ellipsoid:g2139' "
+                "— or pass the full 3D frame as target_crs")
+        return h.to_3d()
+    try:
+        v = CRS.from_user_input(vdatum)
+    except Exception as e:
+        hint = ""
+        if spec.startswith("ellipsoid"):
+            # "ellipsoidal", "ellipsoid-itrf2014", ...: before the vertical
+            # was resolved ahead of the ensemble fallback, these recursed
+            # forever appending ':itrf2014'
+            hint = (" — did you mean the literal 'ellipsoid' or "
+                    "'ellipsoid:<realization>' "
+                    f"({'/'.join(sorted(ELLIPSOID_REALIZATIONS))})?")
+        raise ValueError(
+            f"with_vdatum: {vdatum!r} is not 'ellipsoid' and does not "
+            f"resolve as a CRS ({e}). Pass a VERTICAL CRS (e.g. EPSG:5703 "
+            "for NAVD88, EPSG:3855 for EGM2008); a geoid model name is "
+            f"not a CRS{hint}") from e
+    if not v.is_vertical:
+        raise ValueError(
+            f"with_vdatum: {vdatum!r} resolves to '{v.name}', which is not "
+            "a vertical CRS — heights need a gravity-related or "
+            "ellipsoidal vertical member (e.g. EPSG:5703, EPSG:3855, or "
+            "the literal 'ellipsoid')")
+    if is_wgs84_ensemble(h):
+        # an ORTHOMETRIC vertical on an ensemble grid (owner 2026-08-30,
+        # EGM2008 COP30 derivative): the heights are datum-defined by the
+        # vertical whichever WGS84 member the grid sits on — the
+        # realization only cleans OUR horizontal transform legs, which is
+        # not information the user has. Pick the modern realization,
+        # loudly, instead of refusing.
+        logger.warning(
+            "with_vdatum: horizontal '%s' is the WGS 84 ensemble; using "
+            "ITRF2014 for the transform legs ('%s:itrf2014') — heights "
+            "are %s regardless of the WGS84 member", h.name, vdatum,
+            vdatum)
+        return with_vdatum(h, f"{vdatum.strip()}:itrf2014")
+    from pyproj.crs import CompoundCRS
+    return CompoundCRS(name=f"{h.name} + {v.name}", components=[h, v])
+
+
 def build_utm_target(utm_epsg: int, output_datum: str = "wgs84_g2139") -> tuple[CRS, str]:
     """Auto-target 3D UTM CRS and its canonical WKT basename for a UTM zone
     and a selectable output datum realization.

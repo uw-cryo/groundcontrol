@@ -28,9 +28,12 @@ def plot_control(gdf, title=None, out_fn=None):
     ax_map.set_ylabel("Latitude")
     ax_map.set_aspect("equal")
     ax_map.legend(fontsize=8)
-    ax_map.set_title(f"control points ({gdf.crs.to_string() if gdf.crs else 'no CRS'})",
-                     fontsize=9)
-    ax_hist.set_xlabel("height (m, NAVD88)")
+    ax_map.set_title(f"Control points (n={len(gdf)})", fontsize=9)
+    # CRS is metadata, not a title (owner 2026-08-31); heights carry
+    # whatever vertical each source declares — never stamp a datum here
+    ax_map.text(0.01, 0.01, gdf.crs.to_string() if gdf.crs else "no CRS",
+                transform=ax_map.transAxes, fontsize=6.5, color="#777777")
+    ax_hist.set_xlabel("height (m)")
     ax_hist.set_ylabel("count")
     ax_hist.legend(fontsize=8)
     ax_hist.set_title("height distribution", fontsize=9)
@@ -62,8 +65,13 @@ def hillshade(z, dx: float = 1.0, dy: float = 1.0,
     gdaldem -multidirectional's four lamps; ``azdeg`` is then ignored.
     """
     if multidirectional:
-        return np.nanmean([hillshade(z, dx, dy, azdeg=a, altdeg=altdeg)
-                           for a in MULTIDIR_AZIMUTHS], axis=0)
+        import warnings
+        with warnings.catch_warnings():
+            # nodata pixels are NaN under every lamp: the all-NaN mean IS the
+            # intended transparent hole, not a numerical surprise
+            warnings.filterwarnings("ignore", "Mean of empty slice", RuntimeWarning)
+            return np.nanmean([hillshade(z, dx, dy, azdeg=a, altdeg=altdeg)
+                               for a in MULTIDIR_AZIMUTHS], axis=0)
     z = np.asarray(z, dtype="float64")
     g_south, g_east = np.gradient(z, dy, dx)  # d z / d row (southward), d z / d col
     slope = np.arctan(np.hypot(g_east, g_south))
@@ -156,7 +164,10 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
                           vel_cols=("vel_e", "vel_n", "vel_u"), id_col=None,
                           n_labels: int = 5, vel_to_mm: float = 1000.0,
                           overlay_interp: bool = True, ref_frac: float = 0.12,
-                          hs_tif=None):
+                          hs_tif=None, dem_tif=None, cbar_ax=None,
+                          show_ref: bool = True, annotate_interp: bool = True,
+                          moving_mm_yr: float | None = None,
+                          basemap=None):
     """Horizontal velocity-vector (quiver) map for a GNSS station network.
 
     The horizontal companion to the sandbox NGL vertical-*rate* maps
@@ -209,6 +220,25 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
 
     finite = np.isfinite(lon) & np.isfinite(lat) & np.isfinite(ve) & np.isfinite(vn)
 
+    # moving-monument screen (owner 2026-09-01: on-ice TAMDEF stations at
+    # m/yr flattened the MDV bedrock network to invisibility and blew up
+    # the centroid interpolation). None = default MOVING_MONUMENT_MM_YR;
+    # pass 0/inf-like values deliberately to force the split on or off.
+    from groundcontrol.velocity import (MOVING_MONUMENT_MM_YR,
+                                        flag_moving_stations)
+    if moving_mm_yr is None:
+        moving_mm_yr = MOVING_MONUMENT_MM_YR
+    # ONE mask, on the rows interpolate_velocity itself keeps (finite
+    # lon/lat AND all three velocity components): flagging on the full
+    # frame gave a different median whenever vel_u had gaps and painted
+    # the very stations the interpolation used as "excluded" (round-6)
+    fin_all = finite & np.isfinite(vu)
+    moving = np.zeros(len(lon), dtype=bool)
+    if fin_all.any():
+        moving[fin_all] = flag_moving_stations(
+            stations.loc[fin_all], threshold_mm_yr=moving_mm_yr,
+            vel_cols=vel_cols).to_numpy(dtype=bool)
+
     poly = _resolve_aoi_polygon(aoi)
     if poly is not None:
         minx, miny, maxx, maxy = poly.bounds
@@ -242,12 +272,68 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
     inside = np.zeros(len(lon), dtype=bool)
     inside[np.flatnonzero(sel)[inside_sel]] = True
     buffered = sel & ~inside
+    mov_sel = sel & moving          # drawn direction-only, never to scale
+    inside = inside & ~moving
+    buffered = buffered & ~moving
+    # moving stations the centroid lookup would otherwise have used: flagged
+    # AND within its search radius. The library's n_moving_excluded counts
+    # the WHOLE frame passed in — the standard figure passes a ~3° box, so
+    # far-off landslide sites inflated it (SF 2026-09-01: "3 excluded"
+    # beside a map showing one; COMA and SEMS were 200+ km away)
+    n_mov_near = 0
+    if poly is not None and moving.any():
+        from groundcontrol.velocity import DEFAULT_RADIUS_KM as _RKM0
+        from groundcontrol.velocity import _haversine_km
+        n_mov_near = int((_haversine_km(clon, clat, lon[moving], lat[moving])
+                          <= _RKM0).sum())
 
+    own_fig = ax is None
     if ax is None:
         _, ax = plt.subplots(figsize=(9, 9))
     fig = ax.figure
     ax.set_aspect(1.0 / max(np.cos(np.radians(mean_lat)), 0.1))
 
+    if basemap is not None:
+        # web hillshade base layer (owner 2026-08-31): drawn first so a
+        # DEM's own hillshade renders ON TOP of it and the buffer zone
+        # beyond the DEM footprint still reads as terrain; auxiliary
+        # imagery is never worth failing a figure over
+        try:
+            from .figures import _web_map_underlay
+            _web_map_underlay(ax, "EPSG:4326", (bx0, by0, bx1, by1),
+                              provider=basemap)
+        except Exception as exc:
+            import warnings
+            warnings.warn(f"velocity-map basemap skipped: {exc}",
+                          stacklevel=2)
+
+    if hs_tif is None and dem_tif is not None:
+        # no pre-rendered hillshade: warp the DEM itself to lon/lat and
+        # shade it here (the standard-bundle path, owner 2026-08-30 — the
+        # MIDAS maps were shipping without their hillshade)
+        import rasterio
+        from rasterio.enums import Resampling
+        from rasterio.vrt import WarpedVRT
+        with rasterio.open(dem_tif) as src, WarpedVRT(src, crs="EPSG:4326") as vrt:
+            if not src.overviews(1) and max(src.width, src.height) > 20000:
+                import warnings as _w
+                _w.warn(
+                    f"velocity map: warping {src.width}x{src.height} px "
+                    "DEM with no overviews to lon/lat at full resolution "
+                    "— can take minutes; pass hs_tif (a pre-rendered or "
+                    "derived hillshade) instead", stacklevel=2)
+            dec = max(1, int(np.ceil(max(vrt.width, vrt.height) / 3000)))
+            z = vrt.read(1, masked=True,
+                         out_shape=(vrt.height // dec, vrt.width // dec),
+                         resampling=Resampling.average).astype("f8").filled(np.nan)
+            hb = vrt.bounds
+        dx = (hb.right - hb.left) / z.shape[1] * 111320.0 \
+            * max(np.cos(np.radians(mean_lat)), 0.1)
+        dy = (hb.top - hb.bottom) / z.shape[0] * 111320.0
+        ax.imshow(hillshade(z, dx=dx, dy=dy, multidirectional=True),
+                  cmap="gray", vmin=0.0, vmax=1.0, alpha=0.8,
+                  extent=[hb.left, hb.right, hb.bottom, hb.top], zorder=0,
+                  interpolation="antialiased", interpolation_stage="rgba")
     if hs_tif is not None:
         # context underlay (owner figure review 2026-07-15): warp the (usually
         # projected) hillshade to lon/lat for these geographic axes; the map
@@ -280,19 +366,32 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
     cmap = plt.get_cmap("RdYlBu")
     if color_by_vertical:
         vu_mm = vu * vel_to_mm
-        vals = vu_mm[sel]
+        vals = vu_mm[sel & ~moving]
         lim = float(np.nanpercentile(np.abs(vals), 98)) if np.isfinite(vals).any() else 1.0
         lim = max(lim, 0.5)
         norm = plt.Normalize(-lim, lim)
-        q_ref = ax.quiver(lon[sel], lat[sel], ve[sel] * vel_to_mm, vn[sel] * vel_to_mm,
-                          np.where(np.isfinite(vals), vals, 0.0), cmap=cmap, norm=norm,
-                          **qkw)
-        # rings mark stations inside the AOI (color already spoken for by vel_u)
+        _bg = sel & ~moving
+        _bgv = vu_mm[_bg]
+        # faint dark outline (owner 2026-09-01, Casa Grande): the pale
+        # mid-ramp yellows vanished against the Esri hillshade underlay
+        q_ref = ax.quiver(lon[_bg], lat[_bg], ve[_bg] * vel_to_mm,
+                          vn[_bg] * vel_to_mm,
+                          np.where(np.isfinite(_bgv), _bgv, 0.0),
+                          cmap=cmap, norm=norm, edgecolor="k",
+                          linewidth=0.35, **qkw)
+        # in-AOI station markers carry the SAME RdYlBu vel_u color as their
+        # arrows (owner 2026-08-30), black-edged so they read on the ramp
         if inside.any():
-            ax.scatter(lon[inside], lat[inside], s=46, facecolors="none",
+            ax.scatter(lon[inside], lat[inside], s=52,
+                       c=np.where(np.isfinite(vu_mm[inside]), vu_mm[inside], 0.0),
+                       cmap=cmap, norm=norm,
                        edgecolors="k", linewidths=1.1, zorder=4)
-        fig.colorbar(q_ref, ax=ax, shrink=0.72, pad=0.02,
-                     label="vertical velocity vel_u (mm/yr)  [RED = SUBSIDENCE]")
+        if cbar_ax is not None:  # dedicated cax -> both panels stay equal-size
+            fig.colorbar(q_ref, cax=cbar_ax,
+                         label="vertical velocity vel_u (mm/yr)  [RED = SUBSIDENCE]")
+        else:
+            fig.colorbar(q_ref, ax=ax, shrink=0.72, pad=0.02,
+                         label="vertical velocity vel_u (mm/yr)  [RED = SUBSIDENCE]")
     else:
         if buffered.any():
             qb = ax.quiver(lon[buffered], lat[buffered], ve[buffered] * vel_to_mm,
@@ -306,16 +405,71 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
                        edgecolors="k", linewidths=0.4, zorder=4)
             q_ref = qi
 
-    if q_ref is not None:
+    if q_ref is not None and show_ref:
         ax.quiverkey(q_ref, 0.87, 0.07, ref_mm_yr, f"{ref_mm_yr:g} mm/yr",
                      labelpos="N", coordinates="axes", color="k",
                      fontproperties={"size": 8})
 
-    # optional interpolated AOI-centroid velocity (a distinct heavy arrow)
-    if poly is not None and overlay_interp:
+    if mov_sel.any():
+        # moving monuments (on-ice/landslide): DIRECTION-ONLY fixed-length
+        # arrows + open markers + per-station speed labels — drawn to scale
+        # a single glacier arrow flattens the bedrock network to
+        # invisibility (owner 2026-09-01, MDV TAMDEF)
+        u_m, v_m = ve[mov_sel] * vel_to_mm, vn[mov_sel] * vel_to_mm
+        mag_m = np.hypot(u_m, v_m)
+        f_m = np.divide(0.75 * ref_mm_yr, mag_m, out=np.zeros_like(mag_m),
+                        where=mag_m > 0)
+        ax.quiver(lon[mov_sel], lat[mov_sel], u_m * f_m, v_m * f_m,
+                  color="#7B2D8E", alpha=0.9, **{**qkw, "width": 0.0028})
+        ax.scatter(lon[mov_sel], lat[mov_sel], s=36, facecolors="none",
+                   edgecolors="#7B2D8E", linewidths=1.3, zorder=4)
+        for x_, y_, mm_, sid_ in zip(lon[mov_sel], lat[mov_sel], mag_m,
+                                     ids[mov_sel]):
+            lbl = (f"{sid_} {mm_ / 1000.0:.1f} m/yr" if mm_ >= 1000
+                   else f"{sid_} {mm_:.0f} mm/yr")
+            ax.annotate(lbl, (x_, y_), xytext=(5, 4),
+                        textcoords="offset points", fontsize=6.2,
+                        color="#7B2D8E", path_effects=halo, zorder=8)
+
+    # combined AOI-centroid VERTICAL on the vertical panel (owner
+    # 2026-08-30): green star + U ± spread, no arrow, no horizontal numbers
+    if poly is not None and overlay_interp and annotate_interp and color_by_vertical:
+        from groundcontrol.velocity import DEFAULT_RADIUS_KM as _RKM
         from groundcontrol.velocity import interpolate_velocity
         res = interpolate_velocity(clon, clat, stations, lon_col=lon_col,
-                                   lat_col=lat_col, vel_cols=vel_cols).iloc[0]
+                                   lat_col=lat_col, vel_cols=vel_cols,
+                                   exclude_moving_mm_yr=moving_mm_yr).iloc[0]
+        vui = res.get("vel_u", np.nan)
+        if np.isfinite(vui):
+            ax.scatter([clon], [clat], marker="*", s=210, c="tab:green",
+                       edgecolors="k", linewidths=0.6, zorder=7)
+            su = res.get("vel_spread_u", np.nan)
+            su_s = "nan" if not np.isfinite(su) else f"{su * vel_to_mm:.1f}"
+            # it IS an interpolation: median/IDW at the AOI centroid over
+            # stations within radius_km — n here counts THOSE, not the
+            # n-inside-AOI in the subtitle (owner question 2026-08-31)
+            ann = (f"interpolated @ AOI centroid\n"
+                   f"n={int(res['n_stations_used'])} stations "
+                   f"\u2264 {_RKM:g} km\n"
+                   f"U {vui * vel_to_mm:+.1f} ± {su_s} mm/yr")
+            if n_mov_near:
+                ann += (f"\n{n_mov_near} moving monument(s) excluded "
+                        f"(\u2264 {_RKM:g} km)")
+            if res["quality"] not in ("ok", None):
+                ann += f"\n[{res['quality']}]"
+            ax.annotate(ann, (clon, clat), xytext=(9, -14),
+                        textcoords="offset points", fontsize=7.6,
+                        color="darkgreen", fontweight="bold",
+                        path_effects=halo, zorder=8)
+
+    # interpolated AOI-centroid horizontal velocity (a distinct heavy arrow)
+    if (poly is not None and overlay_interp and annotate_interp
+            and not color_by_vertical):
+        from groundcontrol.velocity import DEFAULT_RADIUS_KM as _RKM
+        from groundcontrol.velocity import interpolate_velocity
+        res = interpolate_velocity(clon, clat, stations, lon_col=lon_col,
+                                   lat_col=lat_col, vel_cols=vel_cols,
+                                   exclude_moving_mm_yr=moving_mm_yr).iloc[0]
         vei, vni = res["vel_e"], res["vel_n"]
         if np.isfinite(vei) and np.isfinite(vni):
             ui, vi = vei * vel_to_mm, vni * vel_to_mm
@@ -325,12 +479,32 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
                       linewidth=0.6, **{**qkw, "width": 0.007, "zorder": 6})
             ax.scatter([clon], [clat], marker="*", s=210, c="tab:green",
                        edgecolors="k", linewidths=0.6, zorder=7)
-            sh = res.get("vel_spread_h", np.nan)
-            sh_mm = sh * vel_to_mm if np.isfinite(sh) else np.nan
-            ann = (f"AOI interp: {mag:.1f} mm/yr @ {az:.0f}°N\n"
-                   f"{res['quality']} (spread_h "
-                   f"{'nan' if not np.isfinite(sh_mm) else f'{sh_mm:.1f}'} mm/yr, "
-                   f"n={int(res['n_stations_used'])})")
+            # label spec (owner 2026-08-30): n FIRST; per-component E/N and
+            # the combined H on the HORIZONTAL panel; bare value ± spread —
+            # the statistic (1σ station spread) is named ONCE in the title,
+            # never in the label. The quality flag prints only when it is a
+            # WARNING, never a reassuring "ok".
+            def _mm(v):
+                v = v * vel_to_mm if np.isfinite(v) else np.nan
+                return "nan" if not np.isfinite(v) else f"{v:.1f}"
+
+            def _pm(v):
+                v = v * vel_to_mm if np.isfinite(v) else np.nan
+                return "nan" if not np.isfinite(v) else f"{v:+.1f}"
+            ann = (f"interpolated @ AOI centroid\n"
+                   f"n={int(res['n_stations_used'])} stations "
+                   f"\u2264 {_RKM:g} km\n"
+                   f"E {_pm(res.get('vel_e', np.nan))} ± "
+                   f"{_mm(res.get('vel_spread_e', np.nan))}, "
+                   f"N {_pm(res.get('vel_n', np.nan))} ± "
+                   f"{_mm(res.get('vel_spread_n', np.nan))} mm/yr\n"
+                   f"H {mag:.1f} ± {_mm(res.get('vel_spread_h', np.nan))} "
+                   f"mm/yr @ {az:.0f}°N")
+            if n_mov_near:
+                ann += (f"\n{n_mov_near} moving monument(s) excluded "
+                        f"(\u2264 {_RKM:g} km)")
+            if res["quality"] not in ("ok", None):
+                ann += f"\n[{res['quality']}]"
             ax.annotate(ann, (clon, clat), xytext=(9, -14),
                         textcoords="offset points", fontsize=7.6, color="darkgreen",
                         fontweight="bold", path_effects=halo, zorder=8)
@@ -358,17 +532,36 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
                    Line2D([0], [0], color="0.55", lw=2, label=f"within {buffer_km:g} km")]
         if overlay_interp:
             handles.append(Line2D([0], [0], color="tab:green", lw=2.5,
-                                  label="AOI interp (centroid)"))
+                                  label="interpolated @ AOI centroid"))
+        if mov_sel.any():
+            handles.append(Line2D([0], [0], color="#7B2D8E", lw=2,
+                                  label=f"moving monument (>{moving_mm_yr:g}"
+                                        " mm/yr from network median; "
+                                        "direction only)"))
         ax.legend(handles=handles, fontsize=7.5, loc="upper left", framealpha=0.85)
 
     n_in = int(inside.sum())
     n_buf = int(buffered.sum())
+    n_mov = int(mov_sel.sum())
     if title is None:
         title = "MIDAS horizontal velocities"
-    ax.set_title(f"{title}\n{n_in} inside AOI + {n_buf} within {buffer_km:g} km "
-                 f"buffer  |  ref {ref_mm_yr:g} mm/yr", fontsize=10)
+    ref_note = f"  |  ref {ref_mm_yr:g} mm/yr" if show_ref else ""
+    pm_note = ("  |  ± = 1σ station spread"
+               if (poly is not None and overlay_interp and annotate_interp)
+               else "")
+    # drawn-extent count, worded apart from the interpolation's
+    # within-radius count in the annotation (round-6: one figure carried
+    # two different "excluded" numbers under the same words)
+    mov_note = (f"  |  {n_mov} moving (direction only)" if n_mov else "")
+    ax.set_title(f"{title}\nn={n_in} inside AOI + n={n_buf} within "
+                 f"{buffer_km:g} km buffer{mov_note}{ref_note}{pm_note}",
+                 fontsize=10)
 
-    fig.tight_layout()
+    if own_fig:
+        # only lay out a figure this function created: a caller-owned axes
+        # usually shares a gridspec (dedicated colorbar axis etc.) that
+        # tight_layout cannot handle — the caller owns that layout
+        fig.tight_layout()
     if out_fn:
         fig.savefig(out_fn, dpi=150, bbox_inches="tight")
     return fig
@@ -436,8 +629,13 @@ def _scalebar_auto_loc(ax) -> str:
 
 
 def add_scalebar(ax, length: float | None = None, label: str | None = None,
-                 loc: str = "auto", color: str = "k"):
-    """Add a scalebar in data units (meters for projected CRSs).
+                 loc: str = "auto", color: str = "k", crs=None):
+    """Add a scalebar labeled in meters/km, whatever the grid unit.
+
+    ``crs`` (optional): the axes' projected CRS — its axis unit sets the
+    data-unit-to-meter factor, so a ftUS state-plane grid (owner 2026-08-30,
+    Alaska SPCS lidar tile) gets a correct metric bar instead of one
+    mislabeled by 3.28x. Without it the grid is assumed metric.
 
     Intended companion to :func:`plot_dh_map` when axis tick labels are
     dropped for map-style panels. Uses ``matplotlib-scalebar`` (house rule,
@@ -453,15 +651,21 @@ def add_scalebar(ax, length: float | None = None, label: str | None = None,
 
     if loc == "auto":
         loc = _scalebar_auto_loc(ax)
+    factor = 1.0   # meters per data unit
+    if crs is not None:
+        import pyproj
+        c = pyproj.CRS.from_user_input(crs)
+        if c.is_projected:
+            factor = float(c.axis_info[0].unit_conversion_factor)
     if length is None:
         x0, x1 = ax.get_xlim()
-        length = nice_scale_length(abs(x1 - x0))
+        length = nice_scale_length(abs(x1 - x0) * factor)   # meters
     # promote to km above 1000 m (ScaleBar renders fixed_units literally)
     value, unit = (length / 1000.0, "km") if length >= 1000 else (length, "m")
     kwargs = {}
     if label is not None:
         kwargs["scale_formatter"] = lambda v, u: label
-    bar = ScaleBar(1.0, units="m", location=loc,
+    bar = ScaleBar(factor, units="m", location=loc,
                    fixed_value=value, fixed_units=unit,
                    color=color, box_alpha=0.7, frameon=True, **kwargs)
     ax.add_artist(bar)

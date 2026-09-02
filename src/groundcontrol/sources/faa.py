@@ -31,6 +31,29 @@ Elevations are feet MSL, NAVD88 per the AC (the most recent NGS hybrid
 geoid at survey time); NASR never publishes ellipsoid height (ARINC 424
 field 5.225 via the CIFP distribution is the only public channel — a
 possible future join, not implemented here).
+
+Facilities under ownership codes MA/MN/MR/CG publish elevations from a
+separate survey pipeline referenced to EGM96 MSL rather than NAVD88
+(verified against 3DEP across the cycle's facilities, 2026-09-01). A row
+at such a facility whose elevation source is in :data:`EGM96_ELEV_SRC`
+(the rule is ownership AND source; the same source strings at other
+facilities read NAVD88 and are the next cohort to verify) declares EGM96
+(``EPSG:5773``); its natives carry the published horizontal with the
+NAD83(2011) ellipsoidal height derived through the explicit geoid + frame
+tie chain (:func:`_egm96_to_nad83_2011_h`), so the re-target is a pure
+NAD83(2011) -> product operation. PROJ's own NAD83(2011)+EGM96 compound
+would land 0.7-0.9 m low across CONUS (it skips the NAD83(2011)-ITRF2014
+Helmert through a null WGS 84 step). 3RD PARTY SURVEY records read NAVD88;
+other sources stay NA with NA natives, so they land nowhere (h_ell NaN)
+rather than through a guessed datum. :func:`pos_class` classes the whole
+facility ``"mil"``: no published accuracy, own context segment, outside
+the surveyed tier.
+
+:func:`parse` emits the civil facility set by default (NASR ownership
+codes in :data:`DEFAULT_OWNERSHIP`, the AC-surveyed NAVD88 tier);
+``ownership="all"`` (CLI ``--faa-ownership all``) widens it to every
+published facility. Rows outside the set are counted in
+``gdf.attrs['skipped']`` like the NGS realization quarantine.
 """
 
 from __future__ import annotations
@@ -47,7 +70,7 @@ import pandas as pd
 import requests
 
 from groundcontrol.crs import decyear
-from groundcontrol.sources.checkpoints_3dep import cache_dir
+from groundcontrol.sources.checkpoints_3dep import cache_dir, cache_stale, cache_write
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -73,8 +96,81 @@ SURVEYED_SOURCES = frozenset(
     {"3RD PARTY SURVEY", "NGS", "ARPTS CONTRACTOR", "MILITARY"})
 
 
-def pos_class(src) -> str:
-    """Coordinate-provenance class for a NASR position source string."""
+#: APT ownership codes whose facilities publish EGM96 MSL elevations
+MIL_OWNERSHIP = {"MA", "MN", "MR", "CG"}
+#: the NASR APT ownership vocabulary (layout field 00184)
+OWNERSHIP_CODES = {"PU", "PR"} | MIL_OWNERSHIP
+#: ownership codes :func:`parse` keeps by default: publicly (PU) and
+#: privately (PR) owned civil facilities, the AC 150/5300-18C tier
+DEFAULT_OWNERSHIP = ("PU", "PR")
+#: NASR elevation sources published on EGM96 MSL at those facilities
+#: (verified 2026-09-01; see the parse() note).
+EGM96_ELEV_SRC = {"MILITARY", "DOD (NGA)", "AVN", "NGS"}
+MIL_EGM96_DATUM = "EGM96 MSL (declared per elevation source; verified 2026-09-01)"
+#: native frame of an EGM96-declared row: NAD83(2011) 3D — the published
+#: horizontal with the ellipsoidal height derived at parse time
+MIL_NATIVE_CRS = "EPSG:6319"
+
+
+def _egm96_to_nad83_2011_h(lon, lat, height, epoch, aoi_bounds_4326=None):
+    """Published EGM96 orthometric height -> NAD83(2011) ellipsoidal height
+    at the published lon/lat, through the explicit chain EGM96 -> WGS 84
+    (geoid grid) -> ITRF2014 (WGS 84 taken as ITRF2014, cm-level) ->
+    NAD83(2011) (the time-dependent tie at the row's coord_epoch). The
+    horizontal never moves: the natives then re-target through a pure
+    NAD83(2011) -> product operation, exact for every target shape
+    (round-6 audits: a compound native chained differently per target —
+    +0.74 m on an EGM96-vertical target, up to 1.6 m of horizontal
+    displacement elsewhere). Returns ``(h_ell, stated_acc_m)`` with NaN
+    where the geoid grid or the frame tie is unavailable (Pacific
+    territories, ...): the caller leaves those rows unverified. Never
+    raises — one such point must not take down a cycle's parse."""
+    from pyproj import Transformer
+
+    from groundcontrol.crs import NoTransformPathError, get_transformer
+    lon = np.asarray(lon, dtype="float64")
+    lat = np.asarray(lat, dtype="float64")
+    height = np.asarray(height, dtype="float64")
+    epoch = np.asarray(epoch, dtype="float64")
+    out = np.full(lon.shape, np.nan)
+    acc = float("nan")
+    fin = np.isfinite(lon) & np.isfinite(lat) & np.isfinite(height) & np.isfinite(epoch)
+    if not fin.any():
+        return out, acc
+    b = aoi_bounds_4326 or (float(np.nanmin(lon)) - 1.0, float(np.nanmin(lat)) - 1.0,
+                            float(np.nanmax(lon)) + 1.0, float(np.nanmax(lat)) + 1.0)
+    try:
+        geoid = Transformer.from_crs("EPSG:4326+5773", "EPSG:4979",
+                                     always_xy=True, allow_ballpark=False)
+        _, _, hw = geoid.transform(lon[fin], lat[fin], height[fin], errcheck=False)
+        hw = np.asarray(hw, dtype="float64")
+        tie = get_transformer("EPSG:7912", "EPSG:6319", aoi_bounds_4326=b)
+        _, _, hn, _ = tie.transform(lon[fin], lat[fin], hw, epoch[fin], errcheck=False)
+        hn = np.asarray(hn, dtype="float64")
+    except (NoTransformPathError, Exception) as exc:  # noqa: BLE001 — fail soft, per row
+        logger.warning("faa: EGM96 -> NAD83(2011) chain unavailable for this AOI "
+                       "(%s); %d EGM96-declared row(s) left unverified", exc, int(fin.sum()))
+        return out, acc
+    ok = np.isfinite(hw) & np.isfinite(hn)
+    res = np.full(int(fin.sum()), np.nan)
+    res[ok] = hn[ok]
+    out[fin] = res
+    parts = [a for a in (geoid.accuracy, tie.accuracy) if a is not None and a > 0]
+    acc = float(sum(parts)) if parts else float("nan")
+    return out, acc
+
+
+def pos_class(src, ownership=None) -> str:
+    """Provenance class for a NASR position source string.
+
+    A row at a facility under :data:`MIL_OWNERSHIP` classes ``"mil"``
+    regardless of its position source: those facilities publish
+    elevations on EGM96 MSL, not NAVD88 (module docstring). The class
+    keeps them out of the surveyed accuracy tier (no published accuracy)
+    and visible as their own segment; the datum itself is declared per
+    elevation source in :func:`parse`."""
+    if str(ownership).strip().upper() in MIL_OWNERSHIP:
+        return "mil"
     return "surveyed" if str(src).strip().upper() in SURVEYED_SOURCES \
         else "estimated"
 
@@ -103,7 +199,7 @@ def fetch(aoi_bounds_4326, cycle: str | None = None) -> dict:
     local = None
     for cyc in cycles:
         local = cache_dir() / f"faa_APT_{cyc}.zip"
-        if local.exists():
+        if not cache_stale(local):
             break
         url = APT_URL.format(cycle=cyc)
         logger.info("downloading %s -> %s", url, local)
@@ -113,7 +209,7 @@ def fetch(aoi_bounds_4326, cycle: str | None = None) -> dict:
                            cyc, cycles[-1])
             continue
         r.raise_for_status()
-        local.write_bytes(r.content)
+        cache_write(local, r.content)
         break
     else:  # pragma: no cover - loop always breaks or raises
         raise RuntimeError(f"no NASR cycle reachable: {cycles}")
@@ -136,6 +232,9 @@ _APT_SITE = slice(3, 14)       # 00004 L11 landing facility site number
 _APT_TYPE = slice(14, 27)      # 00015 L13 facility type (AIRPORT/HELIPORT/..)
 _APT_LOCID = slice(27, 31)     # 00028 L4  location identifier
 _APT_NAME = slice(133, 183)    # 00134 L50 official facility name
+_APT_OWNER = slice(183, 185)   # 00184 L2  ownership: PU/PR public/private,
+                               #           MA/MN/MR/CG see MIL_OWNERSHIP
+_APT_USE = slice(185, 187)     # 00186 L2  facility use: PU/PR
 _RWY_SITE = slice(3, 14)       # 00004 L11 site number (joins APT record)
 _RWY_ID = slice(16, 23)        # 00017 L7  runway identification '01L/19R'
 _END_OFF = 222                 # reciprocal offset, GEOGRAPHIC blocks
@@ -154,6 +253,7 @@ _END_POS_DATE = slice(584, 594)  # 00585 L10 position source date MM/DD/YYYY
 _END_ELEV_SRC = slice(594, 610)  # 00595 L16 end elevation source
 _DT_POS_SRC = slice(620, 636)    # 00621 L16 displaced threshold pos source
 _DT_POS_DATE = slice(636, 646)   # 00637 L10 displaced threshold pos date
+_DT_ELEV_SRC = slice(646, 662)   # 00647 L16 displaced threshold elev source
 
 
 def _shift(sl: slice, off: int) -> slice:
@@ -184,6 +284,8 @@ def _rows(lines) -> list[dict]:
                 "fac_type": rec[_APT_TYPE].strip(),
                 "loc_id": rec[_APT_LOCID].strip(),
                 "name": rec[_APT_NAME].strip(),
+                "ownership": rec[_APT_OWNER].strip(),
+                "fac_use": rec[_APT_USE].strip(),
             }
         elif rt == "RWY":
             site = rec[_RWY_SITE].strip()
@@ -229,6 +331,10 @@ def _rows(lines) -> list[dict]:
                         "true_az": true_az,
                         "pos_src": rec[_shift(_DT_POS_SRC, soff)].strip(),
                         "pos_src_date": rec[_shift(_DT_POS_DATE, soff)].strip(),
+                        # same vocabulary as the end's elevation source;
+                        # without it every threshold of that class fell to NA
+                        # (nationwide count, 2026-09-01)
+                        "elev_src": rec[_shift(_DT_ELEV_SRC, soff)].strip(),
                         "dt_len_ft": rec[_shift(_DT_LEN, off)].strip(),
                     })
     return rows
@@ -238,31 +344,142 @@ def _rows(lines) -> list[dict]:
 _CONSUMED = {"id", "point_type", "lat", "lon", "height"}
 
 
-def parse(raw: dict) -> gpd.GeoDataFrame:
+def validate_ownership(ownership) -> set[str] | None:
+    """``"all"`` -> None (no filter); else the validated set of codes from
+    an iterable or a comma-separated string. An unknown code fails loud: a
+    typo'd filter would otherwise silently empty the source. The CLIs
+    preflight ``--faa-ownership`` through this before any fetch."""
+    if ownership is None or (isinstance(ownership, str)
+                             and ownership.strip().lower() == "all"):
+        return None
+    codes = ownership.split(",") if isinstance(ownership, str) else ownership
+    codes = {str(c).strip().upper() for c in codes if str(c).strip()}
+    bad = sorted(codes - OWNERSHIP_CODES)
+    if bad or not codes:
+        raise ValueError(f"faa ownership filter: unknown code(s) {bad}; "
+                         f"known {sorted(OWNERSHIP_CODES)} or 'all'")
+    return codes
+
+
+def parse(raw: dict, ownership=DEFAULT_OWNERSHIP) -> gpd.GeoDataFrame:
     """APT/RWY record lines -> schema-shaped GeoDataFrame (native frame).
 
     Emits EVERY runway end / displaced threshold with published coordinates
-    inside the AOI bounds — including estimated-provenance and seaplane/
-    heliport facilities. Quality filtering is an assessment-time decision:
-    use :func:`pos_class` on ``raw['pos_src']`` (and ``raw['fac_type']``)
-    exactly like the NGS ``vertSource`` classes.
+    inside the AOI bounds at facilities whose NASR ownership code is in
+    ``ownership`` (default :data:`DEFAULT_OWNERSHIP`; ``"all"`` for every
+    facility; a comma-separated string or iterable of codes otherwise) —
+    including estimated-provenance and seaplane/heliport facilities.
+    Quality filtering is an assessment-time decision: use
+    :func:`pos_class` on ``raw['pos_src']`` (and ``raw['fac_type']``)
+    exactly like the NGS ``vertSource`` classes. Rows dropped by the
+    ownership filter are counted in ``.attrs['skipped']``.
     """
+    own_keep = validate_ownership(ownership)
     df = pd.DataFrame(_rows(raw["lines"]))
+    n_own_skipped = 0
     if len(df):
         minlon, minlat, maxlon, maxlat = raw["aoi_bounds_4326"]
         keep = ((df["lon"] >= minlon) & (df["lon"] <= maxlon)
                 & (df["lat"] >= minlat) & (df["lat"] <= maxlat))
         df = df[keep].reset_index(drop=True)
+        if own_keep is not None and len(df):
+            in_set = (df["ownership"].astype("string").str.strip().str.upper()
+                      .isin(own_keep).fillna(False).to_numpy(dtype=bool))
+            n_own_skipped = int((~in_set).sum())
+            df = df[in_set].reset_index(drop=True)
     n = len(df)
     if not n:  # schema-shaped empty frame with a valid CRS
         df = pd.DataFrame(columns=["id", "point_type", "lat", "lon", "height",
                                    "pos_src", "pos_src_date"])
-    surveyed = df["pos_src"].map(pos_class).eq("surveyed").to_numpy() \
-        if n else np.array([], dtype=bool)
+    own = df["ownership"] if "ownership" in df.columns \
+        else pd.Series([None] * n, index=df.index)
+    cls = [pos_class(ps, ow) for ps, ow in zip(df.get("pos_src", []), own)] \
+        if n else []
+    surveyed = np.array([c == "surveyed" for c in cls], dtype=bool)
+    mil = np.array([c == "mil" for c in cls], dtype=bool)
     mdt = pd.to_datetime(df["pos_src_date"], format="%m/%d/%Y",
                          errors="coerce", utc=True) \
         if n else pd.Series([], dtype="datetime64[ns, UTC]")
     extras = [c for c in df.columns if c not in _CONSUMED]
+    # rows at MIL_OWNERSHIP facilities whose elevation source is in
+    # EGM96_ELEV_SRC (ownership AND source; verified against 3DEP across
+    # the cycle's facilities, 2026-09-01) DECLARE EGM96 (EPSG:5773); their
+    # natives carry the derived NAD83(2011) ellipsoidal height on the
+    # published horizontal. 3RD PARTY SURVEY records read NAVD88. Any
+    # other source (ADO, blank, ...) stays NA with NA natives: unverified,
+    # never guessed, h_ell NaN downstream (round-6 audit: a NAVD88 native
+    # had been landing them 0.5-1.9 m from their own stated reading).
+    height_datum = pd.Series(["NAVD88"] * n, dtype="string")
+    vertical_crs = pd.Series(["EPSG:5703"] * n, dtype="string")
+    # COPIES (a to_numpy() view would alias the published columns)
+    native_x = np.array(df["lon"], dtype="float64") if n else np.array([])
+    native_y = np.array(df["lat"], dtype="float64") if n else np.array([])
+    native_h = np.array(pd.to_numeric(df["height"], errors="coerce"),
+                        dtype="float64") if n else np.array([])
+    native_crs = pd.Series(["EPSG:6349"] * n, dtype="string")
+    coord_epoch = np.full(n, 2010.0)
+    if n and mil.any():
+        esrc = (df["elev_src"].astype("string").str.strip().str.upper()
+                if "elev_src" in df.columns
+                else pd.Series([pd.NA] * n, dtype="string"))
+        egm = mil & esrc.isin(EGM96_ELEV_SRC).fillna(False).to_numpy(dtype=bool)
+        third = mil & esrc.eq("3RD PARTY SURVEY").fillna(False).to_numpy(
+            dtype=bool)
+        other = mil & ~egm & ~third
+        height_datum[egm] = MIL_EGM96_DATUM
+        vertical_crs[egm] = "EPSG:5773"
+        height_datum[other] = "MSL (EGM96 assumed; unverified)"
+        vertical_crs[other] = pd.NA
+        native_crs[other] = pd.NA      # undeclared datum lands nowhere
+        # (third-party surveys keep the NAVD88 defaults)
+        if egm.any():
+            idx = np.flatnonzero(egm)
+            # a blank published elevation is not a coverage failure: the
+            # datum stays declared, there is simply nothing to land (NA
+            # natives, no warning) — round-7 audit
+            hin = np.isfinite(native_h[egm])
+            h_ell = np.full(int(egm.sum()), np.nan)
+            chain_acc = np.nan
+            if hin.any():
+                h_ell[hin], chain_acc = _egm96_to_nad83_2011_h(
+                    native_x[egm][hin], native_y[egm][hin],
+                    native_h[egm][hin], coord_epoch[egm][hin],
+                    raw.get("aoi_bounds_4326"))
+            tied = np.isfinite(h_ell)
+            untied = hin & ~tied
+            native_h[idx[tied]] = h_ell[tied]
+            native_crs[idx[tied]] = MIL_NATIVE_CRS
+            native_crs[idx[~hin]] = pd.NA
+            if tied.any():
+                df.loc[df.index[idx[tied]], "native_chain"] = (
+                    "EGM96 grid + ITRF2014->NAD83(2011) tie at coord_epoch"
+                    f" (stated accuracy {chain_acc:.2f} m)")
+                # the NUMBER too: transform_control composes it into
+                # xform_acc_m (the native -> target leg is a pure
+                # conversion, accuracy 0, which alone would read NaN)
+                df.loc[df.index[idx[tied]], "native_chain_acc_m"] = chain_acc
+                for k in ("native_chain", "native_chain_acc_m"):
+                    if k not in extras:   # rides into raw
+                        extras.append(k)
+            if untied.any():
+                # no geoid grid / frame tie here: the datum is still EGM96
+                # but the row cannot be landed honestly -> NA, unverified,
+                # NA natives (the same fail-loud NA as the other sources)
+                vertical_crs[idx[untied]] = pd.NA
+                native_crs[idx[untied]] = pd.NA
+                height_datum[idx[untied]] = ("MSL (EGM96 assumed; frame tie "
+                                             "unavailable here — unverified)")
+                logger.warning("faa: %d EGM96-declared row(s) outside "
+                               "the geoid / frame-tie coverage left with "
+                               "vertical_crs NA", int(untied.sum()))
+    # NA native_crs means "lands nowhere": the native triplet goes NaN with
+    # it, so nothing downstream can mistake the published lon/lat/height
+    # for a landable native (Copilot review, PR #29)
+    no_native = native_crs.isna().to_numpy(dtype=bool)
+    if no_native.any():
+        native_x[no_native] = np.nan
+        native_y[no_native] = np.nan
+        native_h[no_native] = np.nan
     out = gpd.GeoDataFrame(
         {
             "id": df["id"].astype("string"),
@@ -270,14 +487,14 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
             # displaced_threshold) pending the point_type split adjudication
             "point_type": df["point_type"].astype("string"),
             "height": pd.to_numeric(df["height"], errors="coerce"),
-            "height_datum": pd.Series(["NAVD88"] * n, dtype="string"),
+            "height_datum": height_datum,
             "horizontal_crs": pd.Series(["EPSG:6318"] * n, dtype="string"),
-            "vertical_crs": pd.Series(["EPSG:5703"] * n, dtype="string"),
+            "vertical_crs": vertical_crs,
             "ref_frame": pd.Series(["NAD83(2011)"] * n, dtype="string"),
             "frame_epoch": np.full(n, 2010.0),
             # plate-fixed published positions; reduced-to-frame-epoch reading
             # (same convention as checkpoints_3dep)
-            "coord_epoch": np.full(n, 2010.0),
+            "coord_epoch": coord_epoch,
             "measurement_datetime": mdt,
             "measurement_epoch": decyear(mdt) if n else
             pd.Series([], dtype="float64"),
@@ -285,18 +502,23 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
             # NO reported accuracy — null, never a fabricated bound (TODO(D3))
             "acc_h": np.where(surveyed, ACC_H_SURVEYED, np.nan),
             "acc_v": np.where(surveyed, ACC_V_SURVEYED, np.nan),
-            "native_x": df["lon"].to_numpy(dtype="float64"),
-            "native_y": df["lat"].to_numpy(dtype="float64"),
-            "native_h": pd.to_numeric(df["height"], errors="coerce"),
-            "native_crs": pd.Series(["EPSG:6349"] * n, dtype="string"),
+            "native_x": native_x,
+            "native_y": native_y,
+            "native_h": native_h,
+            "native_crs": native_crs,
             "raw": pd.Series(
                 [json.dumps({**{k: str(df.iloc[i][k]) for k in extras
                                 if pd.notna(df.iloc[i][k])},
-                             "pos_class": pos_class(df.iloc[i]["pos_src"])})
+                             "pos_class": cls[i]})
                  for i in range(n)], dtype="string", index=df.index),
         },
         geometry=gpd.points_from_xy(df["lon"], df["lat"]),
         crs="EPSG:6318",
         index=df.index,
     )
+    if n_own_skipped:
+        out.attrs["skipped"] = {"n": n_own_skipped,
+                                "reasons": {"ownership filter": n_own_skipped}}
+        logger.info("faa: %d row(s) at facilities outside the ownership "
+                    "filter %s skipped", n_own_skipped, sorted(own_keep))
     return out

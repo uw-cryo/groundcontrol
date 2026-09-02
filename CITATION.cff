@@ -1,11 +1,11 @@
 cff-version: 1.2.0
 title: "groundcontrol"
 repository-code: "https://github.com/uw-cryo/groundcontrol"
-version: 0.1.2
-date-released: "2026-08-11"
+version: 0.2.0
+date-released: "2026-09-02"
 license: "MIT"
 type: software
-abstract: "Fetch ground control points for an arbitrary area of interest and assess digital elevation model (DEM) accuracy, with rigorous 3D coordinate reference system, datum, and epoch handling. Provides normalized access to USGS 3DEP checkpoints, NGS monumented control, OPUS shared solutions, and Nevada Geodetic Laboratory GNSS series under a single schema, together with fail-loud CRS transforms, per-realization datum landing, velocity-based epoch propagation, raster sampling, and dual-track accuracy statistics."
+abstract: "Fetch ground control points for an arbitrary area of interest and assess digital elevation model (DEM) accuracy, with rigorous 3D coordinate reference system, datum, and epoch handling. Provides normalized access to USGS 3DEP checkpoints, NGS monumented control, OPUS shared solutions, Nevada Geodetic Laboratory GNSS series, and FAA NASR runway control under a single schema, together with fail-loud CRS transforms, per-realization datum landing, velocity-based epoch propagation, raster sampling, and dual-track accuracy statistics."
 message: "If you use this software, please cite it as below."
 authors:
   - given-names: David

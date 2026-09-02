@@ -406,7 +406,7 @@ def test_grid_signature_prime_meridian_and_units():
 
 
 # ---------------------------------------------------------------------------
-# MED — FAA military rows must not assert a definite vertical EPSG code
+# MED — FAA military rows: DoD-pipeline elevations declare EGM96 (owner 2026-09-01)
 # ---------------------------------------------------------------------------
 
 
@@ -416,7 +416,7 @@ def test_faa_pos_class_mil_ownership():
     assert pos_class("NGS", "PU") == "surveyed"
 
 
-def test_faa_mil_rows_never_assert_navd88():
+def test_faa_mil_rows_declare_egm96_never_navd88():
     import json
     from pathlib import Path
 
@@ -427,15 +427,59 @@ def test_faa_mil_rows_never_assert_navd88():
     out = faa.parse({"cycle": "2026-08-06",
                      "aoi_bounds_4326": (-180.0, -90.0, 180.0, 90.0),
                      "lines": lines})
-    mil = np.array([json.loads(r).get("pos_class") == "mil"
-                    for r in out["raw"]])
-    assert mil.any() and (~mil).any()
-    # ambiguous datum: NA code, explicit non-committal height_datum;
-    # natives kept (distribution frame) so the EGM96 diagnostic survives
-    assert out.loc[mil, "vertical_crs"].isna().all()
-    assert (out.loc[mil, "height_datum"].str.contains("EGM96")).all()
-    assert out.loc[mil, "native_crs"].eq("EPSG:6349").all()
+    raw = [json.loads(r) for r in out["raw"]]
+    mil = np.array([r.get("pos_class") == "mil" for r in raw])
+    dod = mil & np.array([str(r.get("elev_src", "")).strip().upper()
+                          in faa.DOD_ELEV_SRC for r in raw])
+    assert mil.any() and (~mil).any() and dod.any()
+    # owner 2026-09-01: DoD-pipeline elevations are EGM96 MSL (multi-
+    # facility verified) — declared, and landed through the geoid + the
+    # ITRF2014 frame tie via ITRF2014-tied natives. Never EPSG:5703.
+    assert out.loc[dod, "vertical_crs"].eq("EPSG:5773").all()
+    assert (out.loc[dod, "height_datum"].str.contains("EGM96")).all()
+    assert out.loc[dod, "native_crs"].eq(faa.MIL_NATIVE_CRS).all()
+    # the tie moves the horizontal by the NAD83(2011)->ITRF2014 offset
+    # (~1-1.5 m in CONUS), never by nothing and never by a lot
+    dx = (out.loc[dod, "native_x"] - out.loc[dod].geometry.x) * 111320 \
+        * np.cos(np.radians(out.loc[dod].geometry.y))
+    dy = (out.loc[dod, "native_y"] - out.loc[dod].geometry.y) * 111320
+    shift = np.hypot(dx, dy)
+    assert (shift > 0.3).all() and (shift < 3.0).all()
+    assert out.loc[dod, "native_h"].eq(out.loc[dod, "height"]).all()
+    # non-DoD MIL sources stay honestly NA; civil rows stay NAVD88
+    assert out.loc[mil & ~dod, "vertical_crs"].isna().all()
     assert out.loc[~mil, "vertical_crs"].eq("EPSG:5703").all()
+    assert out.loc[~mil, "native_crs"].eq("EPSG:6349").all()
+
+
+def test_faa_mil_egm96_lands_through_geoid_and_frame_tie():
+    """The declared EGM96 row must land at the explicit EGM96 -> WGS84 ->
+    ITRF2014 -> NAD83(2011) chain height (mm), with the horizontal back
+    at the published NAD83(2011) position (mm) — not 0.9 m low via PROJ's
+    null NAD83(2011)->WGS 84 step (probed 2026-09-01)."""
+    import numpy as np
+    from pyproj import Transformer
+
+    from groundcontrol.crs import get_transformer
+    from groundcontrol.sources import faa
+    lon, lat, H = -111.4886, 32.6611, 507.9         # PCA heliport pad
+    xi, yi = faa._tie_horizontal_itrf2014([lon], [lat], [H],
+                                           (-112.5, 32.0, -110.5, 33.5))
+    t = get_transformer(faa.MIL_NATIVE_CRS, "EPSG:6319",
+                        aoi_bounds_4326=(-112.5, 32.0, -110.5, 33.5))
+    X, Y, Z, _ = t.transform(xi, yi, np.array([H]), np.array([2010.0]),
+                             errcheck=True)
+    hw = Transformer.from_crs("EPSG:4326+5773", "EPSG:4979", always_xy=True,
+                              allow_ballpark=False).transform(lon, lat, H)[2]
+    ref = Transformer.from_crs("EPSG:7912", "EPSG:6319", always_xy=True,
+                               allow_ballpark=False).transform(lon, lat, hw)[2]
+    assert abs(Z[0] - ref) < 0.005
+    assert abs((X[0] - lon) * 111320 * np.cos(np.radians(lat))) < 0.01
+    assert abs((Y[0] - lat) * 111320) < 0.01
+    # and it is NOT the null-step answer
+    wrong = Transformer.from_crs("EPSG:6318+5773", "EPSG:6319", always_xy=True,
+                                 allow_ballpark=False).transform(lon, lat, H)[2]
+    assert abs(Z[0] - wrong) > 0.5
 
 
 def test_ngl_zero_candidate_exit_before_catalog_pool(monkeypatch):

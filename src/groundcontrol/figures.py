@@ -2863,45 +2863,6 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         if flagged:
             txt_lines.extend((line_, _MUT, False)
                              for line_ in _caveat_lines(txt_lines))
-        # the MIL row sits ~0.3-0.5 m off on an otherwise tight sheet
-        # (owner 2026-09-01, Casa Grande hero): say WHY on the figure —
-        # the multi-facility study (sandbox 20260901) pins service-branch
-        # runway elevations to EGM96 MSL, but heliports are a per-facility
-        # mixture, so the class is stated, never corrected here
-        _mil_vals = next((vals for lab, vals, _c in table_entries
-                          if lab.startswith("FAA MIL field") and len(vals)),
-                         None)
-        if _mil_vals is not None and "raw" in sampled.columns:
-            _mm = pd.Series(_raw_field(sampled["raw"], "pos_class")
-                            .isin(("mil", "military"))).fillna(False)
-            _mm = _mm.to_numpy(dtype=bool) & np.isfinite(
-                pd.to_numeric(sampled[col], errors="coerce").to_numpy("float64"))
-            if _mm.any():
-                import geopandas as _gpd
-                _mp = sampled.loc[_mm]
-                _ll = _gpd.GeoSeries([_mp.geometry.union_all().centroid],
-                                     crs=sampled.crs).to_crs(4326)
-                _dlt = _egm96_navd88_delta(
-                    float(_ll.x.iloc[0]), float(_ll.y.iloc[0]),
-                    float(np.nanmedian(pd.to_numeric(_mp["height"],
-                                                     errors="coerce"))))
-                _med = float(np.median(_mil_vals))
-                if np.isfinite(_dlt):
-                    _verdict = ("consistent" if abs(_med - _dlt) < 0.15
-                                else "NOT explained by the datum")
-                    _note = (f"† FAA MIL field: service-branch elevations "
-                             f"are EGM96 MSL (DoD standard) read here as "
-                             f"NAVD88 — median {_med:+.2f} m vs local "
-                             f"EGM96−NAVD88 separation {_dlt:+.2f} m: "
-                             f"{_verdict}; heliport datums vary by facility, "
-                             f"so stated, not corrected")
-                else:
-                    _note = (f"† FAA MIL field: service-branch elevations "
-                             f"may be EGM96 MSL (DoD standard); median "
-                             f"{_med:+.2f} m, local separation unavailable "
-                             f"(outside NAVD88 grid coverage)")
-                txt_lines.extend((line_, _MUT, False)
-                                 for line_ in _caveat_lines(txt_lines, _note))
         if "xform_acc_m" in sampled.columns:
             _xa = sampled["xform_acc_m"].to_numpy(dtype="float64")
             if np.isfinite(_xa).any():
@@ -3184,12 +3145,23 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
             _mil = pd.Series(_raw_field(sampled["raw"], "pos_class")
                              .isin(("mil", "military"))).fillna(False)
             if bool(_mil.any()):
-                mil_mask = _mil.to_numpy(dtype=bool)
-                fam_note = ("MIL (service-branch-owned) facility: "
-                            "elevations may be "
-                            "EGM96 MSL (DoD standard), not NAVD88 — vertical "
-                            "datum unverified, excluded from the surveyed "
-                            "accuracy class")
+                _na = _mil.to_numpy(dtype=bool) & sampled["vertical_crs"] \
+                    .isna().to_numpy(dtype=bool) \
+                    if "vertical_crs" in sampled.columns \
+                    else _mil.to_numpy(dtype=bool)
+                # DoD-pipeline rows now DECLARE EGM96 and land through it
+                # (faa.py, owner 2026-09-01); the separation diagnostic
+                # below applies only to rows still carrying an NA datum
+                mil_mask = _na if _na.any() else None
+                fam_note = ("MIL (service-branch-owned) facility: DoD-"
+                            "pipeline elevations are EGM96 MSL, landed "
+                            "through the EGM96 geoid + ITRF2014 frame tie; "
+                            "no published accuracy, own context class"
+                            if not _na.any() else
+                            "MIL (service-branch-owned) facility: "
+                            "elevations may be EGM96 MSL (DoD standard), "
+                            "not NAVD88 — vertical datum unverified for "
+                            "rows with a non-DoD elevation source")
         for prod in products:
             col = f"dh_{prod}_before"
             vva_ctx = False        # VVA drawn on a SURFACE product (dagger)

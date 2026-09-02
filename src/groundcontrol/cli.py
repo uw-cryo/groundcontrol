@@ -780,10 +780,13 @@ def assess_dem_main(argv=None) -> int:
                         "(fetched over the network, credited on the sheet; "
                         "'none' for offline runs; default: esri)")
     p.add_argument("--context-sheets", action="store_true",
-                   help="also write the per-point context contact sheets "
-                        "(web-imagery windows per GNSS/FAA/3DEP point — "
+                   help="also write the FULL per-point context contact sheets "
+                        "(web-imagery windows for EVERY GNSS/FAA/3DEP point — "
                         "useful for photo-ID QA, but the slow part of the "
-                        "figure stage; off by default)")
+                        "figure stage; off by default). The capped residual "
+                        "review sheets (6 largest + 6 smallest dz per control "
+                        "subset and product) are always written; --basemap "
+                        "none skips their tile fetches")
     p.add_argument("--no-figures", action="store_true", help="skip figure output")
     p.add_argument("--point-lim", type=float, default=None,
                    help="pin the validation-figure map color limit (m); default "

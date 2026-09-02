@@ -114,10 +114,14 @@ def test_schema_conformance():
     norm = schema.normalize(out, source="faa")
     schema.validate(norm)
     assert (norm["source"] == "faa").all()
-    # transformability contract: resolvable horizontal CRS, uniform
-    # non-null vertical CRS, non-null coord_epoch (plate-fixed reading)
+    # transformability contract: resolvable horizontal CRS, a DECLARED
+    # vertical per row from the source's known set (NAVD88 for the AC
+    # reading, EGM96 for DoD-pipeline MIL elevations; NA only for the
+    # unverified MIL remainder — the per-row guard re-targets the EGM96
+    # rows from their natives), non-null coord_epoch (plate-fixed reading)
     assert norm["horizontal_crs"].notna().all()
-    assert norm["vertical_crs"].nunique() == 1
+    assert set(norm["vertical_crs"].dropna().unique()) <= {"EPSG:5703",
+                                                            "EPSG:5773"}
     assert norm["coord_epoch"].notna().all()
 
 

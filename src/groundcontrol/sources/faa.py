@@ -34,13 +34,20 @@ possible future join, not implemented here).
 
 MILITARY-owned facilities (APT ownership MA/MN/MR/CG; 316 nationally in
 cycle 2026-08-06) are the exception to the NAVD88 reading: their records
-flow from the DoD survey pipeline, whose standard is WGS84/EGM96 MSL. At
-Nellis AFB all four runway ends miss the co-located lidar by the local
-EGM96-NAVD88 separation (+0.479 m predicted, +0.45 m observed median),
-while the base's 2022-dated helipad record matches NAVD88 to 3 mm — the
-per-point datum is genuinely ambiguous, so :func:`pos_class` classes the
-whole facility ``"military"`` (own segment, no spec accuracy, excluded
-from the surveyed tier) rather than guessing a correction either way.
+flow from the DoD survey pipeline, whose standard is WGS84/EGM96 MSL.
+Verified 2026-09-01 across 170 CONUS facilities against 3DEP (sandbox
+study, NASR 2026-08-06): per-facility median dz tracks the local
+EGM96-NAVD88 separation with slope +0.90 [+0.80, +0.97] (residual NMAD
+0.14 m; 0.34 m read as NAVD88), EGM96 beats EGM2008, Nellis reproduces
+(+0.49 observed / +0.48 predicted). The NASR elevation source splits the
+class: MILITARY / DOD (NGA) / AVN / NGS sources are EGM96 and DECLARE it
+(``EPSG:5773``, landed through the geoid and the ITRF2014 frame tie);
+3RD PARTY SURVEY sources read NAVD88; anything else stays NA
+(unverified). :func:`pos_class` still classes the whole facility
+``"mil"``: no published accuracy, own segment, outside the surveyed tier.
+Heliports remain a per-facility mixture in the study (Nellis's own pad
+reads NAVD88 while its runway ends read EGM96), so the class rule is the
+DoD standard and the residual is visible, never a silent correction.
 """
 
 from __future__ import annotations
@@ -86,6 +93,46 @@ SURVEYED_SOURCES = frozenset(
 #: APT ownership codes for service-branch facilities (MA air force,
 #: MN navy, MR army, CG coast guard)
 MIL_OWNERSHIP = {"MA", "MN", "MR", "CG"}
+#: NASR elevation sources that flow from the DoD survey pipeline — EGM96
+#: MSL per the multi-facility study (2026-09-01; see the parse() note).
+DOD_ELEV_SRC = {"MILITARY", "DOD (NGA)", "AVN", "NGS"}
+MIL_EGM96_DATUM = ("EGM96 MSL (DoD standard; multi-facility verified "
+                   "2026-09-01)")
+#: native frame of a DoD-pipeline MIL row: ITRF2014 (2D) + EGM96 height
+MIL_NATIVE_CRS = "EPSG:9000+5773"
+
+
+def _tie_horizontal_itrf2014(lon, lat, height, aoi_bounds_4326=None):
+    """Published NAD83(2011) lon/lat -> ITRF2014 @ 2010.0 lon/lat, via the
+    INVERSE of the exact compound chain assess runs forward
+    (:data:`MIL_NATIVE_CRS` -> NAD83(2011) 3D), so the horizontal round
+    trip is ~mm and only the height goes through geoid + frame tie. The
+    height fed to the inverse is the published EGM96 value (the true
+    NAD83(2011) ellipsoidal height is unknown here): the Helmert
+    horizontal is insensitive to it at the 1e-7 level."""
+    from pyproj.enums import TransformDirection
+
+    from groundcontrol.crs import get_transformer
+    lon = np.asarray(lon, dtype="float64")
+    lat = np.asarray(lat, dtype="float64")
+    height = np.asarray(height, dtype="float64")
+    b = aoi_bounds_4326 or (float(np.nanmin(lon)) - 1.0, float(np.nanmin(lat)) - 1.0,
+                            float(np.nanmax(lon)) + 1.0, float(np.nanmax(lat)) + 1.0)
+    t = get_transformer(MIL_NATIVE_CRS, "EPSG:6319", aoi_bounds_4326=b)
+    h_in = np.where(np.isfinite(height), height, 0.0)
+    # errcheck=False: a point outside the chain's grids (Pacific
+    # territories, Alaska off the tie's area of use) comes back non-finite
+    # and the caller leaves that row UNVERIFIED (NA) — one such point must
+    # not take down the whole cycle's parse (caught 2026-09-01 on the
+    # nationwide count)
+    xi, yi, _, _ = t.transform(lon, lat, h_in, np.full(lon.shape, 2010.0),
+                               direction=TransformDirection.INVERSE,
+                               errcheck=False)
+    xi = np.asarray(xi, dtype="float64")
+    yi = np.asarray(yi, dtype="float64")
+    bad = ~(np.isfinite(xi) & np.isfinite(yi))
+    xi[bad], yi[bad] = np.nan, np.nan
+    return xi, yi
 
 
 def pos_class(src, ownership=None) -> str:
@@ -94,13 +141,10 @@ def pos_class(src, ownership=None) -> str:
     A row at a service-branch-owned facility classes ``"mil"`` regardless
     of its position source: those elevations flow through the DoD survey
     pipeline, whose standard vertical reference is EGM96 MSL, not NAVD88
-    (owner 2026-08-31, Nellis AFB: all four runway ends off by the local
-    EGM96-NAVD88 separation, +0.479 m predicted vs +0.45 m observed
-    median vs both DSM and DTM — while the base's 2022-dated helipad
-    record matches NAVD88 to 3 mm, so no per-facility datum can honestly
-    be assumed either way). The class keeps them out of the surveyed
-    accuracy tier and visible as their own segment instead of silently
-    biasing it or being silently "corrected"."""
+    (multi-facility verified 2026-09-01; module docstring). The class
+    keeps them out of the surveyed accuracy tier (no published accuracy)
+    and visible as their own segment; the datum itself is declared per
+    elevation source in :func:`parse`."""
     if str(ownership).strip().upper() in MIL_OWNERSHIP:
         return "mil"
     return "surveyed" if str(src).strip().upper() in SURVEYED_SOURCES \
@@ -185,6 +229,7 @@ _END_POS_DATE = slice(584, 594)  # 00585 L10 position source date MM/DD/YYYY
 _END_ELEV_SRC = slice(594, 610)  # 00595 L16 end elevation source
 _DT_POS_SRC = slice(620, 636)    # 00621 L16 displaced threshold pos source
 _DT_POS_DATE = slice(636, 646)   # 00637 L10 displaced threshold pos date
+_DT_ELEV_SRC = slice(646, 662)   # 00647 L16 displaced threshold elev source
 
 
 def _shift(sl: slice, off: int) -> slice:
@@ -262,6 +307,10 @@ def _rows(lines) -> list[dict]:
                         "true_az": true_az,
                         "pos_src": rec[_shift(_DT_POS_SRC, soff)].strip(),
                         "pos_src_date": rec[_shift(_DT_POS_DATE, soff)].strip(),
+                        # same vocabulary as the end's elevation source;
+                        # without it every MIL threshold fell to NA
+                        # (nationwide count, 2026-09-01)
+                        "elev_src": rec[_shift(_DT_ELEV_SRC, soff)].strip(),
                         "dt_len_ft": rec[_shift(_DT_LEN, off)].strip(),
                     })
     return rows
@@ -300,22 +349,69 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
                          errors="coerce", utc=True) \
         if n else pd.Series([], dtype="datetime64[ns, UTC]")
     extras = [c for c in df.columns if c not in _CONSUMED]
-    # MIL facilities: pos_class's own contract says "no per-facility
-    # datum can honestly be assumed either way" (DoD pipeline is EGM96
-    # MSL, ~0.45-0.5 m from NAVD88) — never stamp a definite EPSG code on
-    # an ambiguous datum. NA composes fail-loud downstream (the per-row
-    # vertical guard re-targets these via the declared NATIVE frame, so
-    # the context-only MIL segment and its EGM96 diagnostic survive).
-    # native_crs DELIBERATELY keeps EPSG:6349 for MIL rows: it
-    # records the frame NASR *distributes* in, and the EGM96-vs-NAVD88
-    # figure diagnostic requires dz computed under that published-as-
-    # NAVD88 reading (h_ell is numerically the same chain as before —
-    # only the semantic vertical_crs/height_datum stamps changed).
+    # MIL facilities (owner 2026-09-01, multi-facility study in the
+    # sandbox, NASR 2026-08-06 vs 3DEP/EPQS): elevations from the DoD
+    # pipeline (elev_src MILITARY / DOD (NGA) / AVN / NGS) are EGM96 MSL,
+    # not NAVD88 — 170 facilities track the local EGM96-NAVD88
+    # separation with Theil-Sen slope +0.90 [+0.80, +0.97] (residual
+    # NMAD 0.14 m vs 0.34 m read as NAVD88; Nellis +0.49 observed /
+    # +0.48 predicted). Those rows DECLARE EGM96 (EPSG:5773) and land
+    # through the geoid + the ITRF2014 frame tie (natives below).
+    # elev_src 3RD PARTY SURVEY at a MIL facility reads NAVD88 (17
+    # facilities, residual 0.09 m). Any other source (ADO, blank, ...)
+    # stays NA: unverified, never guessed (NA composes fail-loud
+    # downstream; the family figure's EGM96 diagnostic covers them).
     height_datum = pd.Series(["NAVD88"] * n, dtype="string")
     vertical_crs = pd.Series(["EPSG:5703"] * n, dtype="string")
+    # COPIES: to_numpy() can return a view of the column, and the MIL tie
+    # below writes into these — a view would move the published geometry
+    # too (caught by the round-trip test, 2026-09-01)
+    native_x = np.array(df["lon"], dtype="float64") if n else np.array([])
+    native_y = np.array(df["lat"], dtype="float64") if n else np.array([])
+    native_crs = pd.Series(["EPSG:6349"] * n, dtype="string")
     if n and mil.any():
-        height_datum[mil] = "MSL (EGM96 per DoD standard; unverified)"
-        vertical_crs[mil] = pd.NA
+        esrc = (df["elev_src"].astype("string").str.strip().str.upper()
+                if "elev_src" in df.columns
+                else pd.Series([pd.NA] * n, dtype="string"))
+        dod = mil & esrc.isin(DOD_ELEV_SRC).fillna(False).to_numpy(dtype=bool)
+        third = mil & esrc.eq("3RD PARTY SURVEY").fillna(False).to_numpy(
+            dtype=bool)
+        other = mil & ~dod & ~third
+        height_datum[dod] = MIL_EGM96_DATUM
+        vertical_crs[dod] = "EPSG:5773"
+        height_datum[other] = "MSL (EGM96 per DoD standard; unverified)"
+        vertical_crs[other] = pd.NA
+        # (third-party surveys keep the NAVD88 defaults)
+        if dod.any():
+            # EGM96 is a WGS84-ellipsoid geoid: NAD83(2011) + EGM96 chains
+            # through PROJ's null NAD83(2011)->WGS 84 step and lands 0.9 m
+            # low (probed 2026-09-01). The natives therefore carry the
+            # published horizontal TIED to ITRF2014 @ 2010.0 (the exact
+            # inverse of the chain assess will run forward: round trip
+            # ~2 mm) with the published EGM96 height — the re-target then
+            # applies geoid + frame tie exactly (h to the mm of the
+            # explicit EGM96 -> WGS84 -> ITRF2014 -> NAD83(2011) chain).
+            xi, yi = _tie_horizontal_itrf2014(
+                native_x[dod], native_y[dod],
+                pd.to_numeric(df["height"], errors="coerce").to_numpy(
+                    "float64")[dod],
+                raw.get("aoi_bounds_4326"))
+            tied = np.isfinite(xi) & np.isfinite(yi)
+            idx = np.flatnonzero(dod)
+            native_x[idx[tied]], native_y[idx[tied]] = xi[tied], yi[tied]
+            native_crs[idx[tied]] = MIL_NATIVE_CRS
+            if (~tied).any():
+                # no frame tie here (outside the NAD83(2011)-ITRF2014
+                # operation's area or a grid): the datum is still EGM96
+                # but the row cannot be landed honestly -> NA, unverified
+                # (the same fail-loud NA as the non-DoD sources)
+                vertical_crs[idx[~tied]] = pd.NA
+                height_datum[idx[~tied]] = ("MSL (EGM96 per DoD standard; "
+                                            "frame tie unavailable here — "
+                                            "unverified)")
+                logger.warning("faa: %d DoD-pipeline MIL row(s) outside "
+                               "the ITRF2014 frame-tie coverage left with "
+                               "vertical_crs NA", int((~tied).sum()))
     out = gpd.GeoDataFrame(
         {
             "id": df["id"].astype("string"),
@@ -338,10 +434,10 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
             # NO reported accuracy — null, never a fabricated bound (TODO(D3))
             "acc_h": np.where(surveyed, ACC_H_SURVEYED, np.nan),
             "acc_v": np.where(surveyed, ACC_V_SURVEYED, np.nan),
-            "native_x": df["lon"].to_numpy(dtype="float64"),
-            "native_y": df["lat"].to_numpy(dtype="float64"),
+            "native_x": native_x,
+            "native_y": native_y,
             "native_h": pd.to_numeric(df["height"], errors="coerce"),
-            "native_crs": pd.Series(["EPSG:6349"] * n, dtype="string"),
+            "native_crs": native_crs,
             "raw": pd.Series(
                 [json.dumps({**{k: str(df.iloc[i][k]) for k in extras
                                 if pd.notna(df.iloc[i][k])},

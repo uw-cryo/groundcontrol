@@ -707,13 +707,15 @@ def dz_residual_sheets(sampled, products, outdir, site_name, *, rgb=None,
                         return []
                 sub_out = Path(outdir) / SOURCE_DIRS.get(stag, stag)
                 base_title = SHEET_SUBSET_TITLES.get(stag, stag)
-                # RED/GREEN + WORST/BEST wording and filenames (owner
-                # 2026-09-01: make good vs bad unmissable)
+                # RED/GREEN + WORST/BEST title wording (owner 2026-09-01:
+                # make good vs bad unmissable); filenames say
+                # largest/smallest because "best" collides with the
+                # ngs_best subset tag (..._ngs_best_dz_DSM_residual_best)
                 for ktag, idx, head, hcol in (
-                        ("worst", worst,
-                         "Largest (WORST) vertical residual", "#B02020"),
-                        ("best", best,
-                         "Smallest (BEST) vertical residual", "#1A7A2E")):
+                        ("largest", worst,
+                         "Largest (WORST) vertical residual", "#E01818"),
+                        ("smallest", best,
+                         "Smallest (BEST) vertical residual", "#00A040")):
                     sel = fin.loc[list(idx)].copy()
                     sel["dz_val"] = dzf[sel.index].astype("float64")
                     sel["id_disp"] = _short_point_ids(sel)
@@ -723,7 +725,7 @@ def dz_residual_sheets(sampled, products, outdir, site_name, *, rgb=None,
                     # 2026-08-30)
                     fp = _residual_sheet(
                         sel, layers, sub_out, site_name, tiers=tiers,
-                        subset_tag=f"{stag}_dz_{prod}_residual_{ktag}",
+                        subset_tag=f"{stag}_dz_{prod}_{ktag}",
                         title=f"{head} — {base_title} {prod}",
                         title_parts=[
                             (head, hcol), (" — ", _INK),
@@ -1002,7 +1004,7 @@ def _residual_sheet(points, layers, outdir, site_name, *, tiers=SHEET_TIERS,
                  color="#444444")
         fig.text(fx, 0.10 / fig_h,
                  "relief = cpt_rainbow over multidirectional hillshade; one "
-                 "elevation ramp per point and tier (DSM/DTM comparable), "
+                 "elevation ramp per point and tier (products comparable), "
                  "never shared across points",
                  ha="left", va="bottom", fontsize=8, color="#666666")
         # JPEG q85 (owner 2026-08-30): the sheets are photo-heavy
@@ -2760,8 +2762,13 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         # wide enough, whatever the AOI shape)
         # PRODUCT leads the title (owner 2026-08-30: "DTM minus control"
         # mid-sentence was too subtle when a DSM/DTM pair is analyzed)
+        # n = points with a finite dz OF the control fetched (owner
+        # 2026-09-01: SF read "n=416" against a control map of 499 and an
+        # NGS legend of 416 — the two 416s were unrelated; 83 monuments
+        # sat in water/nodata and never sampled)
         fig.suptitle(f"{prod} \u2212 control (m), "
-                     f"n={len(use)}: {site_name}", x=0.01, y=0.995,
+                     f"n={len(use)} of {len(sampled)} sampled: {site_name}",
+                     x=0.01, y=0.995,
                      ha="left", va="top", fontsize=12, color=_INK)
 
         is_dtm = is_dtm_product(prod)  # the ONE DSM/DTM classifier (round 4)
@@ -3087,6 +3094,7 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from .assess import is_dtm_product as _is_dtm  # the ONE classifier
 
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -3145,6 +3153,7 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                             "accuracy class")
         for prod in products:
             col = f"dh_{prod}_before"
+            vva_ctx = False        # VVA drawn on a SURFACE product (dagger)
             if col not in sampled.columns:
                 logger.warning("family_dz: no column %s, skipping %s/%s",
                                col, fam, prod)
@@ -3290,6 +3299,11 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                                 alpha=0.9, zorder=4)
                     hist_meds.append((_med, color))
                     # centralized stats TABLE row (owner 2026-08-30)
+                    if fam == "3dep" and "(VVA)" in lab \
+                            and not _is_dtm(prod):
+                        # owner 2026-09-01 (Casa Grande): the VVA row on a
+                        # DSM figure carries its caveat ON the sheet
+                        lab, vva_ctx = lab + " \u2020", True
                     fam_entries.append((lab, vv, color))
             if sc is not None:
                 cb = fig.colorbar(sc, cax=cax, extend="both")
@@ -3368,6 +3382,12 @@ def family_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "DTM"
                                      "(outside NAVD88 grid coverage)")
                 fam_lines.extend((line_, _MUT) for line_
                                  in _caveat_lines(fam_lines, note))
+            if vva_ctx:
+                fam_lines.extend((line_, _MUT) for line_ in _caveat_lines(
+                    fam_lines, "\u2020 VVA: context only on a surface "
+                    "product \u2014 vegetated checkpoints are ground under "
+                    "canopy, so a positive DSM dz is the expected canopy "
+                    "height, not a product error; VVA validates the DTM"))
             if fam_lines:
                 step = min(0.13, 0.96 / len(fam_lines))
                 for i, (line, color) in enumerate(fam_lines):

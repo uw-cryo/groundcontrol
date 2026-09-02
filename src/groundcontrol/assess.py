@@ -572,14 +572,14 @@ def summarize_dz(sampled, products=None, segments=SEGMENTS):
 
 def check_product_family(products) -> None:
     """One run assesses ONE site's product family: at most one surface
-    (DSM-classified) and one bare-earth (DTM-classified) product (owner
+    (any non-DTM name: DEM, DSM, ...) and one bare-earth (DTM) product (owner
     ruling 2026-08-30, after a multi-strip run produced context sheets
     where one of five DEMs covered each point). Multiple same-class
     products are independent acquisitions — separate runs, one per file.
     Raises ``ValueError`` naming the offenders."""
     surface = [n for n in products if not is_dtm_product(n)]
     bare = [n for n in products if is_dtm_product(n)]
-    for cls, names in (("surface (DSM)", surface), ("bare-earth (DTM)", bare)):
+    for cls, names in (("surface (DEM)", surface), ("bare-earth (DTM)", bare)):
         if len(names) > 1:
             raise ValueError(
                 f"{len(names)} {cls} products in one run ({names}): one "

@@ -268,6 +268,17 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
     mov_sel = sel & moving          # drawn direction-only, never to scale
     inside = inside & ~moving
     buffered = buffered & ~moving
+    # moving stations the centroid lookup would otherwise have used: flagged
+    # AND within its search radius. The library's n_moving_excluded counts
+    # the WHOLE frame passed in — the standard figure passes a ~3° box, so
+    # far-off landslide sites inflated it (SF 2026-09-01: "3 excluded"
+    # beside a map showing one; COMA and SEMS were 200+ km away)
+    n_mov_near = 0
+    if poly is not None and moving.any():
+        from groundcontrol.velocity import DEFAULT_RADIUS_KM as _RKM0
+        from groundcontrol.velocity import _haversine_km
+        n_mov_near = int((_haversine_km(clon, clat, lon[moving], lat[moving])
+                          <= _RKM0).sum())
 
     own_fig = ax is None
     if ax is None:
@@ -354,10 +365,13 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
         norm = plt.Normalize(-lim, lim)
         _bg = sel & ~moving
         _bgv = vu_mm[_bg]
+        # faint dark outline (owner 2026-09-01, Casa Grande): the pale
+        # mid-ramp yellows vanished against the Esri hillshade underlay
         q_ref = ax.quiver(lon[_bg], lat[_bg], ve[_bg] * vel_to_mm,
                           vn[_bg] * vel_to_mm,
                           np.where(np.isfinite(_bgv), _bgv, 0.0),
-                          cmap=cmap, norm=norm, **qkw)
+                          cmap=cmap, norm=norm, edgecolor="k",
+                          linewidth=0.35, **qkw)
         # in-AOI station markers carry the SAME RdYlBu vel_u color as their
         # arrows (owner 2026-08-30), black-edged so they read on the ramp
         if inside.any():
@@ -430,9 +444,8 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
                    f"n={int(res['n_stations_used'])} stations "
                    f"\u2264 {_RKM:g} km\n"
                    f"U {vui * vel_to_mm:+.1f} ± {su_s} mm/yr")
-            _nmov = int(res.get("n_moving_excluded", 0) or 0)
-            if _nmov:
-                ann += f"\n{_nmov} moving monument(s) excluded"
+            if n_mov_near:
+                ann += f"\n{n_mov_near} moving monument(s) excluded"
             if res["quality"] not in ("ok", None):
                 ann += f"\n[{res['quality']}]"
             ax.annotate(ann, (clon, clat), xytext=(9, -14),
@@ -478,9 +491,8 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
                    f"{_mm(res.get('vel_spread_n', np.nan))} mm/yr\n"
                    f"H {mag:.1f} ± {_mm(res.get('vel_spread_h', np.nan))} "
                    f"mm/yr @ {az:.0f}°N")
-            _nmov = int(res.get("n_moving_excluded", 0) or 0)
-            if _nmov:
-                ann += f"\n{_nmov} moving monument(s) excluded"
+            if n_mov_near:
+                ann += f"\n{n_mov_near} moving monument(s) excluded"
             if res["quality"] not in ("ok", None):
                 ann += f"\n[{res['quality']}]"
             ax.annotate(ann, (clon, clat), xytext=(9, -14),
@@ -514,7 +526,8 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
         if mov_sel.any():
             handles.append(Line2D([0], [0], color="#7B2D8E", lw=2,
                                   label=f"moving monument (>{moving_mm_yr:g}"
-                                        " mm/yr; direction only)"))
+                                        " mm/yr from network median; "
+                                        "direction only)"))
         ax.legend(handles=handles, fontsize=7.5, loc="upper left", framealpha=0.85)
 
     n_in = int(inside.sum())

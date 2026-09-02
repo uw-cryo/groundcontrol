@@ -137,7 +137,15 @@ def flag_moving_stations(stations: pd.DataFrame, *,
     coherent plate motion never flags. Vertical is deliberately NOT
     tested: real subsidence reaches tens of mm/yr and must stay in the
     background field. NaN velocities never flag (they cannot contribute
-    to an interpolation anyway)."""
+    to an interpolation anyway).
+
+    The reference is the median of the ``stations`` frame PASSED IN — the
+    caller picks the network (the standard figure passes the stations
+    within ~3° of the product). Across a plate boundary that network's
+    bedrock spreads ±25-30 mm/yr about its median, so a landslide mate
+    below the threshold is a known miss (SF 2026-09-01: ORE2/ORE3 at
+    31/36 mm/yr beside OREO at 57 — one site, one purple arrow); a
+    neighbourhood-relative reference is the queued follow-up."""
     ve = pd.to_numeric(stations[vel_cols[0]], errors="coerce").to_numpy("float64")
     vn = pd.to_numeric(stations[vel_cols[1]], errors="coerce").to_numpy("float64")
     dev_mm = np.hypot(ve - np.nanmedian(ve), vn - np.nanmedian(vn)) * 1000.0

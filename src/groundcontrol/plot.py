@@ -228,9 +228,16 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
                                         flag_moving_stations)
     if moving_mm_yr is None:
         moving_mm_yr = MOVING_MONUMENT_MM_YR
-    moving = (flag_moving_stations(stations, threshold_mm_yr=moving_mm_yr,
-                                   vel_cols=vel_cols).to_numpy(dtype=bool)
-              & finite)
+    # ONE mask, on the rows interpolate_velocity itself keeps (finite
+    # lon/lat AND all three velocity components): flagging on the full
+    # frame gave a different median whenever vel_u had gaps and painted
+    # the very stations the interpolation used as "excluded" (round-6)
+    fin_all = finite & np.isfinite(vu)
+    moving = np.zeros(len(lon), dtype=bool)
+    if fin_all.any():
+        moving[fin_all] = flag_moving_stations(
+            stations.loc[fin_all], threshold_mm_yr=moving_mm_yr,
+            vel_cols=vel_cols).to_numpy(dtype=bool)
 
     poly = _resolve_aoi_polygon(aoi)
     if poly is not None:
@@ -410,7 +417,8 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
         # invisibility (owner 2026-09-01, MDV TAMDEF)
         u_m, v_m = ve[mov_sel] * vel_to_mm, vn[mov_sel] * vel_to_mm
         mag_m = np.hypot(u_m, v_m)
-        f_m = np.where(mag_m > 0, 0.75 * ref_mm_yr / mag_m, 0.0)
+        f_m = np.divide(0.75 * ref_mm_yr, mag_m, out=np.zeros_like(mag_m),
+                        where=mag_m > 0)
         ax.quiver(lon[mov_sel], lat[mov_sel], u_m * f_m, v_m * f_m,
                   color="#7B2D8E", alpha=0.9, **{**qkw, "width": 0.0028})
         ax.scatter(lon[mov_sel], lat[mov_sel], s=36, facecolors="none",
@@ -445,7 +453,8 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
                    f"\u2264 {_RKM:g} km\n"
                    f"U {vui * vel_to_mm:+.1f} ± {su_s} mm/yr")
             if n_mov_near:
-                ann += f"\n{n_mov_near} moving monument(s) excluded"
+                ann += (f"\n{n_mov_near} moving monument(s) excluded "
+                        f"(\u2264 {_RKM:g} km)")
             if res["quality"] not in ("ok", None):
                 ann += f"\n[{res['quality']}]"
             ax.annotate(ann, (clon, clat), xytext=(9, -14),
@@ -492,7 +501,8 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
                    f"H {mag:.1f} ± {_mm(res.get('vel_spread_h', np.nan))} "
                    f"mm/yr @ {az:.0f}°N")
             if n_mov_near:
-                ann += f"\n{n_mov_near} moving monument(s) excluded"
+                ann += (f"\n{n_mov_near} moving monument(s) excluded "
+                        f"(\u2264 {_RKM:g} km)")
             if res["quality"] not in ("ok", None):
                 ann += f"\n[{res['quality']}]"
             ax.annotate(ann, (clon, clat), xytext=(9, -14),
@@ -539,7 +549,10 @@ def plot_velocity_vectors(stations, aoi=None, buffer_km: float = 50.0, ax=None,
     pm_note = ("  |  ± = 1σ station spread"
                if (poly is not None and overlay_interp and annotate_interp)
                else "")
-    mov_note = (f"  |  {n_mov} moving excluded" if n_mov else "")
+    # drawn-extent count, worded apart from the interpolation's
+    # within-radius count in the annotation (round-6: one figure carried
+    # two different "excluded" numbers under the same words)
+    mov_note = (f"  |  {n_mov} moving (direction only)" if n_mov else "")
     ax.set_title(f"{title}\nn={n_in} inside AOI + n={n_buf} within "
                  f"{buffer_km:g} km buffer{mov_note}{ref_note}{pm_note}",
                  fontsize=10)

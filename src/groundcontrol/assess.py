@@ -85,18 +85,26 @@ SEGMENTS = {
     # elevations (declared per elevation source since 2026-09-01) and
     # carry no published accuracy — own context segment, never in the
     # surveyed tier
+    # membership = the DECLARED vertical, not the ownership class (round-6
+    # audit: rows of the class that read NAVD88 or stay NA are not EGM96
+    # records; they fall to "FAA other")
     "FAA (EGM96 records)": (
-        lambda d: (d["source"] == "faa")
-        # isin: caches written before the 2026-09-01 rename carry the
-        # old "military" value in raw
-        & _faa_pos_class(d).isin(("mil", "military")), False, False),
+        lambda d: (d["source"] == "faa") & _faa_egm96(d), False, False),
     "FAA other": (
         lambda d: (d["source"] == "faa")
-        & ~_faa_pos_class(d).isin(("mil", "military"))
+        & ~_faa_egm96(d)
         & ~((_faa_pos_class(d) == "surveyed")
             & d["point_type"].isin(["runway_end", "displaced_threshold"])),
         False, False),
 }
+
+
+def _faa_egm96(d):
+    """Rows whose DECLARED vertical is EGM96 height (EPSG:5773) — the
+    FAA source's second datum; NA-safe (an undeclared datum is False)."""
+    if "vertical_crs" not in d.columns:
+        return pd.Series(False, index=d.index)
+    return d["vertical_crs"].astype("string").eq("EPSG:5773").fillna(False)
 
 
 def _faa_pos_class(d):
@@ -542,11 +550,16 @@ def summarize_dz(sampled, products=None, segments=SEGMENTS):
     if products is None:
         products = [c[len("dz_"):] for c in sampled.columns
                     if c.startswith("dz_")]
-    budget = float("nan")
-    if "xform_acc_m" in sampled.columns:
-        xa = sampled["xform_acc_m"].to_numpy(dtype="float64")
-        if np.isfinite(xa).any():  # all-NaN (PROJ sentinel budget) stays NaN, quietly
-            budget = float(np.nanmedian(xa))
+    # PER-SEGMENT budget (round-6 audit: a frame-wide median printed
+    # 0.015 m for a segment whose every row carried 5 m); all-NaN (PROJ
+    # sentinel budget) stays NaN, quietly
+    xa = (sampled["xform_acc_m"].to_numpy(dtype="float64")
+          if "xform_acc_m" in sampled.columns else None)
+
+    def _budget(m):
+        if xa is None or not np.isfinite(xa[m]).any():
+            return float("nan")
+        return float(np.nanmedian(xa[m]))
     rows = []
     for prod in products:
         col = f"dz_{prod}"
@@ -564,7 +577,7 @@ def summarize_dz(sampled, products=None, segments=SEGMENTS):
                 "median_m": r["median"], "nmad_m": r["nmad"],
                 "mean_m": r["mean"], "std_m": r["std"], "rmse_m": r["rmse"],
                 "le90_m": r["le90"], "le95_m": r["le95"],
-                "xform_acc_m": budget,
+                "xform_acc_m": _budget(m),
                 "applies": bool(in_dtm if is_dtm else in_dsm),
             })
     return pd.DataFrame(rows)

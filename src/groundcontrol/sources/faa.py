@@ -34,12 +34,20 @@ possible future join, not implemented here).
 
 Facilities under ownership codes MA/MN/MR/CG publish elevations from a
 separate survey pipeline referenced to EGM96 MSL rather than NAVD88
-(verified against 3DEP across the cycle's facilities, 2026-09-01). For the
-elevation sources belonging to that pipeline the source declares EGM96
-(``EPSG:5773``) and lands it through the geoid and the ITRF2014 frame tie;
-3RD PARTY SURVEY records read NAVD88; other sources stay NA (unverified).
-:func:`pos_class` classes the whole facility ``"mil"``: no published
-accuracy, own context segment, outside the surveyed tier.
+(verified against 3DEP across the cycle's facilities, 2026-09-01). A row
+at such a facility whose elevation source is in :data:`EGM96_ELEV_SRC`
+(the rule is ownership AND source; the same source strings at other
+facilities read NAVD88 and are the next cohort to verify) declares EGM96
+(``EPSG:5773``); its natives carry the published horizontal with the
+NAD83(2011) ellipsoidal height derived through the explicit geoid + frame
+tie chain (:func:`_egm96_to_nad83_2011_h`), so the re-target is a pure
+NAD83(2011) -> product operation. PROJ's own NAD83(2011)+EGM96 compound
+would land 0.7-0.9 m low across CONUS (it skips the NAD83(2011)-ITRF2014
+Helmert through a null WGS 84 step). 3RD PARTY SURVEY records read NAVD88;
+other sources stay NA with NA natives, so they land nowhere (h_ell NaN)
+rather than through a guessed datum. :func:`pos_class` classes the whole
+facility ``"mil"``: no published accuracy, own context segment, outside
+the surveyed tier.
 """
 
 from __future__ import annotations
@@ -88,41 +96,57 @@ MIL_OWNERSHIP = {"MA", "MN", "MR", "CG"}
 #: (verified 2026-09-01; see the parse() note).
 EGM96_ELEV_SRC = {"MILITARY", "DOD (NGA)", "AVN", "NGS"}
 MIL_EGM96_DATUM = "EGM96 MSL (declared per elevation source; verified 2026-09-01)"
-#: native frame of an EGM96-declared row: ITRF2014 (2D) + EGM96 height
-MIL_NATIVE_CRS = "EPSG:9000+5773"
+#: native frame of an EGM96-declared row: NAD83(2011) 3D — the published
+#: horizontal with the ellipsoidal height derived at parse time
+MIL_NATIVE_CRS = "EPSG:6319"
 
 
-def _tie_horizontal_itrf2014(lon, lat, height, aoi_bounds_4326=None):
-    """Published NAD83(2011) lon/lat -> ITRF2014 @ 2010.0 lon/lat, via the
-    INVERSE of the exact compound chain assess runs forward
-    (:data:`MIL_NATIVE_CRS` -> NAD83(2011) 3D), so the horizontal round
-    trip is ~mm and only the height goes through geoid + frame tie. The
-    height fed to the inverse is the published EGM96 value (the true
-    NAD83(2011) ellipsoidal height is unknown here): the Helmert
-    horizontal is insensitive to it at the 1e-7 level."""
-    from pyproj.enums import TransformDirection
+def _egm96_to_nad83_2011_h(lon, lat, height, epoch, aoi_bounds_4326=None):
+    """Published EGM96 orthometric height -> NAD83(2011) ellipsoidal height
+    at the published lon/lat, through the explicit chain EGM96 -> WGS 84
+    (geoid grid) -> ITRF2014 (WGS 84 taken as ITRF2014, cm-level) ->
+    NAD83(2011) (the time-dependent tie at the row's coord_epoch). The
+    horizontal never moves: the natives then re-target through a pure
+    NAD83(2011) -> product operation, exact for every target shape
+    (round-6 audits: a compound native chained differently per target —
+    +0.74 m on an EGM96-vertical target, up to 1.6 m of horizontal
+    displacement elsewhere). Returns ``(h_ell, stated_acc_m)`` with NaN
+    where the geoid grid or the frame tie is unavailable (Pacific
+    territories, ...): the caller leaves those rows unverified. Never
+    raises — one such point must not take down a cycle's parse."""
+    from pyproj import Transformer
 
-    from groundcontrol.crs import get_transformer
+    from groundcontrol.crs import NoTransformPathError, get_transformer
     lon = np.asarray(lon, dtype="float64")
     lat = np.asarray(lat, dtype="float64")
     height = np.asarray(height, dtype="float64")
+    epoch = np.asarray(epoch, dtype="float64")
+    out = np.full(lon.shape, np.nan)
+    acc = float("nan")
+    fin = np.isfinite(lon) & np.isfinite(lat) & np.isfinite(height) & np.isfinite(epoch)
+    if not fin.any():
+        return out, acc
     b = aoi_bounds_4326 or (float(np.nanmin(lon)) - 1.0, float(np.nanmin(lat)) - 1.0,
                             float(np.nanmax(lon)) + 1.0, float(np.nanmax(lat)) + 1.0)
-    t = get_transformer(MIL_NATIVE_CRS, "EPSG:6319", aoi_bounds_4326=b)
-    h_in = np.where(np.isfinite(height), height, 0.0)
-    # errcheck=False: a point outside the chain's grids (Pacific
-    # territories, Alaska off the tie's area of use) comes back non-finite
-    # and the caller leaves that row UNVERIFIED (NA) — one such point must
-    # not take down the whole cycle's parse (caught 2026-09-01 on the
-    # nationwide count)
-    xi, yi, _, _ = t.transform(lon, lat, h_in, np.full(lon.shape, 2010.0),
-                               direction=TransformDirection.INVERSE,
-                               errcheck=False)
-    xi = np.asarray(xi, dtype="float64")
-    yi = np.asarray(yi, dtype="float64")
-    bad = ~(np.isfinite(xi) & np.isfinite(yi))
-    xi[bad], yi[bad] = np.nan, np.nan
-    return xi, yi
+    try:
+        geoid = Transformer.from_crs("EPSG:4326+5773", "EPSG:4979",
+                                     always_xy=True, allow_ballpark=False)
+        _, _, hw = geoid.transform(lon[fin], lat[fin], height[fin], errcheck=False)
+        hw = np.asarray(hw, dtype="float64")
+        tie = get_transformer("EPSG:7912", "EPSG:6319", aoi_bounds_4326=b)
+        _, _, hn, _ = tie.transform(lon[fin], lat[fin], hw, epoch[fin], errcheck=False)
+        hn = np.asarray(hn, dtype="float64")
+    except (NoTransformPathError, Exception) as exc:  # noqa: BLE001 — fail soft, per row
+        logger.warning("faa: EGM96 -> NAD83(2011) chain unavailable for this AOI "
+                       "(%s); %d EGM96-declared row(s) left unverified", exc, int(fin.sum()))
+        return out, acc
+    ok = np.isfinite(hw) & np.isfinite(hn)
+    res = np.full(int(fin.sum()), np.nan)
+    res[ok] = hn[ok]
+    out[fin] = res
+    parts = [a for a in (geoid.accuracy, tie.accuracy) if a is not None and a > 0]
+    acc = float(sum(parts)) if parts else float("nan")
+    return out, acc
 
 
 def pos_class(src, ownership=None) -> str:
@@ -338,21 +362,23 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
                          errors="coerce", utc=True) \
         if n else pd.Series([], dtype="datetime64[ns, UTC]")
     extras = [c for c in df.columns if c not in _CONSUMED]
-    # facilities under MIL_OWNERSHIP publish EGM96 MSL elevations for the
-    # sources in EGM96_ELEV_SRC (verified against 3DEP across the cycle's
-    # facilities, 2026-09-01): those rows DECLARE EGM96 (EPSG:5773) and
-    # land through the geoid + the ITRF2014 frame tie (natives below).
-    # 3RD PARTY SURVEY records read NAVD88. Any other source (ADO, blank,
-    # ...) stays NA: unverified, never guessed (NA composes fail-loud
-    # downstream; the family figure's EGM96 diagnostic covers them).
+    # rows at MIL_OWNERSHIP facilities whose elevation source is in
+    # EGM96_ELEV_SRC (ownership AND source; verified against 3DEP across
+    # the cycle's facilities, 2026-09-01) DECLARE EGM96 (EPSG:5773); their
+    # natives carry the derived NAD83(2011) ellipsoidal height on the
+    # published horizontal. 3RD PARTY SURVEY records read NAVD88. Any
+    # other source (ADO, blank, ...) stays NA with NA natives: unverified,
+    # never guessed, h_ell NaN downstream (round-6 audit: a NAVD88 native
+    # had been landing them 0.5-1.9 m from their own stated reading).
     height_datum = pd.Series(["NAVD88"] * n, dtype="string")
     vertical_crs = pd.Series(["EPSG:5703"] * n, dtype="string")
-    # COPIES: to_numpy() can return a view of the column, and the EGM96 tie
-    # below writes into these — a view would move the published geometry
-    # too (caught by the round-trip test, 2026-09-01)
+    # COPIES (a to_numpy() view would alias the published columns)
     native_x = np.array(df["lon"], dtype="float64") if n else np.array([])
     native_y = np.array(df["lat"], dtype="float64") if n else np.array([])
+    native_h = np.array(pd.to_numeric(df["height"], errors="coerce"),
+                        dtype="float64") if n else np.array([])
     native_crs = pd.Series(["EPSG:6349"] * n, dtype="string")
+    coord_epoch = np.full(n, 2010.0)
     if n and mil.any():
         esrc = (df["elev_src"].astype("string").str.strip().str.upper()
                 if "elev_src" in df.columns
@@ -365,35 +391,32 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
         vertical_crs[egm] = "EPSG:5773"
         height_datum[other] = "MSL (EGM96 assumed; unverified)"
         vertical_crs[other] = pd.NA
+        native_crs[other] = pd.NA      # undeclared datum lands nowhere
         # (third-party surveys keep the NAVD88 defaults)
         if egm.any():
-            # EGM96 is a WGS84-ellipsoid geoid: NAD83(2011) + EGM96 chains
-            # through PROJ's null NAD83(2011)->WGS 84 step and lands 0.9 m
-            # low (probed 2026-09-01). The natives therefore carry the
-            # published horizontal TIED to ITRF2014 @ 2010.0 (the exact
-            # inverse of the chain assess will run forward: round trip
-            # ~2 mm) with the published EGM96 height — the re-target then
-            # applies geoid + frame tie exactly (h to the mm of the
-            # explicit EGM96 -> WGS84 -> ITRF2014 -> NAD83(2011) chain).
-            xi, yi = _tie_horizontal_itrf2014(
-                native_x[egm], native_y[egm],
-                pd.to_numeric(df["height"], errors="coerce").to_numpy(
-                    "float64")[egm],
+            h_ell, chain_acc = _egm96_to_nad83_2011_h(
+                native_x[egm], native_y[egm], native_h[egm], coord_epoch[egm],
                 raw.get("aoi_bounds_4326"))
-            tied = np.isfinite(xi) & np.isfinite(yi)
+            tied = np.isfinite(h_ell)
             idx = np.flatnonzero(egm)
-            native_x[idx[tied]], native_y[idx[tied]] = xi[tied], yi[tied]
+            native_h[idx[tied]] = h_ell[tied]
             native_crs[idx[tied]] = MIL_NATIVE_CRS
+            if tied.any():
+                df.loc[df.index[idx[tied]], "native_chain"] = (
+                    "EGM96 grid + ITRF2014->NAD83(2011) tie at coord_epoch"
+                    f" (stated accuracy {chain_acc:.2f} m)")
+                if "native_chain" not in extras:   # rides into raw
+                    extras.append("native_chain")
             if (~tied).any():
-                # no frame tie here (outside the NAD83(2011)-ITRF2014
-                # operation's area or a grid): the datum is still EGM96
-                # but the row cannot be landed honestly -> NA, unverified
-                # (the same fail-loud NA as the other sources)
+                # no geoid grid / frame tie here: the datum is still EGM96
+                # but the row cannot be landed honestly -> NA, unverified,
+                # NA natives (the same fail-loud NA as the other sources)
                 vertical_crs[idx[~tied]] = pd.NA
+                native_crs[idx[~tied]] = pd.NA
                 height_datum[idx[~tied]] = ("MSL (EGM96 assumed; frame tie "
                                             "unavailable here — unverified)")
                 logger.warning("faa: %d EGM96-declared row(s) outside "
-                               "the ITRF2014 frame-tie coverage left with "
+                               "the geoid / frame-tie coverage left with "
                                "vertical_crs NA", int((~tied).sum()))
     out = gpd.GeoDataFrame(
         {
@@ -409,7 +432,7 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
             "frame_epoch": np.full(n, 2010.0),
             # plate-fixed published positions; reduced-to-frame-epoch reading
             # (same convention as checkpoints_3dep)
-            "coord_epoch": np.full(n, 2010.0),
+            "coord_epoch": coord_epoch,
             "measurement_datetime": mdt,
             "measurement_epoch": decyear(mdt) if n else
             pd.Series([], dtype="float64"),
@@ -419,7 +442,7 @@ def parse(raw: dict) -> gpd.GeoDataFrame:
             "acc_v": np.where(surveyed, ACC_V_SURVEYED, np.nan),
             "native_x": native_x,
             "native_y": native_y,
-            "native_h": pd.to_numeric(df["height"], errors="coerce"),
+            "native_h": native_h,
             "native_crs": native_crs,
             "raw": pd.Series(
                 [json.dumps({**{k: str(df.iloc[i][k]) for k in extras

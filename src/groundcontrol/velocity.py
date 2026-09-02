@@ -148,10 +148,23 @@ def flag_moving_stations(stations: pd.DataFrame, *,
     neighbourhood-relative reference is the queued follow-up."""
     ve = pd.to_numeric(stations[vel_cols[0]], errors="coerce").to_numpy("float64")
     vn = pd.to_numeric(stations[vel_cols[1]], errors="coerce").to_numpy("float64")
-    dev_mm = np.hypot(ve - np.nanmedian(ve), vn - np.nanmedian(vn)) * 1000.0
     out = np.zeros(len(stations), dtype=bool)
-    fin = np.isfinite(dev_mm)
-    out[fin] = dev_mm[fin] > threshold_mm_yr
+    fin = np.isfinite(ve) & np.isfinite(vn)
+    if not fin.any():
+        return pd.Series(out, index=stations.index)
+    dev_mm = np.hypot(ve[fin] - np.median(ve[fin]), vn[fin] - np.median(vn[fin])) * 1000.0
+    out[fin] = dev_mm > threshold_mm_yr
+    # the reference is the MEDIAN: it is only "still" while the moving
+    # monuments are a minority. A mover-majority network (a small polar
+    # AOI whose box is mostly on ice) inverts the screen — the bedrock
+    # flags. Say so loudly; the neighbourhood-relative reference is the
+    # queued fix (round-6 audit)
+    n_flag, n_fin = int(out[fin].sum()), int(fin.sum())
+    if n_fin >= 3 and n_flag * 3 > n_fin:
+        logger.warning("moving-monument screen: %d of %d stations flagged — "
+                       "the network is not majority-stable, so the median "
+                       "reference may itself be the moving surface; treat "
+                       "the flags as unreliable", n_flag, n_fin)
     return pd.Series(out, index=stations.index)
 
 
@@ -444,7 +457,10 @@ def fill_velocities(gdf, stations: pd.DataFrame, *,
 
     ``gdf`` must carry geographic (lon/lat degrees) point geometry — the same requirement
     ``propagate_epoch`` enforces. ``**kwargs`` pass straight through to
-    :func:`interpolate_velocity` (radius/min/max/method/spread threshold, etc.).
+    :func:`interpolate_velocity` (radius/min/max/method/spread threshold,
+    ``exclude_moving_mm_yr`` for the moving-monument screen — OFF here by
+    default; the standard velocity FIGURE screens by default, so pass it
+    when the pipeline should apply what the figure shows).
 
     ``vel_cols`` names the three OUTPUT columns written on ``gdf`` (default the schema's
     ``vel_e``/``vel_n``/``vel_u``); the station-side column names are configured on

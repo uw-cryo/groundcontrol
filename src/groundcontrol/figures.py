@@ -716,6 +716,13 @@ def dz_residual_sheets(sampled, products, outdir, site_name, *, rgb=None,
                          "Largest (WORST) vertical residual", "#E01818"),
                         ("smallest", best,
                          "Smallest (BEST) vertical residual", "#00A040")):
+                    if len(idx) == 0:
+                        # a 1-point subset has no second page: say so
+                        # (round-6 audit) instead of a silent no-file
+                        logger.info("dz residual sheets: %s %s has no "
+                                    "'%s' page (n=%d)", stag, prod, ktag,
+                                    len(dzf))
+                        continue
                     sel = fin.loc[list(idx)].copy()
                     sel["dz_val"] = dzf[sel.index].astype("float64")
                     sel["id_disp"] = _short_point_ids(sel)
@@ -2767,7 +2774,8 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         # NGS legend of 416 — the two 416s were unrelated; 83 monuments
         # sat in water/nodata and never sampled)
         fig.suptitle(f"{prod} \u2212 control (m), "
-                     f"n={len(use)} of {len(sampled)} sampled: {site_name}",
+                     f"n={len(use)} of {len(sampled)} control points "
+                     f"sampled: {site_name}",
                      x=0.01, y=0.995,
                      ha="left", va="top", fontsize=12, color=_INK)
 
@@ -2923,6 +2931,15 @@ def _opus_tier(d):
     return out
 
 
+def _egm96_rows(d):
+    """Rows whose DECLARED vertical is EGM96 height (EPSG:5773); column-
+    and NA-safe (a frame without the column, or an undeclared datum, is
+    False) — the family segment keys on the datum, not the ownership class."""
+    if "vertical_crs" not in d.columns:
+        return pd.Series(False, index=d.index)
+    return d["vertical_crs"].astype("string").eq("EPSG:5773").fillna(False)
+
+
 #: family key -> (title, [(subclass label, row mask fn, point_type style key
 #: or hex color, marker[, products])]). Optional 5th element restricts the
 #: subclass to those products: VVA canopy checkpoints validate the DTM only —
@@ -3008,8 +3025,7 @@ DZ_FAMILIES = {
          & (_raw_field(d["raw"], "pos_class") == "estimated"),
          "#8C6BB1", "v"),
         ("FAA (EGM96 records)",
-         lambda d: (d["source"] == "faa")
-         & _raw_field(d["raw"], "pos_class").isin(("mil", "military")),
+         lambda d: (d["source"] == "faa") & _egm96_rows(d),
          "#8B4E00", "^"),
     ]),
 }

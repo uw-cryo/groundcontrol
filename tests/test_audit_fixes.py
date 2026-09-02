@@ -433,53 +433,93 @@ def test_faa_mil_rows_declare_egm96_never_navd88():
                           in faa.EGM96_ELEV_SRC for r in raw])
     assert mil.any() and (~mil).any() and egm.any()
     # owner 2026-09-01: these facilities' EGM96 elevations are declared
-    # per source and landed through the geoid + the ITRF2014 frame tie
-    # via ITRF2014-tied natives. Never EPSG:5703.
+    # per source; the natives are NAD83(2011) 3D on the PUBLISHED
+    # horizontal (round-6 audits: a compound native chained differently
+    # per target). Never EPSG:5703.
     assert out.loc[egm, "vertical_crs"].eq("EPSG:5773").all()
     assert (out.loc[egm, "height_datum"].str.contains("EGM96")).all()
-    assert out.loc[egm, "native_crs"].eq(faa.MIL_NATIVE_CRS).all()
-    # the tie moves the horizontal by the NAD83(2011)->ITRF2014 offset
-    # (~1-1.5 m in CONUS), never by nothing and never by a lot
-    dx = (out.loc[egm, "native_x"] - out.loc[egm].geometry.x) * 111320 \
-        * np.cos(np.radians(out.loc[egm].geometry.y))
-    dy = (out.loc[egm, "native_y"] - out.loc[egm].geometry.y) * 111320
-    shift = np.hypot(dx, dy)
-    assert (shift > 0.3).all() and (shift < 3.0).all()
-    assert out.loc[egm, "native_h"].eq(out.loc[egm, "height"]).all()
-    # other elevation sources stay honestly NA; civil rows stay NAVD88
-    assert out.loc[mil & ~egm, "vertical_crs"].isna().all()
+    assert out.loc[egm, "native_crs"].eq("EPSG:6319").all()
+    assert np.array_equal(out.loc[egm, "native_x"].to_numpy(), out.loc[egm].geometry.x.to_numpy())
+    assert np.array_equal(out.loc[egm, "native_y"].to_numpy(), out.loc[egm].geometry.y.to_numpy())
+    # ellipsoidal minus orthometric = the local EGM96 undulation + the
+    # frame tie: -35..-15 m in the fixture's Nevada/Arizona rows
+    d = out.loc[egm, "native_h"].to_numpy() - out.loc[egm, "height"].to_numpy()
+    assert np.isfinite(d).all() and (d < -10).all() and (d > -40).all()
+    assert all("native_chain" in r for r in np.array(raw, dtype=object)[egm])
+    # undeclared datum -> NA everywhere, INCLUDING the natives (fail-loud)
+    na = mil & ~egm
+    if na.any():
+        assert out.loc[na, "vertical_crs"].isna().all()
+        assert out.loc[na, "native_crs"].isna().all()
     assert out.loc[~mil, "vertical_crs"].eq("EPSG:5703").all()
     assert out.loc[~mil, "native_crs"].eq("EPSG:6349").all()
 
 
 def test_faa_mil_egm96_lands_through_geoid_and_frame_tie():
-    """The declared EGM96 row must land at the explicit EGM96 -> WGS84 ->
-    ITRF2014 -> NAD83(2011) chain height (mm), with the horizontal back
-    at the published NAD83(2011) position (mm) — not 0.9 m low via PROJ's
-    null NAD83(2011)->WGS 84 step (probed 2026-09-01)."""
-    import numpy as np
+    """The declared EGM96 row lands at the explicit EGM96 -> WGS84 ->
+    ITRF2014 -> NAD83(2011) chain height (mm) with the horizontal exactly
+    at the published position — for a projected 3D target — and NOT 0.7-
+    0.9 m low via PROJ's null NAD83(2011)->WGS 84 step (round-6 audits)."""
+    import json
+    from pathlib import Path
+
     from pyproj import Transformer
 
-    from groundcontrol.crs import get_transformer
+    from groundcontrol.assess import transform_control
+    from groundcontrol.geodesy import build_utm_nad83_2011_3d
     from groundcontrol.sources import faa
-    lon, lat, H = -111.4886, 32.6611, 507.9         # PCA heliport pad
-    xi, yi = faa._tie_horizontal_itrf2014([lon], [lat], [H],
-                                           (-112.5, 32.0, -110.5, 33.5))
-    t = get_transformer(faa.MIL_NATIVE_CRS, "EPSG:6319",
-                        aoi_bounds_4326=(-112.5, 32.0, -110.5, 33.5))
-    X, Y, Z, _ = t.transform(xi, yi, np.array([H]), np.array([2010.0]),
-                             errcheck=True)
-    hw = Transformer.from_crs("EPSG:4326+5773", "EPSG:4979", always_xy=True,
-                              allow_ballpark=False).transform(lon, lat, H)[2]
-    ref = Transformer.from_crs("EPSG:7912", "EPSG:6319", always_xy=True,
-                               allow_ballpark=False).transform(lon, lat, hw)[2]
-    assert abs(Z[0] - ref) < 0.005
-    assert abs((X[0] - lon) * 111320 * np.cos(np.radians(lat))) < 0.01
-    assert abs((Y[0] - lat) * 111320) < 0.01
-    # and it is NOT the null-step answer
-    wrong = Transformer.from_crs("EPSG:6318+5773", "EPSG:6319", always_xy=True,
-                                 allow_ballpark=False).transform(lon, lat, H)[2]
-    assert abs(Z[0] - wrong) > 0.5
+    with open(Path(__file__).parent / "data" / "faa_apt_sample.txt",
+              encoding="latin-1") as f:
+        lines = f.readlines()
+    out = faa.parse({"cycle": "2026-08-06",
+                     "aoi_bounds_4326": (-116.5, 35.5, -114.5, 36.8),
+                     "lines": lines})
+    raw = [json.loads(r) for r in out["raw"]]
+    egm = np.array([r.get("pos_class") == "mil" and str(r.get("elev_src", ""))
+                    .strip().upper() in faa.EGM96_ELEV_SRC for r in raw])
+    assert egm.sum() >= 2
+    target = build_utm_nad83_2011_3d(32611)         # NAD83(2011) UTM 11N 3D
+    landed, _ = transform_control(out, target)
+    for i in np.flatnonzero(egm)[:3]:
+        lon, lat, H = out.geometry.x.iloc[i], out.geometry.y.iloc[i], float(out["height"].iloc[i])
+        hw = Transformer.from_crs("EPSG:4326+5773", "EPSG:4979", always_xy=True,
+                                  allow_ballpark=False).transform(lon, lat, H)[2]
+        ref = Transformer.from_crs("EPSG:7912", "EPSG:6319", always_xy=True,
+                                   allow_ballpark=False).transform(lon, lat, hw)[2]
+        assert abs(float(landed["h_ell"].iloc[i]) - ref) < 0.005
+        wrong = Transformer.from_crs("EPSG:6318+5773", "EPSG:6319", always_xy=True,
+                                     allow_ballpark=False).transform(lon, lat, H)[2]
+        assert abs(float(landed["h_ell"].iloc[i]) - wrong) > 0.5
+        # horizontal: exactly the published position, projected directly
+        E, N = Transformer.from_crs("EPSG:6318", target, always_xy=True,
+                                    allow_ballpark=False).transform(lon, lat)[:2]
+        assert abs(float(landed.geometry.x.iloc[i]) - E) < 0.002
+        assert abs(float(landed.geometry.y.iloc[i]) - N) < 0.002
+
+
+def test_faa_egm96_chain_unavailable_degrades_to_na(monkeypatch):
+    """round-6 HIGH: an AOI with no ITRF2014 frame tie (Pacific
+    territories) must not raise out of parse(); the rows stay unverified."""
+    from pathlib import Path
+
+    from groundcontrol import crs as gc_crs
+    from groundcontrol.sources import faa
+
+    def boom(*a, **k):
+        raise gc_crs.NoTransformPathError("no usable transform")
+    monkeypatch.setattr(faa, "get_transformer", boom, raising=False)
+    import groundcontrol.crs
+    monkeypatch.setattr(groundcontrol.crs, "get_transformer", boom)
+    with open(Path(__file__).parent / "data" / "faa_apt_sample.txt",
+              encoding="latin-1") as f:
+        lines = f.readlines()
+    out = faa.parse({"cycle": "2026-08-06",
+                     "aoi_bounds_4326": (-180.0, -90.0, 180.0, 90.0),
+                     "lines": lines})
+    assert out["vertical_crs"].eq("EPSG:5773").sum() == 0
+    assert out["height_datum"].str.contains("frame tie unavailable").any()
+    assert out.loc[out["vertical_crs"].isna(), "native_crs"].isna().all()
+    assert out["vertical_crs"].eq("EPSG:5703").any()      # civil rows untouched
 
 
 def test_ngl_zero_candidate_exit_before_catalog_pool(monkeypatch):

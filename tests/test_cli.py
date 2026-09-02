@@ -1047,7 +1047,7 @@ def test_default_site_name_common_prefix_cuts_to_separator():
     """A DSM/DTM pair's site name is the common stem prefix cut back to a
     SEPARATOR: commonprefix of DSM_mos/DTM_no_fill_mos ends mid-token at
     "...-D" (both continue with D) and a bare rstrip cannot remove the
-    fragment (vantor-06 field report, Las Vegas 2026-08-31)."""
+    fragment (field report, Las Vegas 2026-08-31)."""
     from groundcontrol.cli import _default_site_name
 
     lv = _default_site_name({

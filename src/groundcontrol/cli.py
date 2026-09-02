@@ -269,7 +269,7 @@ def _default_site_name(products):
         common = os.path.commonprefix(stems)
         # a prefix ending mid-token is a name FRAGMENT, not a name: DSM_mos/
         # DTM_no_fill_mos share "...-D" (both continue with D) and rstrip
-        # cannot remove it — cut back to the last separator (vantor-06 /
+        # cannot remove it — cut back to the last separator (field report /
         # owner 2026-08-31: "-D" reached ~19 output names and figure titles)
         if any(len(st) > len(common) for st in stems):
             cut = max(common.rfind(c) for c in "_-.")
@@ -1083,18 +1083,24 @@ def assess_dem_main(argv=None) -> int:
 
     from groundcontrol.assess import assess_products  # ~0.5 s; after the preflight
 
-    sampled, stats, artifacts = assess_products(
-        control, products, target_crs,
-        outdir=outdir, site_name=site_name, aoi=aoi_fig,
-        hs=hs, rgb=rgb, intensity=intensity,
-        basemap=None if args.basemap == "none" else args.basemap,
-        midas_velocities=True,  # explicit at the entry point (default too)
-        sheets=args.context_sheets,
-        target_epoch=args.target_epoch, method=args.method,
-        radius=args.radius, source_crs=source_crs, figures=not args.no_figures,
-        point_lim=args.point_lim, vendor_lim=args.vendor_lim,
-        wide_lim=args.wide_lim,
-        command="groundcontrol-assess " + " ".join(argv or sys.argv[1:]))
+    from groundcontrol.crs import NoTransformPathError
+    try:
+        sampled, stats, artifacts = assess_products(
+            control, products, target_crs,
+            outdir=outdir, site_name=site_name, aoi=aoi_fig,
+            hs=hs, rgb=rgb, intensity=intensity,
+            basemap=None if args.basemap == "none" else args.basemap,
+            midas_velocities=True,  # explicit at the entry point (default too)
+            sheets=args.context_sheets,
+            target_epoch=args.target_epoch, method=args.method,
+            radius=args.radius, source_crs=source_crs, figures=not args.no_figures,
+            point_lim=args.point_lim, vendor_lim=args.vendor_lim,
+            wide_lim=args.wide_lim,
+            command="groundcontrol-assess " + " ".join(argv or sys.argv[1:]))
+    except (ValueError, NoTransformPathError) as e:
+        # the transform stage's refusals (depth-type targets, unusable
+        # chains) are user-facing decisions, not tracebacks (round-6)
+        raise SystemExit(f"error: {e}") from e
 
     t = artifacts["transform"]
     a = t["accuracy_m"]

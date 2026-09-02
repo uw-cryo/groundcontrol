@@ -39,17 +39,21 @@ control landing is printed on every histogram.
 
 ## 2b. The CLI's own output: bring-your-own-DEM
 
-`groundcontrol-assess --product DSM=<1 m 3DEP DSM mosaic> --control <cache>
---target-crs <3D UTM .wkt> --outdir out/ --site-name casagrande` — nothing else.
+`groundcontrol-assess <1 m 3DEP DSM mosaic>.vrt <DTM mosaic>.vrt --intensity
+<intensity mosaic>.vrt --context-sheets` — nothing else: rasters classify
+themselves (a filename containing `DTM` gets the bare-earth rules), the target
+frame is the product's own 3D CRS, the site name is the inputs' common prefix.
 The AOI is the mosaic's grid extent (`--valid-footprint` for the valid-data footprint), the underlay is a hillshade
 computed from the product, and the figure is `validation_dz_figures`: every
 control segment on one map — marker SHAPE carries the class (checkpoints,
 GNSS stars, NGS monuments, FAA chevrons — the same symbology as the control
 map), color stays the dz ramp — plus the survey-grade histograms (3DEP NVA
 checkpoints, OPUS campaign GNSS, FAA surveyed runway points) and the
-NGS-monument histogram after a 3·NMAD gate. Here 1,550 sampled points over the 60 km mosaic, NVA median
-−0.040 m / NMAD 0.042 m. Run on this mosaic: 69 s end to end, of which the
-footprint and the hillshade take ~3 s.
+NGS-monument histogram after a 3·NMAD gate; the title counts sampled against
+fetched control (unsampled = outside the data or in a gap). Here 1,593 of
+1,725 control points over the 60 km mosaic, NVA median −0.040 m / NMAD
+0.042 m. The DSM+DTM run with context sheets: 190 s end to end, of which
+transform + sampling take 32 s.
 
 ![CLI validation figure](img/casagrande_validation_dz_DSM.png)
 
@@ -88,7 +92,7 @@ The `faa` source: runway ends, displaced thresholds and helipads from the
 public-domain NASR subscription, split by the published coordinate
 provenance. `family_dz_figures` family `faa` — the surveyed class (3RD PARTY
 SURVEY / NGS / MILITARY / ARPTS CONTRACTOR, AC 150/5300-18C survey-grade)
-against the 3DEP DSM sits at +0.02 m median; the estimated class (OWNER /
+against the 3DEP DSM sits at −0.01 m median; the estimated class (OWNER /
 FAA-EST IMAGERY / ADO) is what its name says, and stays visible as context
 rather than being filtered away upstream. The stated 3D transform budget for
 the NAD83(2011)+NAVD88 → ellipsoidal-UTM landing is printed on the histogram.

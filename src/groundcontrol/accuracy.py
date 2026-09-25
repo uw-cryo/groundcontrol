@@ -213,8 +213,11 @@ def error_report_3d(de, dn, du, nmad_mult: float = 3.0) -> dict:
     - ``le90_empirical``/``le95_empirical``: percentiles of |du|;
       ``le90_formula``/``le95_formula`` = 1.6449 / 1.9600 * RMSE_u.
 
-    Logs a warning below ``ASPRS_MIN_CHECKPOINTS`` (30, ASPRS Ed. 2) joint rows,
-    including zero. Raises
+    Logs a warning when ``combined.n_used`` — the rows left after the joint
+    gate, the sample every combined statistic is computed on — is below
+    ``ASPRS_MIN_CHECKPOINTS`` (30, ASPRS Ed. 2), including zero. ``n`` (rows
+    finite in all three axes, before the gate) is deliberately not the
+    threshold count. Raises
     ``ValueError`` on mismatched lengths or non-1-D input. Empty/all-NaN
     input returns ``n_used=0`` with NaN statistics and ``ce_form=None``.
     """
@@ -242,11 +245,13 @@ def error_report_3d(de, dn, du, nmad_mult: float = 3.0) -> dict:
         le90_empirical=nan, le95_empirical=nan, le90_formula=nan, le95_formula=nan,
     )
     if e.size < ASPRS_MIN_CHECKPOINTS:
+        # post-gate count (n_used), the sample the combined stats describe; placed
         # before the size guard so zero usable rows (empty input, all non-finite,
         # disjoint per-axis gates) is reported loudly, not just as NaNs
         logger.warning(
-            "error_report_3d: %d joint checkpoints, below the ASPRS Ed. 2 minimum of %d "
-            "for a formal accuracy statement", e.size, ASPRS_MIN_CHECKPOINTS)
+            "error_report_3d: %d joint checkpoints after the outlier gate (n_used), "
+            "below the ASPRS Ed. 2 minimum of %d for a formal accuracy statement",
+            e.size, ASPRS_MIN_CHECKPOINTS)
     if e.size:
         rmse_e, rmse_n, rmse_u = (float(np.sqrt((v ** 2).mean())) for v in (e, n, u))
         r = np.hypot(e, n)

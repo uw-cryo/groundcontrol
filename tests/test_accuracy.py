@@ -218,6 +218,23 @@ def test_error_report_3d_warns_below_asprs_minimum(caplog):
     assert "below the ASPRS Ed. 2 minimum of 30" in caplog.text
 
 
+def test_error_report_3d_warning_counts_post_gate_rows(caplog):
+    """The threshold is n_used (after the joint gate), not n: 30 finite rows with
+    one gated blunder is a 29-point sample and must warn (Copilot, PR #30)."""
+    import logging
+    base = np.array([0.1, -0.1] * 15)  # median 0, NMAD 0.148, gate +-0.445: all kept
+    de, dn, du = base.copy(), base.copy(), base.copy()
+    du[0] = 50.0
+    with caplog.at_level(logging.WARNING, logger="groundcontrol.accuracy"):
+        c = accuracy.error_report_3d(de, dn, du)["combined"]
+    assert c["n"] == 30 and c["n_used"] == 29
+    assert "29 joint checkpoints after the outlier gate" in caplog.text
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="groundcontrol.accuracy"):
+        c = accuracy.error_report_3d(base, base, base)["combined"]
+    assert c["n"] == 30 and c["n_used"] == 30 and "below the ASPRS" not in caplog.text
+
+
 def test_error_report_3d_bias_inflates_rmse_not_removed():
     # constant offset (1, 0, 2): bias_2d 1, bias_3d sqrt(5); rmse == |bias| per axis
     n = 10
@@ -270,7 +287,7 @@ def test_error_report_3d_empty_returns_nan(caplog):
     import logging
     with caplog.at_level(logging.WARNING, logger="groundcontrol.accuracy"):
         c = accuracy.error_report_3d([], [], [])["combined"]
-    assert "0 joint checkpoints, below the ASPRS Ed. 2 minimum" in caplog.text
+    assert "0 joint checkpoints after the outlier gate (n_used), below" in caplog.text
     assert c["n"] == 0 and c["n_used"] == 0 and c["ce_form"] is None
     assert np.isnan(c["rmse_r"]) and np.isnan(c["ce90_formula"]) and np.isnan(c["le90_empirical"])
 

@@ -72,6 +72,22 @@ def med_nmad(series, s: float = NMAD_CONSTANT) -> tuple[float, float]:
     return med, float(s * np.median(np.abs(a - med)))
 
 
+def _check_nmad_mult(nmad_mult) -> float:
+    """Validate an outlier-gate multiplier: finite and > 0, else ValueError.
+
+    The gate keeps |x - median| <= nmad_mult*NMAD; a non-positive or NaN
+    multiplier is a caller bug (NaN comparisons keep nothing), so fail loud.
+    Note that any nmad_mult below 1/NMAD_CONSTANT (~0.674) can still
+    legitimately reject every value — the MAD only guarantees that at least
+    half survive a gate of one MAD — and the gated reports return the NaN
+    block with ``n_used=0`` in that case.
+    """
+    m = float(nmad_mult)
+    if not np.isfinite(m) or m <= 0:
+        raise ValueError(f"nmad_mult must be finite and > 0, got {nmad_mult!r}")
+    return m
+
+
 def robust_normalize(gdf, col: str, nmad_mult: float = 3.0):
     """Boolean mask of rows within ± ``nmad_mult``·NMAD of the median of ``col``.
 
@@ -79,6 +95,7 @@ def robust_normalize(gdf, col: str, nmad_mult: float = 3.0):
     Use it to filter blunders before computing standard statistics — report
     both raw and filtered results (docs/accuracy_conventions.md).
     """
+    nmad_mult = _check_nmad_mult(nmad_mult)
     med, nmad = med_nmad(gdf[col])
     return (gdf[col] > med - nmad_mult * nmad) & (gdf[col] < med + nmad_mult * nmad)
 
@@ -118,6 +135,7 @@ def error_report(series, nmad_mult: float = 3.0) -> dict:
     Returns: n, median, nmad (all finite values); n_used, n_outliers,
     mean, std (1-sigma, ddof=1), rmse, le90, le95 (filtered values).
     """
+    nmad_mult = _check_nmad_mult(nmad_mult)
     a = np.asarray(series, dtype="float64")
     a = a[np.isfinite(a)]
     if a.size == 0:
@@ -133,6 +151,14 @@ def error_report(series, nmad_mult: float = 3.0) -> dict:
         # as "outliers" and report fake-perfect stats — skip the gate instead
         keep = np.ones(a.size, dtype=bool)
     f = a[keep]
+    if f.size == 0:
+        # only reachable for nmad_mult < 1/NMAD_CONSTANT (see _check_nmad_mult);
+        # the robust pair still describes the input, the parametric set does not exist
+        logger.warning("error_report: the %g*NMAD gate rejected all %d residuals; "
+                       "parametric stats are NaN", nmad_mult, a.size)
+        return dict(n=int(a.size), median=med, nmad=nmad, n_used=0,
+                    n_outliers=int(a.size), mean=np.nan, std=np.nan, rmse=np.nan,
+                    le90=np.nan, le95=np.nan)
     return dict(
         n=int(a.size), median=med, nmad=nmad,
         n_used=int(f.size), n_outliers=int(a.size - f.size),
@@ -147,6 +173,7 @@ def error_report(series, nmad_mult: float = 3.0) -> dict:
 def ce90(dx, dy, nmad_mult: float = 3.0) -> float:
     """Empirical CE90 (m): 90th percentile of horizontal radial error, after
     a ``nmad_mult``*NMAD-per-axis outlier gate (NGA-style circular error)."""
+    nmad_mult = _check_nmad_mult(nmad_mult)
     dx = np.asarray(dx, dtype="float64")
     dy = np.asarray(dy, dtype="float64")
     fin = np.isfinite(dx) & np.isfinite(dy)
@@ -221,6 +248,7 @@ def error_report_3d(de, dn, du, nmad_mult: float = 3.0) -> dict:
     ``ValueError`` on mismatched lengths or non-1-D input. Empty/all-NaN
     input returns ``n_used=0`` with NaN statistics and ``ce_form=None``.
     """
+    nmad_mult = _check_nmad_mult(nmad_mult)
     de = np.asarray(de, dtype="float64")
     dn = np.asarray(dn, dtype="float64")
     du = np.asarray(du, dtype="float64")

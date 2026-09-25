@@ -73,18 +73,21 @@ def med_nmad(series, s: float = NMAD_CONSTANT) -> tuple[float, float]:
 
 
 def _check_nmad_mult(nmad_mult) -> float:
-    """Validate an outlier-gate multiplier: finite and > 0, else ValueError.
+    """Validate an outlier-gate multiplier: > 0 (``+inf`` allowed), else ValueError.
 
-    The gate keeps |x - median| <= nmad_mult*NMAD; a non-positive or NaN
-    multiplier is a caller bug (NaN comparisons keep nothing), so fail loud.
-    Note that any nmad_mult below 1/NMAD_CONSTANT (~0.674) can still
-    legitimately reject every value — the MAD only guarantees that at least
-    half survive a gate of one MAD — and the gated reports return the NaN
-    block with ``n_used=0`` in that case.
+    The gate keeps |x - median| <= nmad_mult*NMAD. ``nmad_mult=np.inf`` is the
+    documented way to switch the gate OFF and get the ungated ("raw") report
+    ASPRS Ed. 2 wants beside the gated one (outliers are investigated, not
+    silently dropped) — every finite value passes an infinite gate. A
+    non-positive or NaN multiplier is a caller bug (NaN comparisons keep
+    nothing), so fail loud. Note that any nmad_mult below 1/NMAD_CONSTANT
+    (~0.674) can still legitimately reject every value — the MAD only
+    guarantees that at least half survive a gate of one MAD — and the gated
+    reports return the NaN block with ``n_used=0`` in that case.
     """
     m = float(nmad_mult)
-    if not np.isfinite(m) or m <= 0:
-        raise ValueError(f"nmad_mult must be finite and > 0, got {nmad_mult!r}")
+    if np.isnan(m) or m <= 0:
+        raise ValueError(f"nmad_mult must be > 0 (np.inf disables the gate), got {nmad_mult!r}")
     return m
 
 
@@ -134,6 +137,8 @@ def error_report(series, nmad_mult: float = 3.0) -> dict:
 
     Returns: n, median, nmad (all finite values); n_used, n_outliers,
     mean, std (1-sigma, ddof=1), rmse, le90, le95 (filtered values).
+    ``nmad_mult=np.inf`` disables the gate (``n_used == n``) for the ungated
+    "raw" row that is reported beside the gated one.
     """
     nmad_mult = _check_nmad_mult(nmad_mult)
     a = np.asarray(series, dtype="float64")
@@ -239,6 +244,9 @@ def error_report_3d(de, dn, du, nmad_mult: float = 3.0) -> dict:
       (``ce_form="elliptical_unsupported"``) — use the empirical CE;
     - ``le90_empirical``/``le95_empirical``: percentiles of |du|;
       ``le90_formula``/``le95_formula`` = 1.6449 / 1.9600 * RMSE_u.
+
+    ``nmad_mult=np.inf`` disables every gate: per-axis and combined statistics
+    then use all rows finite in the respective axes.
 
     Logs a warning when ``combined.n_used`` — the rows left after the joint
     gate, the sample every combined statistic is computed on — is below

@@ -2573,10 +2573,8 @@ def _ngs_gate(v, mult):
     (>=50% identical, quantized residuals) — a floor would keep only the
     majority value and annotate fake-perfect stats; mirrors
     accuracy.error_report."""
-    med0, nm0 = np.median(v), _nmad(v)
-    # <= to match accuracy.error_report exactly: two implementations of
-    # one rule must keep identical membership at the boundary
-    return v[np.abs(v - med0) <= mult * nm0] if nm0 > 0 else v
+    from .accuracy import robust_mask  # the one gate; no second implementation
+    return v[robust_mask(v, mult)]
 
 
 #: validation-figure style per assess.SEGMENTS label: a POINT_STYLE key or a
@@ -2887,7 +2885,8 @@ def validation_dz_figures(sampled, aoi, outdir, site_name, *, products=("DSM", "
         # product's own NMAD, so DSM and DTM keep different monument sets
         # while n looks identical — say how many survived (owner
         # DSM-vs-DTM discrepancy triage, 2026-08-30)
-        _ngs_t = f"NGS monuments ({ngs_nmad_gate:.0f}-NMAD filtered"
+        _ngs_t = ("NGS monuments (unfiltered" if np.isinf(ngs_nmad_gate)
+                  else f"NGS monuments ({ngs_nmad_gate:.0f}-NMAD filtered")
         _gv = panels[1][1].get("NGS monument")
         _rv = panels[1][2].get("NGS monument")
         if _gv is not None and _rv is not None:

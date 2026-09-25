@@ -118,6 +118,38 @@ def test_robust_normalize_preserves_index():
     assert bool(mask.loc[10]) and not bool(mask.loc[30])
 
 
+def test_robust_normalize_inclusive_boundary_matches_error_report():
+    """One gate: robust_normalize keeps a value exactly AT the bound, like
+    error_report (was strict < before the consolidation)."""
+    # median 0.0, MAD 1.0 -> NMAD exactly 1.4826; last value sits exactly at 3*NMAD
+    v = [0.0, 1.0, -1.0, 2.0, -2.0, 0.0, 0.0, 3 * 1.4826]
+    med, nmad = accuracy.med_nmad(v)
+    assert med == 0.0 and nmad == 1.4826
+    mask = robust_normalize(_gdf(v), "dh", nmad_mult=3.0)
+    assert bool(mask.iloc[-1])  # strict '<' (pre-consolidation) rejected it
+    assert accuracy.error_report(v)["n_outliers"] == 0
+
+
+def test_robust_normalize_inf_with_zero_nmad_keeps_all(caplog):
+    """Copilot, PR #33: inf * 0 gave NaN bounds and an all-False mask."""
+    mask = robust_normalize(_gdf([1.0, 1.0, 1.0, 2.0, np.nan]), "dh", nmad_mult=np.inf)
+    assert list(mask) == [True, True, True, True, False]
+    mask3 = robust_normalize(_gdf([1.0, 1.0, 1.0, 2.0]), "dh", nmad_mult=3.0)
+    assert mask3.all()  # NMAD == 0 -> no gate, same as error_report
+
+
+def test_robust_mask_contract():
+    a = np.array([0.0, 0.1, -0.1, np.nan, 50.0, np.inf])
+    m = accuracy.robust_mask(a)
+    assert m.dtype == bool and m.shape == a.shape
+    assert list(m) == [True, True, True, False, False, False]
+    assert list(accuracy.robust_mask(a, nmad_mult=np.inf)) == [True, True, True, False, True, False]
+    assert not accuracy.robust_mask([np.nan, np.nan]).any()
+    assert accuracy.robust_mask([]).size == 0
+    with pytest.raises(ValueError, match="1-D"):
+        accuracy.robust_mask([[1.0, 2.0]])
+
+
 def test_robust_normalize_uses_med_nmad(monkeypatch):
     """One source of truth (B8): the bounds come from med_nmad."""
     monkeypatch.setattr(accuracy, "med_nmad", lambda s: (0.0, 1.0))
@@ -319,7 +351,7 @@ def test_error_report_3d_empty_gate_does_not_raise():
     assert np.isnan(rep["combined"]["rmse_r"])
 
 
-@pytest.mark.parametrize("bad", [0.0, -1.0, float("nan"), float("inf")])
+@pytest.mark.parametrize("bad", [0.0, -1.0, float("nan")])
 def test_gated_functions_reject_bad_nmad_mult(bad):
     v = [0.0, 1.0, 2.0]
     with pytest.raises(ValueError, match="nmad_mult"):
@@ -337,3 +369,19 @@ def test_small_but_valid_nmad_mult_still_accepted():
     # gate +-0.741 keeps only the median -> n_used 1, no exception
     rep = accuracy.error_report([0.0, 1.0, 2.0, 3.0, 4.0], nmad_mult=0.5)
     assert rep["n_used"] == 1 and rep["n_outliers"] == 4 and rep["mean"] == 2.0
+
+
+def test_nmad_mult_inf_disables_gate_everywhere():
+    """np.inf is the documented no-gate spelling (geocalval's ungated "raw" row);
+    v0.2.1 refused it, which was a regression from v0.2.0."""
+    v = np.array([0.0, 0.1, -0.1, 0.2, 50.0])  # 50 is a 3-NMAD outlier
+    gated = accuracy.error_report(v)
+    raw = accuracy.error_report(v, nmad_mult=np.inf)
+    assert gated["n_outliers"] == 1 and raw["n_outliers"] == 0 and raw["n_used"] == 5
+    assert raw["rmse"] == pytest.approx(np.sqrt((v ** 2).mean()))
+    assert raw["median"] == gated["median"] and raw["nmad"] == gated["nmad"]
+    assert accuracy.ce90(v, v, nmad_mult=np.inf) == pytest.approx(np.percentile(np.hypot(v, v), 90))
+    assert accuracy.robust_normalize(_gdf(list(v)), "dh", nmad_mult=np.inf).all()
+    c = accuracy.error_report_3d(v, v, v, nmad_mult=np.inf)["combined"]
+    assert c["n_used"] == 5 and c["n_outliers"] == 0
+    assert c["rmse_r"] == pytest.approx(np.hypot(raw["rmse"], raw["rmse"]))

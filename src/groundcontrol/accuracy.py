@@ -3,8 +3,8 @@
 Port of the accuracy primitives in docs/plan.md Appendix A5 with the B8 fix:
 :func:`med_nmad` has a pinned contract — 1-D Series/array in, ``(float, float)``
 out — and is the single source of truth for the 1.4826 NMAD constant
-(:func:`resid_stats` and :func:`robust_normalize` both call it rather than
-duplicating the formula). Conventions (NMAD vs std, raw vs filtered reporting)
+(:func:`resid_stats` calls it directly, :func:`robust_normalize` via
+:func:`robust_mask`, the single outlier gate). Conventions (NMAD vs std, raw vs filtered reporting)
 are documented in docs/accuracy_conventions.md.
 """
 
@@ -73,31 +73,69 @@ def med_nmad(series, s: float = NMAD_CONSTANT) -> tuple[float, float]:
 
 
 def _check_nmad_mult(nmad_mult) -> float:
-    """Validate an outlier-gate multiplier: finite and > 0, else ValueError.
+    """Validate an outlier-gate multiplier: > 0 (``+inf`` allowed), else ValueError.
 
-    The gate keeps |x - median| <= nmad_mult*NMAD; a non-positive or NaN
-    multiplier is a caller bug (NaN comparisons keep nothing), so fail loud.
-    Note that any nmad_mult below 1/NMAD_CONSTANT (~0.674) can still
-    legitimately reject every value — the MAD only guarantees that at least
-    half survive a gate of one MAD — and the gated reports return the NaN
-    block with ``n_used=0`` in that case.
+    The gate keeps |x - median| <= nmad_mult*NMAD. ``nmad_mult=np.inf`` is the
+    documented way to switch the gate OFF and get the ungated ("raw") report
+    ASPRS Ed. 2 wants beside the gated one (outliers are investigated, not
+    silently dropped) — every finite value passes an infinite gate. A
+    non-positive or NaN multiplier is a caller bug (NaN comparisons keep
+    nothing), so fail loud. Note that any nmad_mult below 1/NMAD_CONSTANT
+    (~0.674) can still legitimately reject every value — the MAD only
+    guarantees that at least half survive a gate of one MAD — and the gated
+    reports return the NaN block with ``n_used=0`` in that case.
     """
     m = float(nmad_mult)
-    if not np.isfinite(m) or m <= 0:
-        raise ValueError(f"nmad_mult must be finite and > 0, got {nmad_mult!r}")
+    if np.isnan(m) or m <= 0:
+        raise ValueError(f"nmad_mult must be > 0 (np.inf disables the gate), got {nmad_mult!r}")
     return m
+
+
+def robust_mask(values, nmad_mult: float = 3.0) -> np.ndarray:
+    """THE outlier gate: boolean array, True where ``values`` is finite and
+    |x - median| <= ``nmad_mult``*NMAD (median/NMAD from the finite values).
+
+    One implementation for every gated statistic in this module (and the
+    figure helpers): ``robust_normalize``, ``error_report``, ``ce90`` and
+    ``error_report_3d`` all call it, so membership at the boundary is
+    identical everywhere. No gate is applied (every finite value is True)
+    when NMAD == 0 — >=50% identical values, routine for quantized heights,
+    where any gate floor would keep only the majority value and report
+    fake-perfect stats — or when ``nmad_mult`` is ``np.inf``, the documented
+    ungated ("raw") spelling. Non-finite values are always False.
+
+    Raises ``ValueError`` for non-1-D input (including scalars) and for a
+    NaN or non-positive ``nmad_mult``.
+    """
+    nmad_mult = _check_nmad_mult(nmad_mult)
+    a = np.asarray(values, dtype="float64")
+    if a.ndim != 1:
+        raise ValueError(f"robust_mask expects a 1-D array, got ndim={a.ndim}")
+    fin = np.isfinite(a)
+    keep = np.zeros(a.size, dtype=bool)
+    if not fin.any():
+        return keep
+    med, nmad = med_nmad(a[fin])
+    if nmad > 0 and np.isfinite(nmad_mult):
+        keep[fin] = np.abs(a[fin] - med) <= nmad_mult * nmad
+    else:
+        keep[fin] = True
+    return keep
 
 
 def robust_normalize(gdf, col: str, nmad_mult: float = 3.0):
     """Boolean mask of rows within ± ``nmad_mult``·NMAD of the median of ``col``.
 
     Returns a boolean Series aligned to ``gdf.index`` (NaN rows are ``False``).
-    Use it to filter blunders before computing standard statistics — report
-    both raw and filtered results (docs/accuracy_conventions.md).
+    Thin wrapper over :func:`robust_mask` (inclusive boundary; NMAD == 0 and
+    ``np.inf`` mean no gate — before the consolidation this function used a
+    strict boundary and returned all-False on NMAD == 0). Use it to filter
+    blunders before computing
+    standard statistics — report both raw and filtered results
+    (docs/accuracy_conventions.md).
     """
-    nmad_mult = _check_nmad_mult(nmad_mult)
-    med, nmad = med_nmad(gdf[col])
-    return (gdf[col] > med - nmad_mult * nmad) & (gdf[col] < med + nmad_mult * nmad)
+    import pandas as pd  # gdf is a (Geo)DataFrame, so pandas is already loaded
+    return pd.Series(robust_mask(gdf[col].to_numpy(), nmad_mult), index=gdf.index)
 
 
 def resid_stats(series) -> dict:
@@ -134,6 +172,8 @@ def error_report(series, nmad_mult: float = 3.0) -> dict:
 
     Returns: n, median, nmad (all finite values); n_used, n_outliers,
     mean, std (1-sigma, ddof=1), rmse, le90, le95 (filtered values).
+    ``nmad_mult=np.inf`` disables the gate (``n_used == n``) for the ungated
+    "raw" row that is reported beside the gated one.
     """
     nmad_mult = _check_nmad_mult(nmad_mult)
     a = np.asarray(series, dtype="float64")
@@ -143,14 +183,7 @@ def error_report(series, nmad_mult: float = 3.0) -> dict:
                     mean=np.nan, std=np.nan, rmse=np.nan, le90=np.nan,
                     le95=np.nan)
     med, nmad = med_nmad(a)
-    if nmad > 0:
-        keep = np.abs(a - med) <= nmad_mult * nmad
-    else:
-        # >=50% of residuals identical (quantized heights are routine): NMAD
-        # collapses to 0 and any gate floor would discard the genuine spread
-        # as "outliers" and report fake-perfect stats — skip the gate instead
-        keep = np.ones(a.size, dtype=bool)
-    f = a[keep]
+    f = a[robust_mask(a, nmad_mult)]  # NMAD == 0 / inf -> no gate, see robust_mask
     if f.size == 0:
         # only reachable for nmad_mult < 1/NMAD_CONSTANT (see _check_nmad_mult);
         # the robust pair still describes the input, the parametric set does not exist
@@ -180,33 +213,9 @@ def ce90(dx, dy, nmad_mult: float = 3.0) -> float:
     dx, dy = dx[fin], dy[fin]
     if not dx.size:
         return float("nan")
-    keep = np.ones(dx.size, dtype=bool)
-    for v in (dx, dy):
-        med, nmad = med_nmad(v)
-        if nmad > 0:  # NMAD=0 (quantized axis): no gate — see error_report
-            keep &= np.abs(v - med) <= nmad_mult * nmad
+    keep = robust_mask(dx, nmad_mult) & robust_mask(dy, nmad_mult)
     r = np.hypot(dx[keep], dy[keep])
     return float(np.percentile(r, 90)) if r.size else float("nan")
-
-
-def _nmad_gate(a: np.ndarray, nmad_mult: float) -> np.ndarray:
-    """Boolean gate |a - median| <= nmad_mult*NMAD over an already-finite 1-D
-    array; NMAD=0 (quantized values) means no gate. Same rule that
-    :func:`error_report` and :func:`ce90` apply inline."""
-    med, nmad = med_nmad(a)
-    if nmad > 0:
-        return np.abs(a - med) <= nmad_mult * nmad
-    return np.ones(a.size, dtype=bool)
-
-
-def _nmad_gate_rows(a: np.ndarray, nmad_mult: float) -> np.ndarray:
-    """Full-length row mask: True where ``a`` is finite AND passes the gate
-    computed on that axis's own finite values (matches error_report's gate)."""
-    keep = np.zeros(a.size, dtype=bool)
-    fin = np.isfinite(a)
-    if fin.any():
-        keep[fin] = _nmad_gate(a[fin], nmad_mult)
-    return keep
 
 
 def error_report_3d(de, dn, du, nmad_mult: float = 3.0) -> dict:
@@ -240,6 +249,9 @@ def error_report_3d(de, dn, du, nmad_mult: float = 3.0) -> dict:
     - ``le90_empirical``/``le95_empirical``: percentiles of |du|;
       ``le90_formula``/``le95_formula`` = 1.6449 / 1.9600 * RMSE_u.
 
+    ``nmad_mult=np.inf`` disables every gate: per-axis and combined statistics
+    then use all rows finite in the respective axes.
+
     Logs a warning when ``combined.n_used`` — the rows left after the joint
     gate, the sample every combined statistic is computed on — is below
     ``ASPRS_MIN_CHECKPOINTS`` (30, ASPRS Ed. 2), including zero. ``n`` (rows
@@ -260,9 +272,8 @@ def error_report_3d(de, dn, du, nmad_mult: float = 3.0) -> dict:
     axes = {k: error_report(v, nmad_mult=nmad_mult) for k, v in (("e", de), ("n", dn), ("u", du))}
 
     fin = np.isfinite(de) & np.isfinite(dn) & np.isfinite(du)
-    keep = fin.copy()
-    for v in (de, dn, du):
-        keep &= _nmad_gate_rows(v, nmad_mult)
+    # each axis gated on its own finite values (== the per-axis report's gate)
+    keep = robust_mask(de, nmad_mult) & robust_mask(dn, nmad_mult) & robust_mask(du, nmad_mult)
     e, n, u = de[keep], dn[keep], du[keep]
     nan = float("nan")
     combined = dict(

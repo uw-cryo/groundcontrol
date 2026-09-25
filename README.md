@@ -14,8 +14,8 @@ Fetch ground control points for an arbitrary AOI and assess DEM accuracy — wit
 
 ## Status
 
-**v0.2.0 — pre-alpha, quiet release.** The fetch → transform → sample → statistics →
-figures pipeline works end to end (CLI + Python API) and is covered by **531 offline
+**v0.2.1 — pre-alpha, quiet release.** The fetch → transform → sample → statistics →
+figures pipeline works end to end (CLI + Python API) and is covered by **552 offline
 tests** run in CI on Python 3.10/3.12, with the geodesy core additionally adversarially
 audited (independent review agents; math cross-checked against external oracles). The API
 may still move between minor versions — pin the tag if you build on it, and expect sharp
@@ -236,7 +236,7 @@ like `ground-control` as too similar).
 > this library. Use the git URL below.
 
 ```bash
-pip install git+https://github.com/uw-cryo/groundcontrol.git@v0.2.0
+pip install git+https://github.com/uw-cryo/groundcontrol.git@v0.2.1
 ```
 
 Into an env that already satisfies every entry in `[project] dependencies` of
@@ -301,7 +301,7 @@ Archived on Zenodo — the concept DOI below always resolves to the latest relea
 release also gets its own version DOI. Machine-readable metadata lives in
 [`CITATION.cff`](CITATION.cff) (GitHub's *Cite this repository* button reads it).
 
-> Shean, D. (2026). *groundcontrol* (v0.2.0). Zenodo. https://doi.org/10.5281/zenodo.21846300
+> Shean, D. (2026). *groundcontrol* (v0.2.1). Zenodo. https://doi.org/10.5281/zenodo.21846300
 
 ## Origin
 

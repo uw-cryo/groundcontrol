@@ -1,6 +1,6 @@
 # Quickstart — using groundcontrol from another project
 
-Status: **v0.2.0**, public and citable
+Status: **v0.2.1**, public and citable
 ([10.5281/zenodo.21846300](https://doi.org/10.5281/zenodo.21846300)). Pre-alpha: the
 schema is **not frozen** (open decisions D1–D6 in `plan.md`), so **pin the tag** and
 expect column renames before v1.
@@ -16,7 +16,7 @@ this one as a requirement until the name resolves.
 ## Install
 
 ```bash
-pip install git+https://github.com/uw-cryo/groundcontrol.git@v0.2.0
+pip install git+https://github.com/uw-cryo/groundcontrol.git@v0.2.1
 ```
 
 > ⚠️ **Do not run `pip install groundcontrol`.** An unrelated package of that name
@@ -28,7 +28,7 @@ Into an existing env that already satisfies every entry in `[project] dependenci
 second line imports every runtime dependency, which is exactly the check `--no-deps` skips:
 
 ```bash
-pip install --no-deps git+https://github.com/uw-cryo/groundcontrol.git@v0.2.0
+pip install --no-deps git+https://github.com/uw-cryo/groundcontrol.git@v0.2.1
 python -c "import groundcontrol.assess, groundcontrol.sample, groundcontrol.sources, groundcontrol.figures, pyarrow.parquet, scipy.interpolate, matplotlib_scalebar.scalebar"
 ```
 
@@ -42,7 +42,7 @@ For a **pixi** project, a git dependency is first-class — no index required:
 
 ```toml
 [pypi-dependencies]
-groundcontrol = { git = "https://github.com/uw-cryo/groundcontrol.git", tag = "v0.2.0" }
+groundcontrol = { git = "https://github.com/uw-cryo/groundcontrol.git", tag = "v0.2.1" }
 ```
 
 For co-development against a local checkout, `pip install --no-deps -e /path/to/groundcontrol`

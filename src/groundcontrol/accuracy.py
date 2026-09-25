@@ -213,7 +213,8 @@ def error_report_3d(de, dn, du, nmad_mult: float = 3.0) -> dict:
     - ``le90_empirical``/``le95_empirical``: percentiles of |du|;
       ``le90_formula``/``le95_formula`` = 1.6449 / 1.9600 * RMSE_u.
 
-    Logs a warning below ``ASPRS_MIN_CHECKPOINTS`` (30, ASPRS Ed. 2) joint rows. Raises
+    Logs a warning below ``ASPRS_MIN_CHECKPOINTS`` (30, ASPRS Ed. 2) joint rows,
+    including zero. Raises
     ``ValueError`` on mismatched lengths or non-1-D input. Empty/all-NaN
     input returns ``n_used=0`` with NaN statistics and ``ce_form=None``.
     """
@@ -240,11 +241,13 @@ def error_report_3d(de, dn, du, nmad_mult: float = 3.0) -> dict:
         ce_form=None,
         le90_empirical=nan, le95_empirical=nan, le90_formula=nan, le95_formula=nan,
     )
+    if e.size < ASPRS_MIN_CHECKPOINTS:
+        # before the size guard so zero usable rows (empty input, all non-finite,
+        # disjoint per-axis gates) is reported loudly, not just as NaNs
+        logger.warning(
+            "error_report_3d: %d joint checkpoints, below the ASPRS Ed. 2 minimum of %d "
+            "for a formal accuracy statement", e.size, ASPRS_MIN_CHECKPOINTS)
     if e.size:
-        if e.size < ASPRS_MIN_CHECKPOINTS:
-            logger.warning(
-                "error_report_3d: %d joint checkpoints, below the ASPRS Ed. 2 minimum of %d "
-                "for a formal accuracy statement", e.size, ASPRS_MIN_CHECKPOINTS)
         rmse_e, rmse_n, rmse_u = (float(np.sqrt((v ** 2).mean())) for v in (e, n, u))
         r = np.hypot(e, n)
         hi, lo = max(rmse_e, rmse_n), min(rmse_e, rmse_n)

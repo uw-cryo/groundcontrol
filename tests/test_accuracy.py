@@ -266,8 +266,11 @@ def test_error_report_3d_nonfinite_rows_dropped_and_counted():
     assert c["n"] == 2 and c["n_used"] == 2  # rows 0 and 3 only
 
 
-def test_error_report_3d_empty_returns_nan():
-    c = accuracy.error_report_3d([], [], [])["combined"]
+def test_error_report_3d_empty_returns_nan(caplog):
+    import logging
+    with caplog.at_level(logging.WARNING, logger="groundcontrol.accuracy"):
+        c = accuracy.error_report_3d([], [], [])["combined"]
+    assert "0 joint checkpoints, below the ASPRS Ed. 2 minimum" in caplog.text
     assert c["n"] == 0 and c["n_used"] == 0 and c["ce_form"] is None
     assert np.isnan(c["rmse_r"]) and np.isnan(c["ce90_formula"]) and np.isnan(c["le90_empirical"])
 

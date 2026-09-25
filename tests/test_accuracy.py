@@ -295,3 +295,45 @@ def test_error_report_3d_empty_returns_nan(caplog):
 def test_error_report_3d_rejects_mismatched_lengths():
     with pytest.raises(ValueError, match="equal length"):
         accuracy.error_report_3d([1.0, 2.0], [1.0], [1.0, 2.0])
+
+
+# ---------------------------------------------------------------------------
+# nmad_mult validation and the empty-gate path (geocalval report, 2026-09-24)
+# ---------------------------------------------------------------------------
+
+def test_error_report_empty_gate_returns_nan_block(caplog):
+    """nmad_mult below 1/NMAD_CONSTANT can reject every residual: used to raise
+    IndexError from np.percentile; now the NaN block with n_used=0 + a warning."""
+    import logging
+    with caplog.at_level(logging.WARNING, logger="groundcontrol.accuracy"):
+        rep = accuracy.error_report(np.array([0.0, 10.0]), nmad_mult=0.1)
+    assert rep["n"] == 2 and rep["n_used"] == 0 and rep["n_outliers"] == 2
+    assert rep["median"] == 5.0 and rep["nmad"] == pytest.approx(5 * 1.4826)
+    assert all(np.isnan(rep[k]) for k in ("mean", "std", "rmse", "le90", "le95"))
+    assert "rejected all 2 residuals" in caplog.text
+
+
+def test_error_report_3d_empty_gate_does_not_raise():
+    rep = accuracy.error_report_3d([0.0, 10.0], [0.0, 10.0], [0.0, 10.0], nmad_mult=0.1)
+    assert rep["e"]["n_used"] == 0 and rep["combined"]["n_used"] == 0
+    assert np.isnan(rep["combined"]["rmse_r"])
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0, float("nan"), float("inf")])
+def test_gated_functions_reject_bad_nmad_mult(bad):
+    v = [0.0, 1.0, 2.0]
+    with pytest.raises(ValueError, match="nmad_mult"):
+        accuracy.error_report(v, nmad_mult=bad)
+    with pytest.raises(ValueError, match="nmad_mult"):
+        accuracy.ce90(v, v, nmad_mult=bad)
+    with pytest.raises(ValueError, match="nmad_mult"):
+        accuracy.error_report_3d(v, v, v, nmad_mult=bad)
+    with pytest.raises(ValueError, match="nmad_mult"):
+        accuracy.robust_normalize(_gdf(v), "dh", nmad_mult=bad)
+
+
+def test_small_but_valid_nmad_mult_still_accepted():
+    # 0.5 < 1/1.4826 is legal (not rejected): [0..4] has median 2, NMAD 1.4826,
+    # gate +-0.741 keeps only the median -> n_used 1, no exception
+    rep = accuracy.error_report([0.0, 1.0, 2.0, 3.0, 4.0], nmad_mult=0.5)
+    assert rep["n_used"] == 1 and rep["n_outliers"] == 4 and rep["mean"] == 2.0

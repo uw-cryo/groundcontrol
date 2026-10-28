@@ -114,6 +114,22 @@ out = t.transform(x, y, h, tt, errcheck=True)     # only_best failures return in
   (https://pyproj4.github.io/pyproj/stable/api/aoi.html) — build it from
   `gdf.to_crs(4326).total_bounds` (or the AOI GeoJSON), never a projected `total_bounds`. Per plan
   B7: from the **datum-subset's** bounds.
+- **A WGS 84 ensemble against a realization is refused** (`get_transformer` /
+  `transform_points`, v0.3): for `EPSG:4326`/`326xx` vs NAD83(2011), ITRF20xx or WGS 84 (G2139)
+  PROJ selects a null operation of stated accuracy 2 m (`NAD83(2011) to WGS 84 (1)`), so the real
+  1.3-1.5 m offset between the realized coordinates and the target vanishes. Declare the
+  realization the coordinates are actually in (`source_crs="EPSG:9989"` for ICESat-2, `--vdatum
+  ellipsoid:<realization>` for a product); `allow_ensemble=True` accepts the null operation on the
+  record for the rare case where 2 m is enough. Ensemble-vs-ensemble and realization-vs-
+  realization pairs are unaffected.
+- **`compare_frames(a, b, epoch_a=, epoch_b=)` / `assert_same_frame(...)`** are the one definition
+  of "same frame" for every consumer (the sampler here, geocalval's lattice gate, application
+  guards): horizontal 2D equality, datum-blind grid identity (`grid_signature`), WGS 84 ensemble vs
+  realization, what each side declares about heights (`vertical_kind`: `ellipsoidal` / `gravity` /
+  `depth` / `undeclared`) and whether declared verticals conflict, and the coordinate epochs when
+  both are given (pyproj cannot carry an epoch on a CRS, so it travels as a separate argument).
+  `assert_same_frame` raises per problem unless that problem is named in `allow=`, and logs what
+  was allowed.
 - **PROJ networking is disabled by default** — opt in via `PROJ_NETWORK=ON` /
   `pyproj.network.set_network_enabled(True)`; grids cache chunked in the user dir (`cache.db`,
   300 MB default) — https://proj.org/en/stable/usage/network.html.

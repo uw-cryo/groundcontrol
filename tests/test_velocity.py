@@ -197,7 +197,7 @@ def test_filled_velocity_drives_propagate_epoch_tier1():
     propagate_epoch's tier-1 (per_point) source; unfilled rows fall through as no-op."""
     st = _uniform(-115.15, 36.10, [-0.1, -0.05, 0.05, 0.1], 0.020, -0.010, 0.0)
     gdf = V.fill_velocities(_gdf([(-115.15, 36.10), (0.0, 0.0)]), st)
-    out = propagate_epoch(gdf, target_epoch=2010.0)  # no plate_model -> tier 1 or no-op
+    out = propagate_epoch(gdf, target_epoch=2010.0, on_no_velocity="warn")  # no plate_model -> tier 1 or no-op
     rep = out.attrs["epoch_propagation"]
     assert rep["models"]["per_point"] == 1   # the filled LV point
     assert rep["models"]["none"] == 1        # the far (NaN) point -> no-op

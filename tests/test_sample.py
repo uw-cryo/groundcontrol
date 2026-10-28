@@ -366,3 +366,105 @@ def test_radius_must_be_positive(north_up_tif, bad):
 def test_radius_mutually_exclusive_with_method(north_up_tif):
     with pytest.raises(ValueError, match="mutually exclusive"):
         sample_raster(_points([(2.5, 5.5)]), north_up_tif, method="nearest", radius=1.0)
+
+
+# ---------------------------------------------------------------------------
+# vertical datum: a DECLARED conflict refuses, an undeclared side is trusted
+# ---------------------------------------------------------------------------
+def _da(crs):
+    """In-memory plane raster (no source file) carrying ``crs``."""
+    import pyproj
+    j, i = np.meshgrid(np.arange(NX), np.arange(NY))
+    arr = _plane(X0 + j + 0.5, Y0 + NY - i - 0.5)
+    da = xr.DataArray(arr, dims=("y", "x"),
+                      coords={"y": Y0 + NY - np.arange(NY) - 0.5, "x": X0 + np.arange(NX) + 0.5})
+    return da.rio.write_crs(pyproj.CRS.from_user_input(crs).to_wkt())
+
+
+NAD83_UTM11 = "EPSG:6340"
+NAVD88_RASTER = "EPSG:6340+5703"
+
+
+def test_navd88_raster_refuses_ellipsoidal_points():
+    import pyproj
+    pts = _points([(2.3, 5.4)], crs=pyproj.CRS(NAD83_UTM11).to_3d())      # 3D: ellipsoidal
+    with pytest.raises(ValueError, match="ellipsoidal heights .*, the raster gravity"):
+        sample_raster(pts, _da(NAVD88_RASTER))
+    pts2d = _points([(2.3, 5.4)], crs=NAD83_UTM11)
+    with pytest.raises(ValueError, match="ellipsoidal heights .*, the raster gravity"):
+        sample_raster(pts2d, _da(NAVD88_RASTER), height_kind="ellipsoidal")
+
+
+def test_undeclared_vertical_is_trusted_and_logged(caplog):
+    import pyproj
+    pts = _points([(2.3, 5.4)], crs=pyproj.CRS(NAD83_UTM11).to_3d())
+    with caplog.at_level("INFO", logger="groundcontrol.sample"):
+        out = sample_raster(pts, _da(NAD83_UTM11))                          # 2D header
+    assert out["sampled"].iloc[0] == pytest.approx(_exp(2.3, 5.4))
+    assert "vertical datum not checked" in caplog.text
+
+
+def test_matching_vertical_passes_and_mismatch_escape_warns():
+    pts = _points([(2.3, 5.4)], crs=NAD83_UTM11)
+    out = sample_raster(pts, _da(NAVD88_RASTER), height_kind="gravity")
+    assert out["sampled"].iloc[0] == pytest.approx(_exp(2.3, 5.4))
+    with pytest.warns(UserWarning, match="allow_vertical_mismatch=True"):
+        out = sample_raster(pts, _da(NAVD88_RASTER), height_kind="ellipsoidal",
+                            allow_vertical_mismatch=True)
+    assert out["sampled"].iloc[0] == pytest.approx(_exp(2.3, 5.4))
+
+
+def test_declared_crs_vertical_is_the_one_checked():
+    # header says 2D NAD83(2011); the caller declares the heights are NAVD88 (--vdatum contract)
+    import pyproj
+    pts = _points([(2.3, 5.4)], crs=pyproj.CRS(NAD83_UTM11).to_3d())
+    with pytest.raises(ValueError, match="ellipsoidal heights .*, the raster gravity"):
+        sample_raster(pts, _da(NAD83_UTM11), declared_crs=NAVD88_RASTER)
+
+
+def test_height_kind_contradicting_a_declaring_crs_raises():
+    import pyproj
+    pts = _points([(2.3, 5.4)], crs=pyproj.CRS(NAD83_UTM11).to_3d())      # declares ellipsoidal
+    with pytest.raises(ValueError, match="contradicts the points' own CRS"):
+        sample_raster(pts, _da(NAVD88_RASTER), height_kind="gravity")
+
+
+def test_redundant_height_kind_does_not_skip_the_gravity_datum_check():
+    # points declare NAVD88; a consistent height_kind='gravity' must not hide NGVD29 on the raster
+    pts = _points([(2.3, 5.4)], crs="EPSG:6340+5703")
+    with pytest.raises(ValueError, match="gravity heights .*, the raster gravity"):
+        sample_raster(pts, _da("EPSG:6340+7968"), height_kind="gravity")
+    with pytest.raises(ValueError, match="gravity heights .*, the raster gravity"):
+        sample_raster(pts, _da("EPSG:6340+7968"))
+
+
+def test_declared_crs_must_describe_this_raster_and_frame():
+    # Copilot on PR #35 round 2: with matching horizontals, an unrelated declared_crs (another
+    # UTM zone, ellipsoidal) silently suppressed the NAVD88-vs-ellipsoidal conflict
+    import pyproj
+    pts = _points([(2.3, 5.4)], crs=pyproj.CRS(NAD83_UTM11).to_3d())
+    with pytest.raises(ValueError, match="does not describe this raster"):
+        sample_raster(pts, _da(NAVD88_RASTER), declared_crs=pyproj.CRS("EPSG:6339").to_3d())
+    # a declaration of THIS grid in the points' frame still works, and still checks the vertical
+    with pytest.raises(ValueError, match="ellipsoidal heights .*, the raster gravity"):
+        sample_raster(pts, _da(NAD83_UTM11), declared_crs=NAVD88_RASTER)
+    out = sample_raster(pts, _da(NAD83_UTM11), declared_crs=pyproj.CRS(NAD83_UTM11).to_3d())
+    assert out["sampled"].iloc[0] == pytest.approx(_exp(2.3, 5.4))
+
+
+def test_authority_equivalent_encoding_is_the_same_frame():
+    # Copilot on PR #35 pass 3: the sampler used raw .equals, refusing a WKT1_ESRI .prj of the
+    # raster's own geographic CRS that compare_frames calls equal
+    import pyproj
+    esri = pyproj.CRS("EPSG:6318").to_wkt(version="WKT1_ESRI")
+    assert not pyproj.CRS(esri).equals(pyproj.CRS("EPSG:6318"))        # the premise
+    pts = _points([(2.3, 5.4)], crs=esri)
+    out = sample_raster(pts, _da("EPSG:6318"))
+    assert out["sampled"].iloc[0] == pytest.approx(_exp(2.3, 5.4))
+    out = sample_raster(pts, _da("EPSG:6318"), declared_crs="EPSG:6318")
+    assert out["sampled"].iloc[0] == pytest.approx(_exp(2.3, 5.4))
+
+
+def test_bad_height_kind_rejected(north_up_tif):
+    with pytest.raises(ValueError, match="height_kind"):
+        sample_raster(_points([(2.3, 5.4)]), north_up_tif, height_kind="orthometric")

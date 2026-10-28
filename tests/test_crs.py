@@ -148,7 +148,7 @@ def test_transform_points_infers_compound_from_vertical_crs(monkeypatch):
         def transform(self, x, y, z, t, errcheck=False):
             return x, y, z, t
 
-    def fake_get_transformer(src, tgt, aoi_bounds_4326=None):
+    def fake_get_transformer(src, tgt, aoi_bounds_4326=None, **kw):
         captured["src"] = src
         return _T()
 
@@ -175,5 +175,5 @@ def test_transform_points_requires_finite_tt():
     import numpy as np
     import pytest as _pt
     with _pt.raises(ValueError, match="tt"):
-        transform_points(_pts_gdf("EPSG:4979"), "EPSG:7912",
+        transform_points(_pts_gdf("EPSG:7912"), "EPSG:9989",
                          tt=np.array([2020.0, np.nan]))

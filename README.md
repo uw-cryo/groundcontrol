@@ -50,7 +50,19 @@ per-source status report:
   guard** so secular velocity never silently carries a point across a coseismic step
   (NGL `steps.txt` evidence rides in `raw["eq_steps"]`; a Gorkha-class step is 0.1–2 m
   that no velocity model contains — skipped rows surface as `step_blocked` with an
-  honest unbounded residual).
+  honest unbounded residual); a point that would move but has no velocity from any
+  tier **raises** (`on_no_velocity='warn'` keeps it at its epoch with the bound recorded).
+  **Frame comparison** (`compare_frames` / `assert_same_frame`, v0.3): the one definition
+  of "same frame" for every consumer — horizontal datum, datum-blind grid identity,
+  declared vertical kind (`vertical_kind`: ellipsoidal / gravity / undeclared), WGS 84
+  ensemble vs realization, and coordinate epoch — so a NAVD88 raster against ellipsoidal
+  points or a datum-label difference on one grid is refused by name instead of becoming
+  a co-registration "offset"; `get_transformer` refuses a WGS 84 ensemble against a
+  realization (PROJ's null operation, 2 m stated accuracy) until the realization is
+  declared. **Projected grid ↔ true ENU** (`grid_jacobian`, `grid_convergence`, vector /
+  gradient / azimuth conversions): exact per-point map between grid axes and true
+  east/north for any projection PROJ can differentiate, with the grids it cannot
+  describe refused.
 - **Assessment pipeline** (`assess.py` + `groundcontrol-assess`) — `transform_control`
   (one direct 3D transform, declared-CRS guard, per-point `xform_acc_m` stated transform
   budget) → `sample_products` → `summarize_dz` → standard validation figures, with

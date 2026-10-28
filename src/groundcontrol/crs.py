@@ -18,6 +18,9 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 import pandas as pd
+import re
+from dataclasses import dataclass, field
+
 import pyproj
 from pyproj.transformer import TransformerGroup
 
@@ -69,6 +72,22 @@ __all__ = [
     "ecef_to_enu",
     "check_frame_epoch_reduced",
     "propagate_epoch",
+    # frame comparison
+    "horizontal_2d",
+    "grid_signature",
+    "vertical_kind",
+    "VERTICAL_KINDS",
+    "FrameComparison",
+    "compare_frames",
+    "assert_same_frame",
+    # projected grid frame <-> true local ENU
+    "grid_jacobian",
+    "grid_to_enu_vector",
+    "enu_to_grid_vector",
+    "grid_to_enu_gradient",
+    "enu_to_grid_gradient",
+    "grid_to_true_azimuth",
+    "grid_convergence",
 ]
 
 
@@ -147,7 +166,8 @@ def decyear_inv(dy):
 # Fail-loud transformer selection (crs_implementation.md §2)
 # ---------------------------------------------------------------------------
 
-def get_transformer(source_crs, target_crs, aoi_bounds_4326=None) -> pyproj.Transformer:
+def get_transformer(source_crs, target_crs, aoi_bounds_4326=None, *,
+                    allow_ensemble: bool = False) -> pyproj.Transformer:
     """Select the best available coordinate operation, loudly.
 
     Parameters
@@ -167,7 +187,32 @@ def get_transformer(source_crs, target_crs, aoi_bounds_4326=None) -> pyproj.Tran
     Raises :class:`NoTransformPathError` when nothing is available under
     ``allow_ballpark=False`` (never a silent ballpark/degraded result), and
     warns when better operations exist but are unavailable (missing grids).
+
+    Refuses (``ValueError``) a WGS 84 ENSEMBLE on one side against a specific
+    realization or frame on the other (``EPSG:4326``/``326xx`` vs NAD83(2011),
+    ITRF2014, WGS 84 (G2139), ...): PROJ resolves that pair with a null
+    operation of stated accuracy 2 m, so the 1.3-1.5 m real offset between the
+    realized coordinates and the target simply vanishes. The remedy is to
+    declare the realization the coordinates are actually in (``source_crs=``
+    ``EPSG:9989`` for ICESat-2, ``--vdatum ellipsoid:<realization>`` for a
+    product), not ``allow_ensemble=True``, which accepts the null operation on
+    the record (WARNING) for the rare case where 2 m is genuinely enough.
     """
+    cmp = compare_frames(source_crs, target_crs)
+    if cmp.ensemble_vs_realization:
+        if _is_wgs84_ensemble(horizontal_2d(source_crs)):
+            remedy = ("declare the realization the source coordinates are really in "
+                      "(source_crs=EPSG:9989 / 7912 / 9755 ...) rather than the ensemble")
+        else:
+            remedy = ("give the target as the realization its heights are really on (a "
+                      "realized 3D/compound target CRS, or --vdatum <vertical>:<realization> / "
+                      "--vdatum ellipsoid:<realization> on the cli) rather than the ensemble")
+        msg = (f"refusing {cmp.a!r} -> {cmp.b!r}: {cmp.describe()}; {remedy}, or pass "
+               "allow_ensemble=True to accept the 2 m-ambiguity operation on the record.")
+        if not allow_ensemble:
+            raise ValueError(msg)
+        warnings.warn(msg.replace("refusing", "allow_ensemble=True:"), stacklevel=2)
+        logger.warning(msg.replace("refusing", "allow_ensemble=True:"))
     aoi = pyproj.aoi.AreaOfInterest(*aoi_bounds_4326) if aoi_bounds_4326 is not None else None
     tg = TransformerGroup(
         source_crs, target_crs,
@@ -214,7 +259,7 @@ def get_transformer(source_crs, target_crs, aoi_bounds_4326=None) -> pyproj.Tran
 # ---------------------------------------------------------------------------
 
 def transform_points(gdf, target_crs, tt, height_col: str = "height",
-                     source_crs=None, aoi_bounds_4326=None):
+                     source_crs=None, aoi_bounds_4326=None, *, allow_ensemble: bool = False):
     """Transform 2D-geometry + height-column points into a target 3D frame.
 
     The packaged form of the canonical pattern in docs/quickstart.md §2: ONE
@@ -237,6 +282,8 @@ def transform_points(gdf, target_crs, tt, height_col: str = "height",
         never guess a vertical datum).
     aoi_bounds_4326 : optional degrees bounds for operation selection;
         defaults to the gdf's bounds in EPSG:4326.
+    allow_ensemble : accept a WGS 84 ensemble against a realization (see
+        :func:`get_transformer`; the remedy is a real ``source_crs``).
 
     Returns a copy: geometry in ``target_crs`` (2D points), ``height_col``
     replaced by the transformed height, and ``transform_id`` stamped when the
@@ -261,7 +308,8 @@ def transform_points(gdf, target_crs, tt, height_col: str = "height",
             raise ValueError("cannot infer the source vertical datum; pass source_crs")
     if aoi_bounds_4326 is None:
         aoi_bounds_4326 = tuple(gdf.geometry.to_crs(4326).total_bounds)  # AOI use only
-    t = get_transformer(source_crs, target_crs, aoi_bounds_4326=aoi_bounds_4326)
+    t = get_transformer(source_crs, target_crs, aoi_bounds_4326=aoi_bounds_4326,
+                        allow_ensemble=allow_ensemble)
     h = pd.to_numeric(gdf[height_col], errors="raise").to_numpy(dtype="float64")
     tt_arr = np.full(len(gdf), float(tt)) if np.isscalar(tt) else np.asarray(tt, dtype="float64")
     if np.isnan(tt_arr).any():
@@ -345,6 +393,235 @@ def is_dynamic_frame(crs_like) -> bool:
     """
     datum = pyproj.CRS(crs_like).datum
     return datum is not None and "dynamic" in (datum.type_name or "").lower()
+
+
+# ---------------------------------------------------------------------------
+# Frame comparison — the one place two CRSs are judged "the same frame"
+# ---------------------------------------------------------------------------
+# Consumers (the sampler here, geocalval's lattice gate, application guards)
+# used to each carry their own equality rule, horizontal-only and blind to the
+# vertical datum, the coordinate epoch, and the WGS 84 ensemble (2026-10-27
+# cross-repo audit: a NAVD88 raster against ellipsoidal points passed every
+# check, and a datum-label difference became a 1.36 m "co-registration offset").
+
+def horizontal_2d(crs_like) -> pyproj.CRS:
+    """Horizontal 2D component of a CRS (compound -> horizontal member; 3D -> 2D)."""
+    crs = pyproj.CRS.from_user_input(crs_like)
+    if crs.is_compound:
+        crs = pyproj.CRS(crs.sub_crs_list[0])
+    return crs.to_2d()
+
+
+def grid_signature(crs_like):
+    """The map GRID a CRS describes, datum-blind: projection method +
+    parameters for a projected CRS, a marker for a plain geographic
+    graticule. Two CRSs with equal signatures address the same pixels —
+    the reinterpretation test behind the sampler's ``declared_crs``."""
+    h = horizontal_2d(crs_like)
+    # prime meridian and axis units are part of the GRID, not the datum:
+    # EPSG:4326 vs EPSG:4807 (Paris PM, grads) or a metre vs US-foot
+    # variant of one projection address different pixels and must never
+    # compare equal (audit: the declared_crs escape accepted a 2.337 deg
+    # PM shift, ~170 km)
+    pm = round(h.prime_meridian.longitude, 9) if h.prime_meridian else 0.0
+    units = tuple(round(a.unit_conversion_factor, 12) for a in h.axis_info)
+    if h.is_projected and h.coordinate_operation is not None:
+        co = h.coordinate_operation
+        return (co.method_name,
+                tuple(sorted((p.name, round(p.value, 9))
+                             for p in co.params
+                             if isinstance(p.value, (int, float)))),
+                pm, units)
+    if h.is_geographic:
+        return ("geographic", pm, units)
+    return ("other", h.to_wkt())
+
+
+#: what a CRS says about its heights
+VERTICAL_KINDS = ("ellipsoidal", "gravity", "depth", "undeclared")
+
+
+def vertical_kind(crs_like) -> str:
+    """What the CRS declares about heights: ``'ellipsoidal'`` (a 3D geodetic
+    or projected CRS, or a compound whose vertical member is an ellipsoidal
+    height), ``'gravity'`` (a compound with a gravity-related vertical: NAVD88,
+    EGM2008, any national geoid, registered or not), ``'depth'`` (axis down —
+    refused downstream, which assumes height-up), or ``'undeclared'`` (a 2D CRS:
+    the common case for DEM headers, whose heights are ellipsoidal or
+    orthometric by convention only). The discrimination is the cli's
+    ``_compound_vertical`` recipe (verified over every EPSG vertical and
+    compound): a 'Gravity-related height' axis is authoritative; else the stem
+    'ellipsoid' anywhere in the vertical CRS or axis names marks it
+    ellipsoidal (GDAL's WKT1 round-trip renames the axis to 'Up', so the name
+    carries the test too); a vertical with neither marker is gravity-related
+    by the WKT spec's own definition."""
+    crs = pyproj.CRS.from_user_input(crs_like)
+    if crs.is_compound:                              # first: pyproj's is_vertical is True for
+        vert = next((c for c in crs.sub_crs_list if c.is_vertical), None)   # a compound too
+    elif crs.is_vertical:
+        vert = crs                                   # a standalone vertical CRS IS the member
+    else:
+        vert = None
+    if vert is None:
+        # no vertical member: only an actual height axis declares anything. Three axes
+        # alone do not (geocentric XYZ, horizontal + time) -- assess.has_vertical_axis's rule
+        dirs = {(a.direction or "").lower() for a in crs.axis_info}
+        if "up" in dirs:
+            return "ellipsoidal"
+        if "down" in dirs:
+            return "depth"
+        return "undeclared"
+    axes = " ".join(a.name or "" for a in vert.axis_info).lower()
+    if (any((a.direction or "").lower() == "down" for a in vert.axis_info)
+            or "depth" in axes or "depth" in (vert.name or "").lower()):
+        return "depth"          # the name stem too: old GDAL headers lose the direction
+    if "gravity" in axes:
+        return "gravity"
+    if "ellipsoid" in axes or "ellipsoid" in (vert.name or "").lower():
+        return "ellipsoidal"
+    return "gravity"
+
+
+def _vertical_member(crs: pyproj.CRS):
+    """The vertical CRS a compound carries, or the CRS itself when it is a bare
+    vertical CRS (the same rule :func:`vertical_kind` classifies by); None otherwise."""
+    if crs.is_compound:
+        return next((c for c in crs.sub_crs_list if c.is_vertical), None)
+    return crs if crs.is_vertical else None
+
+
+def _height_unit(crs: pyproj.CRS):
+    """Meters per unit of the up axis (None when there is no up axis)."""
+    for c in ([crs] + list(crs.sub_crs_list) if crs.is_compound else [crs]):
+        for a in c.axis_info:
+            if (a.direction or "").lower() == "up":
+                return round(a.unit_conversion_factor, 12)
+    return None
+
+
+def _horizontal_epsg(crs: pyproj.CRS):
+    """EPSG code of the 2D horizontal frame, or None (PROJ strings and unregistered
+    frames stay None: a lossy encoding is not an identification)."""
+    h = pyproj.CRS(crs.sub_crs_list[0]) if crs.is_compound else crs
+    return h.to_epsg() if len(h.axis_info) == 2 else h.to_2d().to_epsg()
+
+
+def _is_wgs84_ensemble(crs) -> bool:
+    from groundcontrol.geodesy import is_wgs84_ensemble  # local: geodesy imports nothing here
+    return is_wgs84_ensemble(crs)
+
+
+@dataclass
+class FrameComparison:
+    """Result of :func:`compare_frames`; ``problems`` lists what differs."""
+    a: str
+    b: str
+    horizontal_equal: bool
+    same_grid: bool
+    datum_a: str
+    datum_b: str
+    ensemble_vs_realization: bool
+    vertical_a: str
+    vertical_b: str
+    vertical_conflict: bool
+    epoch_a: float | None = None
+    epoch_b: float | None = None
+    epoch_equal: bool | None = None
+    problems: list[str] = field(default_factory=list)
+
+    def describe(self) -> str:
+        bits = []
+        if "horizontal" in self.problems:
+            bits.append(f"horizontal frames differ ({self.datum_a!r} vs {self.datum_b!r}"
+                        + (", same grid" if self.same_grid else ", different grids") + ")")
+        if self.ensemble_vs_realization:
+            bits.append("one side is the WGS 84 ensemble (~2 m ambiguity) and the other a "
+                        "specific realization: PROJ would pick a null operation")
+        if "vertical" in self.problems:
+            bits.append(f"vertical datums conflict ({self.vertical_a} vs {self.vertical_b})")
+        if "epoch" in self.problems:
+            bits.append(f"coordinate epochs differ ({self.epoch_a} vs {self.epoch_b})")
+        return "; ".join(bits) or "same frame"
+
+
+def compare_frames(a, b, *, epoch_a=None, epoch_b=None) -> FrameComparison:
+    """Compare two CRSs (plus optional coordinate epochs) as reference frames.
+
+    Reports, without raising: whether the horizontal 2D frames are equal
+    (``pyproj`` equality on the horizontal member), whether they address the
+    same map grid regardless of datum (:func:`grid_signature`), whether exactly
+    one side is the WGS 84 ensemble against a specific realization (the case
+    PROJ resolves with a 2 m-accuracy null operation), what each side declares
+    about heights (:func:`vertical_kind`) and whether those conflict (both
+    declared and different; an ``'undeclared'`` side never conflicts — a 2D
+    DEM header cannot be checked, only trusted), and whether the epochs differ
+    (``epoch_equal`` is None when either epoch is None). ``problems`` holds the
+    keys ``'horizontal'``, ``'vertical'``, ``'epoch'`` that differ.
+    """
+    ca, cb = pyproj.CRS.from_user_input(a), pyproj.CRS.from_user_input(b)
+    ha, hb = horizontal_2d(ca), horizontal_2d(cb)
+    da = (ha.datum.name if ha.datum is not None else "") or ""
+    db = (hb.datum.name if hb.datum is not None else "") or ""
+    # pyproj equality is encoding-sensitive for geographic CRSs (a WKT1_ESRI .prj of
+    # EPSG:6318 is not .equals EPSG:6318); an authority match of the horizontal member is
+    # the same frame. Identified BEFORE the 2D cast: to_2d() of an unregistered-encoding
+    # CRS returns it unidentified (to_epsg None) even when it is already 2D.
+    horizontal_equal = ha.equals(hb) or (_horizontal_epsg(ca) is not None
+                                         and _horizontal_epsg(ca) == _horizontal_epsg(cb))
+    ens_a, ens_b = _is_wgs84_ensemble(ha), _is_wgs84_ensemble(hb)
+    ensemble_vs_realization = (ens_a != ens_b) and not horizontal_equal
+    va, vb = vertical_kind(ca), vertical_kind(cb)
+    if va == "undeclared" or vb == "undeclared":
+        vertical_conflict = False
+    elif va != vb:
+        vertical_conflict = True
+    elif va in ("gravity", "depth"):
+        # compound member or a standalone vertical CRS alike (PR #35 review, pass 3)
+        sa, sb = _vertical_member(ca), _vertical_member(cb)
+        vertical_conflict = not sa.equals(sb)      # NAVD88 vs NGVD29; MSL depth vs LAT depth
+    elif va == "ellipsoidal":
+        # same kind, but a height axis in feet against one in meters is still a conflict
+        vertical_conflict = _height_unit(ca) != _height_unit(cb)
+    else:
+        vertical_conflict = False
+    def _known(e):
+        return e is not None and np.isfinite(float(e))
+    epoch_equal = None
+    if _known(epoch_a) and _known(epoch_b):
+        epoch_equal = bool(abs(float(epoch_a) - float(epoch_b)) < 1e-6)
+    problems = []
+    if not horizontal_equal:
+        problems.append("horizontal")
+    if vertical_conflict:
+        problems.append("vertical")
+    if epoch_equal is False:
+        problems.append("epoch")
+    return FrameComparison(ca.name, cb.name, horizontal_equal, grid_signature(ca) == grid_signature(cb),
+                           da, db, ensemble_vs_realization, va, vb, vertical_conflict,
+                           float(epoch_a) if _known(epoch_a) else None,
+                           float(epoch_b) if _known(epoch_b) else None, epoch_equal, problems)
+
+
+def assert_same_frame(a, b, *, epoch_a=None, epoch_b=None, allow=(),
+                      what: str = "inputs") -> FrameComparison:
+    """Refuse two inputs that are not the same frame, loudly.
+
+    Every problem :func:`compare_frames` reports raises ``ValueError`` unless
+    its key is in ``allow`` (``'horizontal'``, ``'vertical'``, ``'epoch'``), in
+    which case it is logged at WARNING and the comparison is returned for the
+    caller to record. There is no blanket escape: a caller that accepts a
+    datum difference says so by name, and its record says so too.
+    """
+    cmp = compare_frames(a, b, epoch_a=epoch_a, epoch_b=epoch_b)
+    allowed = set(allow)
+    bad = [k for k in cmp.problems if k not in allowed]
+    if bad:
+        raise ValueError(f"{what} are not the same frame: {cmp.describe()} "
+                         f"(a={cmp.a!r}, b={cmp.b!r}). Transform one side first, or pass "
+                         f"allow={sorted(bad)!r} to accept it on the record.")
+    if cmp.problems:
+        logger.warning("%s accepted with allow=%s: %s", what, sorted(cmp.problems), cmp.describe())
+    return cmp
 
 
 def land_horizontal(gdf, target: str = "EPSG:6318", datum_col: str = "horizontal_crs"):
@@ -553,6 +830,214 @@ def _apply_enu_displacement(lon, lat, h, d_e, d_n, d_u, a, e2):
     return lon + dlon, lat + dlat, h + d_u
 
 
+# ---------------------------------------------------------------------------
+# Projected GRID frame <-> true local ENU
+# ---------------------------------------------------------------------------
+# A displacement, gradient or azimuth measured on a projected raster (UTM, Albers,
+# ...) is expressed along the GRID axes, which differ from true east/north by the
+# meridian convergence (up to ~3 deg in a UTM zone, ~14 deg in CONUS Albers), by
+# the scale factor (+/-4e-4 in UTM), by shear in non-conformal projections, and by
+# the height of the point above the ellipsoid. The exact local map is the
+# projection Jacobian combined with the ellipsoid radii of curvature:
+#
+#     d_grid = A @ [e, n],   A = J @ diag(1 / ((N + h) cos phi), 1 / (M + h))
+#
+# with J = [[dx/dlam, dx/dphi], [dy/dlam, dy/dphi]] in grid units per radian, taken
+# from PROJ's proj_factors (central differences, step 1e-5 rad; pyproj returns the
+# partials on the unit-semi-major-axis ellipsoid in meters, hence the factor a, and
+# ignores the CRS's linear unit, hence the division by meters-per-unit: US survey
+# and international feet work like meters). Vectors map with A, gradients with A^-T
+# (dz is invariant: g_grid . d_grid == g_true . d_true).
+
+
+#: axis-direction pairs PROJ's factors describe directly: easting/northing in either
+#: declared order, or a polar stereographic grid (both axes "north" for EPSG:3031, both
+#: "south" for EPSG:3413). get_factors ignores +axis= flips, so a west- or south-
+#: oriented grid (Transverse Mercator South Orientated, Krovak, Cassini with south/west
+#: axes) would come back sign-flipped with no error: refused.
+_GRID_AXIS_DIRECTIONS = ({"east", "north"}, {"north"}, {"south"})
+
+#: polar cap (deg) where grid_jacobian refuses: PROJ's get_factors differences with a
+#: 1e-5 rad (~63 m) stencil, so A is garbage until the point is well clear of the pole
+#: (measured on EPSG:3031: relative error 5e1 at 1 m, 0.06 at 60 m, 3e-8 at 100 m)
+_POLE_EXCLUSION_DEG = 2e-3
+
+
+def _horizontal_projected(crs_like) -> pyproj.CRS:
+    """The projected horizontal component of ``crs_like`` (compound or 3D allowed),
+    refusing grids whose local map PROJ's factors do not describe."""
+    crs = pyproj.CRS(crs_like)
+    if crs.is_compound:
+        crs = next((c for c in crs.sub_crs_list if c.is_projected), None)
+    if crs is None or not crs.is_projected:
+        raise ValueError(f"grid<->ENU needs a projected CRS, got {pyproj.CRS(crs_like).name!r}")
+    dirs = {(a.direction or "").lower() for a in crs.axis_info[:2]}
+    if dirs not in _GRID_AXIS_DIRECTIONS:
+        raise ValueError(
+            f"grid<->ENU does not support the axis directions "
+            f"{[a.direction for a in crs.axis_info[:2]]} of {crs.name!r} (PROJ's projection "
+            "factors ignore west/south orientation); use an east/north variant of the grid")
+    method = (crs.coordinate_operation.method_name if crs.coordinate_operation else "") or ""
+    if crs.ellipsoid.inverse_flattening:
+        # +R_A / +R_V / +R_g style: the projection runs on an authalic/other sphere while
+        # the datum ellipsoid is not one (EPSG:9311 and any proj-string CRS carrying the
+        # token); the factors are per that sphere, not per a. The method name alone misses
+        # the proj-string cases, hence the token test too.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")           # to_proj4 is lossy; only the token matters
+            proj4 = crs.to_proj4() or ""
+        if "spherical" in method.lower() or re.search(r"\+R_", proj4):
+            raise ValueError(
+                f"grid<->ENU does not support {method!r} on the non-spherical ellipsoid "
+                f"{crs.ellipsoid.name!r} ({crs.name!r}): PROJ's factors are per the "
+                "projection sphere, not the datum ellipsoid")
+    return crs
+
+
+def grid_jacobian(crs_like, lon, lat, h=0.0):
+    """Local map ``A`` (shape ``(..., 2, 2)``) from a true ENU ground displacement to grid units.
+
+    ``d_grid = A @ [d_e, d_n]`` for a METRIC displacement (a length on the
+    ground, as from an ECEF or pc_align translation) at geodetic ``(lon, lat)``
+    (Greenwich degrees, in the projection's OWN geodetic datum -- no datum shift
+    is applied; a non-Greenwich prime meridian is handled) and ellipsoidal height
+    ``h`` (m; ``h=0`` means on the ellipsoid -- at 4 km the default is off by
+    -6e-4, more than UTM's own scale factor, so pass the real height). ``dx, dy``
+    are always PROJ easting, northing, whatever axis order the CRS declares.
+    Exact for any projection to the precision of PROJ's numerical derivatives
+    (~1e-9 relative) within the projection's domain and more than ~200 m from
+    a pole (refused closer; no warning outside the USEFUL area: UTM far from
+    its zone is still a valid, exact map). Refused: grids with west- or
+    south-oriented axes and spherical projection methods on a non-spherical
+    datum (PROJ's factors do not describe them). For a conformal
+    projection ``A = k * [[cos g, -sin g], [sin g, cos g]]``, with ``k`` the scale
+    factor and ``g`` the meridian convergence (grid north measured clockwise from
+    true north), so ``az_true = az_grid + g``.
+
+    ``A`` is in grid units per ground meter: the CRS's own linear unit (meters,
+    US survey feet, international feet, ...), read from its axis definitions.
+    """
+    crs = _horizontal_projected(crs_like)
+    per_unit = {ax.unit_conversion_factor for ax in crs.axis_info[:2]}
+    if len(per_unit) != 1:
+        raise ValueError(f"grid<->ENU needs one linear unit on both grid axes, got "
+                         f"{[ax.unit_name for ax in crs.axis_info[:2]]} in {crs.name!r}")
+    m_per_unit = per_unit.pop()
+    lon, lat, h = np.broadcast_arrays(*(np.asarray(v, dtype=float) for v in (lon, lat, h)))
+    if np.any(np.abs(lat) > 90.0 - _POLE_EXCLUSION_DEG):
+        raise ValueError(
+            f"grid<->ENU is undefined at the pole and PROJ's ~63 m difference stencil "
+            f"straddles it within ~{_POLE_EXCLUSION_DEG * 111.2e3:.0f} m (east/north have no "
+            "direction there; a polar stereographic grid origin is exactly that point): "
+            f"mask |lat| > {90 - _POLE_EXCLUSION_DEG} first")
+    # get_factors wants longitude in degrees from the CRS's OWN prime meridian (Paris for
+    # EPSG:27572 and the other NTF-based grids: 2.337 deg, a ~1.7 deg convergence error if
+    # ignored); lon here is Greenwich degrees, as everywhere in this module
+    pm = crs.geodetic_crs.prime_meridian
+    lon_pm = lon - np.degrees(pm.longitude * pm.unit_conversion_factor)
+    f = pyproj.Proj(crs).get_factors(lon_pm, lat, radians=False, errcheck=True)
+    a, e2 = _ellipsoid_params(crs.geodetic_crs)
+    J = (a / m_per_unit) * np.stack([np.stack([np.asarray(f.dx_dlam), np.asarray(f.dx_dphi)], -1),
+                      np.stack([np.asarray(f.dy_dlam), np.asarray(f.dy_dphi)], -1)], -2)
+    phi = np.radians(lat)
+    w = np.sqrt(1.0 - e2 * np.sin(phi) ** 2)
+    m = a * (1.0 - e2) / w ** 3                     # meridian radius of curvature
+    n = a / w                                       # prime-vertical radius of curvature
+    J[..., :, 0] /= ((n + h) * np.cos(phi))[..., None]
+    J[..., :, 1] /= (m + h)[..., None]
+    # errcheck only catches PROJ hard failures; a point PROJ cannot project returns HUGE_VAL.
+    # A NaN input propagates (caller's own mask); a finite point with no finite map is an error.
+    finite_in = np.isfinite(lon) & np.isfinite(lat) & np.isfinite(h)
+    bad = ~np.isfinite(J).all(axis=(-2, -1)) & finite_in
+    if np.any(bad):
+        i = np.argwhere(bad)[0]
+        raise ValueError(f"{crs.name!r} has no finite local map at lon={lon[tuple(i)]}, "
+                         f"lat={lat[tuple(i)]} (outside the projection's domain)")
+    J[~finite_in] = np.nan                           # PROJ returns inf for a NaN input
+    return J
+
+
+def _mat2_apply(A, u, v):
+    return A[..., 0, 0] * u + A[..., 0, 1] * v, A[..., 1, 0] * u + A[..., 1, 1] * v
+
+
+def _mat2_inv(A):
+    det = A[..., 0, 0] * A[..., 1, 1] - A[..., 0, 1] * A[..., 1, 0]
+    out = np.empty_like(A)
+    out[..., 0, 0], out[..., 1, 1] = A[..., 1, 1] / det, A[..., 0, 0] / det
+    out[..., 0, 1], out[..., 1, 0] = -A[..., 0, 1] / det, -A[..., 1, 0] / det
+    return out
+
+
+def _mat2_t(A):
+    return np.swapaxes(A, -1, -2)
+
+
+def grid_to_enu_vector(dx, dy, crs_like, lon, lat, h=0.0):
+    """Grid displacement ``(dx, dy)`` (grid units along the grid axes) -> true ground
+    ``(d_e, d_n)`` (m)."""
+    A_inv = _mat2_inv(grid_jacobian(crs_like, lon, lat, h))
+    return _mat2_apply(A_inv, np.asarray(dx, float), np.asarray(dy, float))
+
+
+def enu_to_grid_vector(d_e, d_n, crs_like, lon, lat, h=0.0):
+    """True ground displacement ``(d_e, d_n)`` (m) -> grid ``(dx, dy)`` (grid units).
+    Inverse of :func:`grid_to_enu_vector`."""
+    A = grid_jacobian(crs_like, lon, lat, h)
+    return _mat2_apply(A, np.asarray(d_e, float), np.asarray(d_n, float))
+
+
+def grid_to_enu_gradient(gx, gy, crs_like, lon, lat, h=0.0):
+    """Surface gradient on the grid ``(dz/dx, dz/dy)`` -> true ``(dz/de, dz/dn)``.
+
+    Gradients are covectors: they map with ``A^T`` (the inverse-transpose of the
+    vector map), so ``dz`` for any displacement is the same in both frames. The
+    height unit passes through unchanged: z per grid unit in, z per ground meter
+    out (a slope is dimensionless only when z is in meters).
+    """
+    A_t = _mat2_t(grid_jacobian(crs_like, lon, lat, h))
+    return _mat2_apply(A_t, np.asarray(gx, float), np.asarray(gy, float))
+
+
+def enu_to_grid_gradient(ge, gn, crs_like, lon, lat, h=0.0):
+    """True gradient ``(dz/de, dz/dn)`` -> grid ``(dz/dx, dz/dy)``.
+    Inverse of :func:`grid_to_enu_gradient`."""
+    A_inv_t = _mat2_t(_mat2_inv(grid_jacobian(crs_like, lon, lat, h)))
+    return _mat2_apply(A_inv_t, np.asarray(ge, float), np.asarray(gn, float))
+
+
+def grid_to_true_azimuth(az_grid, crs_like, lon, lat, h=0.0):
+    """Azimuth of a DIRECTION from grid north (deg, clockwise) -> from true north (deg, [0, 360)).
+
+    Maps the unit direction vector, so it is exact for non-conformal projections
+    too; for a conformal one it reduces to ``az_grid + meridian_convergence``.
+    Use this for track headings and displacement directions. A slope ASPECT is
+    the direction of a gradient, not of a displacement: convert the gradient
+    with :func:`grid_to_enu_gradient` and take ``atan2`` of the result (the two
+    agree for conformal projections).
+    """
+    t = np.radians(np.asarray(az_grid, float))
+    e, n = grid_to_enu_vector(np.sin(t), np.cos(t), crs_like, lon, lat, h)
+    return np.degrees(np.arctan2(e, n)) % 360.0
+
+
+def grid_convergence(crs_like, lon, lat, h=0.0):
+    """Meridian convergence (deg): the true azimuth of grid north, signed, in (-180, 180].
+
+    Positive where grid north lies clockwise of true north (east of a
+    transverse Mercator central meridian in the northern hemisphere), zero on
+    the central meridian. Defined as the true azimuth of the direction grid +y
+    maps to (what a step along grid north does on the ground), the convention of
+    the function this replaces downstream. Equals PROJ's ``meridian_convergence``
+    for conformal projections; for a non-conformal one (Albers) PROJ reports the
+    grid angle of the true-north direction instead, a different angle by the
+    shear (~0.04 deg in CONUS Albers), and the grid +x direction is NOT this
+    angle plus 90 deg. Use :func:`grid_to_true_azimuth` for other directions.
+    """
+    az = grid_to_true_azimuth(0.0, crs_like, lon, lat, h)
+    return -((-az + 180.0) % 360.0 - 180.0)
+
+
 class EulerPoleModel:
     """Rigid-plate ENU velocities from an Euler pole (a concrete PMM fallback).
 
@@ -649,7 +1134,8 @@ ITRF2020_ORB_MM_PER_YR: tuple[float, float, float] = (0.37, 0.35, 0.74)
 
 #: PB2002 (Bird 2003) two-letter plate codes -> the ITRF2020-PMM plates that
 #: model them. Points on any other PB2002 plate (e.g. JF Juan de Fuca, CO
-#: Cocos) get NaN velocity, so propagate_epoch leaves them un-moved and
+#: Cocos) get NaN velocity: propagate_epoch raises for them by default
+#: (on_no_velocity='raise') and, under 'warn', leaves them un-moved and
 #: surfaces the epoch_residual_m bound instead of inventing motion.
 _PB2002_TO_ITRF: dict[str, str] = {
     "AF": "NUBI", "AM": "AMUR", "AN": "ANTA", "AR": "ARAB", "AU": "AUST",
@@ -718,7 +1204,8 @@ class ITRF2020PMM:
     each point to a plate via the bundled PB2002 boundaries
     (:func:`assign_plate`) — needed where an AOI straddles a boundary (San
     Francisco: NOAM/PCFC across the San Andreas). Points on plates the PMM
-    does not model get NaN velocity, so :func:`propagate_epoch` leaves them
+    does not model get NaN velocity, which :func:`propagate_epoch` refuses by
+    default (``on_no_velocity='raise'``); under ``'warn'`` it leaves them
     un-moved and surfaces the ``epoch_residual_m`` bound.
 
     ``apply_orb=True`` (default, per the ITRF advisory) adds the origin-rate
@@ -890,7 +1377,7 @@ def _harvest_step_epochs(gdf, step_epochs):
 def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "height",
                     coord_epoch_col: str = "coord_epoch",
                     vel_cols=("vel_e", "vel_n", "vel_u"), plate_model=None,
-                    on_nan_epoch: str = "raise",
+                    on_nan_epoch: str = "raise", on_no_velocity: str = "raise",
                     step_epochs="raw", on_step_crossing: str = "skip",
                     residual_rate_m_per_yr: float = PLATE_MOTION_RATE_BOUND,
                     qc_frame_epoch: bool = True,
@@ -910,9 +1397,14 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
        for GNSS;
     2. **plate-motion model** ``plate_model`` (a :class:`PlateMotionModel`, e.g.
        :class:`EulerPoleModel`) for rows lacking per-point velocities;
-    3. **none** — the row is left at its own epoch and its ``velocity·Δt`` bound
-       is surfaced (WARNING log + ``gdf.attrs['epoch_propagation']`` report +
-       the per-row ``epoch_residual_m`` column).
+    3. **none** — ``on_no_velocity='raise'`` (default): a row that WOULD move
+       (finite, nonzero Δt) but has no usable velocity raises, naming the count
+       and the ``velocity·Δt`` bound it would carry. ``'warn'``: the row is left
+       at its own epoch and the bound is surfaced (WARNING log +
+       ``gdf.attrs['epoch_propagation']`` report + the per-row
+       ``epoch_residual_m`` column) — the pre-v0.3 behavior, which a delivery
+       pipeline then transformed with everyone else at the target epoch, 0.15-
+       0.2 m wrong per point at 2024, because nothing read the report.
 
     Parameters
     ----------
@@ -926,6 +1418,16 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
     on_nan_epoch : ``'raise'`` (default) — a row with a usable velocity but NaN
         ``coord_epoch`` raises (a NaN Δt would propagate to NaN coordinates);
         ``'skip'`` leaves it un-propagated with a warning (§8 test 9 policy flag).
+    on_no_velocity : ``'raise'`` (default) or ``'warn'`` for rows with a nonzero
+        Δt and no velocity from any tier (see tier 3 above), in a DYNAMIC frame.
+        Rows with zero or NaN Δt never trip it. In a plate-fixed frame
+        (NAD83(2011), ...) plate motion is ~zero by construction, so a row
+        without a velocity needs no propagation and does not trip it either
+        (it still carries the ITRF-rate ``epoch_residual_m`` bound and the
+        warning, as before) — unless ``allow_static_frame=True``, which asserts
+        the velocities express real intra-frame motion, so a row lacking one is
+        un-modeled motion again. Step-blocked rows are tier 1 rows and are
+        governed by ``on_step_crossing``.
     residual_rate_m_per_yr : reporting-only rate for the un-propagated
         ``velocity·Δt`` bound (see :data:`PLATE_MOTION_RATE_BOUND`).
     step_epochs : evidence for the earthquake-step guard. ``"raw"``
@@ -1075,6 +1577,26 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
             model_label[filled] = "plate"
 
     movable = np.isfinite(ve) & np.isfinite(vn) & np.isfinite(vu)
+
+    if on_no_velocity not in ("raise", "warn"):
+        raise ValueError(f"on_no_velocity must be 'raise' or 'warn', got {on_no_velocity!r}")
+    # a plate-fixed frame has ~zero plate motion by construction: a row without a
+    # velocity there needs no propagation (the ITRF-rate bound the report records for
+    # it is a pre-existing overstatement, left as is). allow_static_frame=True asserts
+    # the velocities express real intra-frame motion (subsidence), so a row lacking
+    # one there IS un-modeled motion and the guard applies again.
+    no_vel_mover = (~movable & np.isfinite(dt) & (np.abs(dt) > 1e-6)
+                    & (not (static_frame and not allow_static_frame)))
+    if no_vel_mover.any() and on_no_velocity == "raise":
+        bound = np.abs(dt[no_vel_mover]).max() * float(residual_rate_m_per_yr)
+        raise ValueError(
+            f"{int(no_vel_mover.sum())} of {n} row(s) have a nonzero Δt (up to "
+            f"{np.abs(dt[no_vel_mover]).max():.2f} yr) and no usable velocity from any tier "
+            f"(per-point {vel_cols}, plate_model={getattr(plate_model, 'name', plate_model)!r}); "
+            f"leaving them at their own epoch would carry up to {bound:.3f} m of un-modeled "
+            "motion into whatever is transformed next. Fill velocities "
+            "(groundcontrol.velocity.fill_velocities), pass a plate_model, drop the rows, or "
+            "pass on_no_velocity='warn' to keep them at their epoch with epoch_residual_m set.")
 
     nan_epoch = movable & ~np.isfinite(ce)
     if nan_epoch.any():

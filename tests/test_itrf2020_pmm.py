@@ -123,15 +123,18 @@ def test_san_andreas_straddle_resolves_two_plates():
     assert 0.03 < rel < 0.06  # published PA-NA relative motion ~4.6-5 cm/yr
 
 
-def test_off_model_plate_is_noop_with_residual_bound():
+def test_off_model_plate_raises_by_default_and_warn_keeps_the_bound():
     """Juan de Fuca: PB2002 assigns JF, which the ITRF2020 PMM does not model
-    -> NaN velocity -> propagate_epoch no-op + epoch_residual_m bound."""
+    -> NaN velocity -> propagate_epoch refuses (on_no_velocity='raise'); under
+    'warn' the row is a no-op carrying the epoch_residual_m bound."""
     assert assign_plate([-127.5], [46.0])[0] is None
     g = gpd.GeoDataFrame(
         {"height": [0.0], "coord_epoch": [2015.0]},
         geometry=[Point(-127.5, 46.0)], crs="EPSG:9989")
+    with pytest.raises(ValueError, match="no usable velocity from any tier"):
+        propagate_epoch(g, target_epoch=2025.0, plate_model=ITRF2020PMM(None))
     with pytest.warns(UserWarning, match="velocity"):
-        out = propagate_epoch(g, target_epoch=2025.0, plate_model=ITRF2020PMM(None))
+        out = propagate_epoch(g, target_epoch=2025.0, plate_model=ITRF2020PMM(None), on_no_velocity="warn")
     rep = out.attrs["epoch_propagation"]
     assert rep["models"] == {"per_point": 0, "plate": 0, "none": 1,
                                  "step_blocked": 0}

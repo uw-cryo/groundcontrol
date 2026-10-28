@@ -145,7 +145,7 @@ def test_cli_embedded_still_refuses_3d_ellipsoidal_ensemble(tmp_path):
 # H4 — per-row vertical guard for 3D (non-compound) sources; NA refused
 # ---------------------------------------------------------------------------
 
-UTM12_3D = pyproj.CRS.from_epsg(32612).to_3d()  # ellipsoidal target, no grids
+UTM12_3D = pyproj.CRS.from_epsg(6341).to_3d()  # NAD83(2011) ellipsoidal target, no grids
 
 
 def _ctl(vertical_values, crs="EPSG:6319"):

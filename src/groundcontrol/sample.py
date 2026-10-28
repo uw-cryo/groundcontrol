@@ -163,9 +163,11 @@ def _check_crs(gdf, da: xr.DataArray, check_crs: bool,
             f"{raster_crs!r}. Set both (e.g. r.rio.write_crs(...)) or pass check_crs=False "
             "(expert use) to override."
         )
-    if not _horizontal_2d(gdf.crs).equals(_horizontal_2d(raster_crs)):
+    # horizontal agreement is the canonical comparison's (authority-equivalent encodings
+    # such as a WKT1_ESRI .prj of EPSG:6318 are the same frame; PR #35 review, pass 3)
+    if not compare_frames(gdf.crs, raster_crs).horizontal_equal:
         if (declared_crs is not None
-                and _horizontal_2d(gdf.crs).equals(_horizontal_2d(declared_crs))
+                and compare_frames(gdf.crs, declared_crs).horizontal_equal
                 and _grid_signature(declared_crs) == _grid_signature(raster_crs)):
             logger.warning(
                 "sampling under the declared frame %r; the raster header "
@@ -186,7 +188,7 @@ def _check_crs(gdf, da: xr.DataArray, check_crs: bool,
     # but only a declaration OF THIS RASTER counts: same grid as the header, same horizontal
     # frame as the points (the mismatch branch above checks the same two things)
     if declared_crs is not None and not (
-            horizontal_2d(declared_crs).equals(horizontal_2d(gdf.crs))
+            compare_frames(declared_crs, gdf.crs).horizontal_equal
             and grid_signature(declared_crs) == grid_signature(raster_crs)):
         raise ValueError(
             f"declared_crs {pyproj.CRS.from_user_input(declared_crs).name!r} does not describe "

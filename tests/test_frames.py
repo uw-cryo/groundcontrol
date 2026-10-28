@@ -73,6 +73,16 @@ def test_standalone_vertical_crs_is_classified_as_its_own_member():
     assert vertical_kind("EPSG:5715") == "depth"
 
 
+def test_standalone_vertical_crs_are_compared_as_members():
+    # Copilot on PR #35 pass 3: bare verticals were classified but never compared
+    assert compare_frames("EPSG:5703", "EPSG:7968").vertical_conflict is True     # NAVD88 vs NGVD29
+    assert compare_frames("EPSG:5703", "EPSG:6360").vertical_conflict is True     # NAVD88 m vs ftUS
+    assert compare_frames("EPSG:5703", "EPSG:5703").vertical_conflict is False
+    assert compare_frames("EPSG:5703", "EPSG:6340+5703").vertical_conflict is False
+    assert compare_frames("EPSG:5703", "EPSG:6340+7968").vertical_conflict is True
+    assert compare_frames("EPSG:5715", "EPSG:5612").vertical_conflict is True     # two depths
+
+
 def _feet_height_3d():
     """NAD83(2011) / UTM 11N with an ellipsoidal height axis in US survey feet."""
     w = pyproj.CRS("EPSG:6340").to_3d().to_wkt()

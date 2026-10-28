@@ -452,6 +452,19 @@ def test_declared_crs_must_describe_this_raster_and_frame():
     assert out["sampled"].iloc[0] == pytest.approx(_exp(2.3, 5.4))
 
 
+def test_authority_equivalent_encoding_is_the_same_frame():
+    # Copilot on PR #35 pass 3: the sampler used raw .equals, refusing a WKT1_ESRI .prj of the
+    # raster's own geographic CRS that compare_frames calls equal
+    import pyproj
+    esri = pyproj.CRS("EPSG:6318").to_wkt(version="WKT1_ESRI")
+    assert not pyproj.CRS(esri).equals(pyproj.CRS("EPSG:6318"))        # the premise
+    pts = _points([(2.3, 5.4)], crs=esri)
+    out = sample_raster(pts, _da("EPSG:6318"))
+    assert out["sampled"].iloc[0] == pytest.approx(_exp(2.3, 5.4))
+    out = sample_raster(pts, _da("EPSG:6318"), declared_crs="EPSG:6318")
+    assert out["sampled"].iloc[0] == pytest.approx(_exp(2.3, 5.4))
+
+
 def test_bad_height_kind_rejected(north_up_tif):
     with pytest.raises(ValueError, match="height_kind"):
         sample_raster(_points([(2.3, 5.4)]), north_up_tif, height_kind="orthometric")

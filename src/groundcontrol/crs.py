@@ -482,6 +482,14 @@ def vertical_kind(crs_like) -> str:
     return "gravity"
 
 
+def _vertical_member(crs: pyproj.CRS):
+    """The vertical CRS a compound carries, or the CRS itself when it is a bare
+    vertical CRS (the same rule :func:`vertical_kind` classifies by); None otherwise."""
+    if crs.is_compound:
+        return next((c for c in crs.sub_crs_list if c.is_vertical), None)
+    return crs if crs.is_vertical else None
+
+
 def _height_unit(crs: pyproj.CRS):
     """Meters per unit of the up axis (None when there is no up axis)."""
     for c in ([crs] + list(crs.sub_crs_list) if crs.is_compound else [crs]):
@@ -567,9 +575,9 @@ def compare_frames(a, b, *, epoch_a=None, epoch_b=None) -> FrameComparison:
         vertical_conflict = False
     elif va != vb:
         vertical_conflict = True
-    elif va in ("gravity", "depth") and ca.is_compound and cb.is_compound:
-        sa = next(c for c in ca.sub_crs_list if c.is_vertical)
-        sb = next(c for c in cb.sub_crs_list if c.is_vertical)
+    elif va in ("gravity", "depth"):
+        # compound member or a standalone vertical CRS alike (PR #35 review, pass 3)
+        sa, sb = _vertical_member(ca), _vertical_member(cb)
         vertical_conflict = not sa.equals(sb)      # NAVD88 vs NGVD29; MSL depth vs LAT depth
     elif va == "ellipsoidal":
         # same kind, but a height axis in feet against one in meters is still a conflict

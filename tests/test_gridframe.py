@@ -48,7 +48,8 @@ def _greenwich_longlat(crs):
     """Greenwich-degree geographic CRS on crs's own ellipsoid (the oracles' input frame; PROJ
     applies the prime-meridian shift inside the transformer, so EPSG:27572's Paris base works)."""
     ell = crs.ellipsoid
-    return pyproj.CRS.from_proj4(f"+proj=longlat +a={ell.semi_major_metre} +rf={ell.inverse_flattening} +type=crs")
+    shape = f"+rf={ell.inverse_flattening}" if ell.inverse_flattening else f"+b={ell.semi_major_metre}"
+    return pyproj.CRS.from_proj4(f"+proj=longlat +a={ell.semi_major_metre} {shape} +type=crs")
 
 
 def _geod_jacobian(crs, lon, lat, d=1.0):
@@ -211,6 +212,32 @@ def test_northing_first_axis_order_is_still_easting_northing():
     # NZTM declares (northing, easting); dx is still PROJ easting
     A = grid_jacobian("EPSG:2193", 172.0, -43.5)
     assert A[0, 0] > 0.99 and A[1, 1] > 0.99
+
+
+@pytest.mark.parametrize("code", ["EPSG:2046", "EPSG:5513", "EPSG:8044"])
+def test_west_or_south_oriented_axes_refused(code):
+    # TM South Orientated (Hartebeesthoek94 Lo15), Krovak, Cassini-Soldner with south/west axes:
+    # get_factors ignores the orientation and would return a sign-flipped A
+    with pytest.raises(ValueError, match="axis directions"):
+        grid_jacobian(code, 20.0, -30.0 if code == "EPSG:2046" else 50.0)
+
+
+def test_spherical_method_on_ellipsoid_refused_sphere_datum_allowed():
+    with pytest.raises(ValueError, match="sphere"):
+        grid_jacobian("EPSG:9311", -100.0, 45.0)        # laea +R_A on Clarke 1866
+    with pytest.raises(ValueError, match="sphere"):   # no EPSG instance; proj-string only
+        grid_jacobian("+proj=eqc +R_A +ellps=WGS84 +type=crs", -100.0, 45.0)
+    crs = pyproj.CRS("EPSG:3410")                      # EASE-Grid: the datum IS the sphere
+    np.testing.assert_allclose(grid_jacobian(crs, -100.0, 45.0), _geod_jacobian(crs, -100.0, 45.0), atol=1e-8)
+
+
+def test_near_pole_refused_until_stencil_clear():
+    # 3031 cell centers 1 m and 100 m from the pole give A00 = 53.6 and 0.8424 (truth 0.842)
+    for lat in (-89.99999, -89.999, -89.9985):
+        with pytest.raises(ValueError, match="pole"):
+            grid_jacobian("EPSG:3031", 30.0, lat)
+    crs = pyproj.CRS("EPSG:3031")
+    np.testing.assert_allclose(grid_jacobian(crs, 30.0, -89.99), _geod_jacobian(crs, 30.0, -89.99), atol=1e-7)
 
 
 def test_geographic_crs_raises():

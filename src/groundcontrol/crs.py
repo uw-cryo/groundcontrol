@@ -18,6 +18,8 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 import pandas as pd
+import re
+
 import pyproj
 from pyproj.transformer import TransformerGroup
 
@@ -581,13 +583,47 @@ def _apply_enu_displacement(lon, lat, h, d_e, d_n, d_u, a, e2):
 # (dz is invariant: g_grid . d_grid == g_true . d_true).
 
 
+#: axis-direction pairs PROJ's factors describe directly: easting/northing in either
+#: declared order, or a polar stereographic grid (both axes "north" for EPSG:3031, both
+#: "south" for EPSG:3413). get_factors ignores +axis= flips, so a west- or south-
+#: oriented grid (Transverse Mercator South Orientated, Krovak, Cassini with south/west
+#: axes) would come back sign-flipped with no error: refused.
+_GRID_AXIS_DIRECTIONS = ({"east", "north"}, {"north"}, {"south"})
+
+#: polar cap (deg) where grid_jacobian refuses: PROJ's get_factors differences with a
+#: 1e-5 rad (~63 m) stencil, so A is garbage until the point is well clear of the pole
+#: (measured on EPSG:3031: relative error 5e1 at 1 m, 0.06 at 60 m, 3e-8 at 100 m)
+_POLE_EXCLUSION_DEG = 2e-3
+
+
 def _horizontal_projected(crs_like) -> pyproj.CRS:
-    """The projected horizontal component of ``crs_like`` (compound or 3D allowed)."""
+    """The projected horizontal component of ``crs_like`` (compound or 3D allowed),
+    refusing grids whose local map PROJ's factors do not describe."""
     crs = pyproj.CRS(crs_like)
     if crs.is_compound:
         crs = next((c for c in crs.sub_crs_list if c.is_projected), None)
     if crs is None or not crs.is_projected:
         raise ValueError(f"grid<->ENU needs a projected CRS, got {pyproj.CRS(crs_like).name!r}")
+    dirs = {(a.direction or "").lower() for a in crs.axis_info[:2]}
+    if dirs not in _GRID_AXIS_DIRECTIONS:
+        raise ValueError(
+            f"grid<->ENU does not support the axis directions "
+            f"{[a.direction for a in crs.axis_info[:2]]} of {crs.name!r} (PROJ's projection "
+            "factors ignore west/south orientation); use an east/north variant of the grid")
+    method = (crs.coordinate_operation.method_name if crs.coordinate_operation else "") or ""
+    if crs.ellipsoid.inverse_flattening:
+        # +R_A / +R_V / +R_g style: the projection runs on an authalic/other sphere while
+        # the datum ellipsoid is not one (EPSG:9311 and any proj-string CRS carrying the
+        # token); the factors are per that sphere, not per a. The method name alone misses
+        # the proj-string cases, hence the token test too.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")           # to_proj4 is lossy; only the token matters
+            proj4 = crs.to_proj4() or ""
+        if "spherical" in method.lower() or re.search(r"\+R_", proj4):
+            raise ValueError(
+                f"grid<->ENU does not support {method!r} on the non-spherical ellipsoid "
+                f"{crs.ellipsoid.name!r} ({crs.name!r}): PROJ's factors are per the "
+                "projection sphere, not the datum ellipsoid")
     return crs
 
 
@@ -602,8 +638,11 @@ def grid_jacobian(crs_like, lon, lat, h=0.0):
     -6e-4, more than UTM's own scale factor, so pass the real height). ``dx, dy``
     are always PROJ easting, northing, whatever axis order the CRS declares.
     Exact for any projection to the precision of PROJ's numerical derivatives
-    (~1e-9 relative) within the projection's domain (no warning outside the
-    USEFUL area: UTM far from its zone is still a valid, exact map); for a conformal
+    (~1e-9 relative) within the projection's domain and more than ~200 m from
+    a pole (refused closer; no warning outside the USEFUL area: UTM far from
+    its zone is still a valid, exact map). Refused: grids with west- or
+    south-oriented axes and spherical projection methods on a non-spherical
+    datum (PROJ's factors do not describe them). For a conformal
     projection ``A = k * [[cos g, -sin g], [sin g, cos g]]``, with ``k`` the scale
     factor and ``g`` the meridian convergence (grid north measured clockwise from
     true north), so ``az_true = az_grid + g``.
@@ -618,9 +657,12 @@ def grid_jacobian(crs_like, lon, lat, h=0.0):
                          f"{[ax.unit_name for ax in crs.axis_info[:2]]} in {crs.name!r}")
     m_per_unit = per_unit.pop()
     lon, lat, h = np.broadcast_arrays(*(np.asarray(v, dtype=float) for v in (lon, lat, h)))
-    if np.any(np.abs(lat) >= 90.0 - 1e-9):
-        raise ValueError("grid<->ENU is undefined at the pole (east/north have no direction "
-                         "there); a polar stereographic grid origin is exactly that point")
+    if np.any(np.abs(lat) > 90.0 - _POLE_EXCLUSION_DEG):
+        raise ValueError(
+            f"grid<->ENU is undefined at the pole and PROJ's ~63 m difference stencil "
+            f"straddles it within ~{_POLE_EXCLUSION_DEG * 111.2e3:.0f} m (east/north have no "
+            "direction there; a polar stereographic grid origin is exactly that point): "
+            f"mask |lat| > {90 - _POLE_EXCLUSION_DEG} first")
     # get_factors wants longitude in degrees from the CRS's OWN prime meridian (Paris for
     # EPSG:27572 and the other NTF-based grids: 2.337 deg, a ~1.7 deg convergence error if
     # ignored); lon here is Greenwich degrees, as everywhere in this module

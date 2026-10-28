@@ -25,13 +25,17 @@ products with inherent geolocation uncertainty and for pre/post co-registration
 comparisons — see :func:`sample_raster`.
 
 Resampling rule (every repo that measures from a DEM): point samples are
-native-resolution windowed reads of the source file — never an overview level,
-a decimated ``out_shape`` read, or a COG/pyramid (half-cell lattice shifts;
-``gauss`` overviews move content +0.5 source px per cascade level). Any
-geometry-bearing resample of a DEM (co-registration input, dh map) is
-``gdalwarp -r average -ovr NONE`` from full resolution; ``nearest`` only for
-classified rasters (measured on a 0.5 m DTM resampled to 2 m: nearest planted a
-(-0.25, +0.25) m shift, gauss overviews at x4 (-0.75, +0.75) m, average 0). A
+native-resolution windowed reads of the source file — never an overview level
+or a decimated ``out_shape`` read. Overviews are a half-cell lattice away from
+the source and their content depends on how they were built: ``nearest``
+(gdaladdo's default) and ``mode`` shift content half an input pixel per level
+toward E and S, ``gauss`` the same amounts toward W and N, cumulative with the
+pyramid (measured on a 0.5 m DTM: ±0.25 m at x2, ±0.75 m at x4); only
+``average`` and ``cubic`` overviews are shift-free, and a file does not say
+which it carries. Any geometry-bearing resample of a DEM (co-registration
+input, dh map) is ``gdalwarp -r average -ovr NONE`` from full resolution;
+``nearest`` only for classified rasters (which plants the same half-pixel
+shift: ±0.25 m for 0.5 m -> 2 m) and never through their overviews either. A
 planted-shift test goes through the same read path as the data. Overview or
 averaged reads are confined to footprint masks (``aoi``) and display (``plot``);
 nothing here reads them.

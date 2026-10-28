@@ -34,9 +34,12 @@ pyramid (measured on a 0.5 m DTM: ±0.25 m at x2, ±0.75 m at x4); only
 ``average`` and ``cubic`` overviews are shift-free, and a file does not say
 which it carries. Any geometry-bearing resample of a DEM (co-registration
 input, dh map) is ``gdalwarp -r average -ovr NONE`` from full resolution;
-``nearest`` only for classified rasters (which plants the same half-pixel
-shift: ±0.25 m for 0.5 m -> 2 m) and never through their overviews either. A
-planted-shift test goes through the same read path as the data. Overview or
+``nearest`` only for classified rasters, and then via ``gdalwarp`` at an ODD
+integer ratio (shift-free on classes); at an even ratio ``near`` shifts half a
+source pixel toward W and N and ``mode`` toward E and S, and ``gdaladdo -r
+nearest`` shifts (ratio-1)/2 source pixels at odd ratios too, so never through
+overviews either. A planted-shift test goes through the same read path as the
+data. Overview or
 averaged reads are confined to footprint masks (``aoi``) and display (``plot``);
 nothing here reads them.
 """
@@ -55,6 +58,7 @@ import xarray as xr
 from rasterio.windows import Window
 
 from groundcontrol.accuracy import med_nmad
+from groundcontrol.crs import compare_frames, grid_signature, horizontal_2d, vertical_kind
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -85,48 +89,64 @@ def _squeeze_band(da: xr.DataArray) -> xr.DataArray:
     return da
 
 
-def _horizontal_2d(crs) -> pyproj.CRS:
-    """Horizontal 2D component of a CRS (compound -> horizontal member; 3D -> 2D)."""
-    crs = pyproj.CRS.from_user_input(crs)
-    if crs.is_compound:
-        crs = pyproj.CRS(crs.sub_crs_list[0])
-    return crs.to_2d()
+# the frame-identity helpers live in crs (one definition for every consumer);
+# the private names stay importable for existing callers (assess, tests)
+_horizontal_2d = horizontal_2d
+_grid_signature = grid_signature
 
 
-def _grid_signature(crs):
-    """The map GRID a CRS describes, datum-blind: projection method +
-    parameters for a projected CRS, a marker for a plain geographic
-    graticule. Two CRSs with equal signatures address the same pixels —
-    the reinterpretation test behind ``declared_crs``."""
-    h = _horizontal_2d(crs)
-    # prime meridian and axis units are part of the GRID, not the datum:
-    # EPSG:4326 vs EPSG:4807 (Paris PM, grads) or a metre vs US-foot
-    # variant of one projection address different pixels and must never
-    # compare equal (audit: the declared_crs escape accepted a 2.337 deg
-    # PM shift, ~170 km)
-    pm = round(h.prime_meridian.longitude, 9) if h.prime_meridian else 0.0
-    units = tuple(round(a.unit_conversion_factor, 12) for a in h.axis_info)
-    if h.is_projected and h.coordinate_operation is not None:
-        co = h.coordinate_operation
-        return (co.method_name,
-                tuple(sorted((p.name, round(p.value, 9))
-                             for p in co.params
-                             if isinstance(p.value, (int, float)))),
-                pm, units)
-    if h.is_geographic:
-        return ("geographic", pm, units)
-    return ("other", h.to_wkt())
+def _check_vertical(points_crs, raster_crs, height_kind, allow_vertical_mismatch) -> None:
+    """Refuse a DECLARED vertical conflict between the points' heights and the
+    raster's (a NAVD88 compound raster against ellipsoidal points is ~25 m at
+    a CONUS site and passed silently before v0.3). ``height_kind`` declares
+    the points' heights when their CRS is 2D; an undeclared side (the common
+    2D DEM header) is logged, never refused — it cannot be checked, only
+    trusted."""
+    declared = vertical_kind(points_crs)
+    if height_kind is not None and declared not in ("undeclared", height_kind):
+        raise ValueError(f"height_kind={height_kind!r} contradicts the points' own CRS, which "
+                         f"declares {declared} heights ({pyproj.CRS.from_user_input(points_crs).name!r})")
+    # a declaring points CRS wins over a (consistent) height_kind so that two gravity
+    # verticals still get compared as datums (NAVD88 vs NGVD29), not just as kinds
+    pk = declared if declared != "undeclared" else (height_kind or declared)
+    rk = vertical_kind(raster_crs)
+    if pk == "depth" or rk == "depth":
+        raise ValueError(f"depth-type vertical axis (points {pk}, raster {rk}): heights are "
+                         "assumed up everywhere downstream")
+    if pk == "undeclared" or rk == "undeclared":
+        conflict = False
+    elif pk != rk:
+        conflict = True
+    elif declared != "undeclared":
+        # both declared the same kind: two gravity verticals can still differ
+        conflict = compare_frames(points_crs, raster_crs).vertical_conflict
+    else:
+        conflict = False
+    if conflict:
+        msg = (f"points carry {pk} heights ({pyproj.CRS.from_user_input(points_crs).name!r}), "
+               f"the raster {rk} heights ({pyproj.CRS.from_user_input(raster_crs).name!r}): "
+               "refusing to difference a vertical-datum separation into dz. Transform the "
+               "heights first (groundcontrol.crs), or pass allow_vertical_mismatch=True "
+               "(expert use, logged).")
+        if not allow_vertical_mismatch:
+            raise ValueError(msg)
+        warnings.warn("sample_raster(allow_vertical_mismatch=True): " + msg, stacklevel=4)
+        logger.warning("sample_raster(allow_vertical_mismatch=True): %s", msg)
+        return
+    if pk == "undeclared" or rk == "undeclared":
+        logger.info("sample_raster: vertical datum not checked (points %s, raster %s); the "
+                    "heights are assumed to share one", pk, rk)
 
 
 def _check_crs(gdf, da: xr.DataArray, check_crs: bool,
-               declared_crs=None) -> None:
+               declared_crs=None, height_kind=None, allow_vertical_mismatch=False) -> None:
     """Fail loud on point/raster frame disagreement (never silently
     mis-sample). ``declared_crs``: the frame the caller DECLARED the
     raster to actually be in (--target-crs / --vdatum semantics — the
     header's datum is overridden, the grid is not): points matching the
     declaration are accepted when the declaration addresses the same
     grid as the header (same projection, datum-blind); a different grid
-    still refuses."""
+    still refuses. Then the vertical: see :func:`_check_vertical`."""
     raster_crs = da.rio.crs
     if not check_crs:
         msg = (
@@ -153,6 +173,7 @@ def _check_crs(gdf, da: xr.DataArray, check_crs: bool,
                 "--target-crs/--vdatum contract), not a transform",
                 pyproj.CRS.from_user_input(declared_crs).name,
                 pyproj.CRS.from_user_input(raster_crs).name)
+            _check_vertical(gdf.crs, declared_crs, height_kind, allow_vertical_mismatch)
             return
         raise ValueError(
             "points and raster are in different CRSs — refusing to silently mis-sample. "
@@ -161,6 +182,9 @@ def _check_crs(gdf, da: xr.DataArray, check_crs: bool,
             "Transform the points into the raster's CRS first (see groundcontrol.crs), "
             "or pass check_crs=False (expert use) to override."
         )
+    # the declaration overrides the header's vertical too (--vdatum: "the heights ARE NAVD88")
+    _check_vertical(gdf.crs, declared_crs if declared_crs is not None else raster_crs,
+                    height_kind, allow_vertical_mismatch)
 
 
 def _ascending(arr: np.ndarray, xc: np.ndarray, yc: np.ndarray):
@@ -337,7 +361,8 @@ def _sample_in_memory(da: xr.DataArray, xs_pt, ys_pt, method: str, radius=None):
 
 def sample_raster(gdf, r, col: str = "height", method: str = "linear", diff: bool = False,
                   block: int = 4096, check_crs: bool = True, radius=None,
-                  declared_crs=None):
+                  declared_crs=None, height_kind: str | None = None,
+                  allow_vertical_mismatch: bool = False):
     """Sample raster ``r`` at the points of ``gdf``; return a copy with new column(s).
 
     Parameters
@@ -364,6 +389,14 @@ def sample_raster(gdf, r, col: str = "height", method: str = "linear", diff: boo
     check_crs : bool
         Require point/raster CRS agreement (default). ``False`` skips the
         check with a loud warning — expert use only.
+    height_kind : {'ellipsoidal', 'gravity'}, optional
+        What the points' heights are when their CRS does not say (a 2D
+        ``gdf.crs``); a 3D or compound ``gdf.crs`` declares it already. Checked
+        against the raster's vertical (``declared_crs`` when given, else the
+        header): a declared conflict (NAVD88 raster, ellipsoidal points) refuses;
+        an undeclared side (the usual 2D DEM header) is logged and trusted.
+    allow_vertical_mismatch : bool
+        Accept a declared vertical conflict with a loud warning — expert use.
     radius : float, optional
         Neighborhood sampling radius in raster CRS units (meters for projected
         CRSs). Instead of interpolating at the exact point, gather every pixel
@@ -415,7 +448,10 @@ def sample_raster(gdf, r, col: str = "height", method: str = "linear", diff: boo
             "higher-order methods need a larger tile halo and seam validation)"
         )
     da = _squeeze_band(_open_dataarray(r))
-    _check_crs(gdf, da, check_crs, declared_crs=declared_crs)
+    if height_kind is not None and height_kind not in ("ellipsoidal", "gravity"):
+        raise ValueError(f"height_kind must be 'ellipsoidal' or 'gravity', got {height_kind!r}")
+    _check_crs(gdf, da, check_crs, declared_crs=declared_crs, height_kind=height_kind,
+               allow_vertical_mismatch=allow_vertical_mismatch)
     src_fn = da.encoding.get("source")
     name = da.name or (Path(src_fn).stem if src_fn else "sampled")
 

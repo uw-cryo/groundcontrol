@@ -155,7 +155,7 @@ def test_coord_epoch_advanced_and_transform_id_chained():
 def test_no_velocity_no_model_is_noop_and_surfaces_bound():
     g = _gdf(coord_epoch=2015.0)  # all vel NaN
     with pytest.warns(UserWarning, match="velocity"):
-        out = propagate_epoch(g, target_epoch=2025.0)
+        out = propagate_epoch(g, target_epoch=2025.0, on_no_velocity="warn")
     # coordinates and coord_epoch untouched
     assert out.geometry.x.iloc[0] == -115.1 and out.geometry.y.iloc[0] == 36.1
     assert out["coord_epoch"].iloc[0] == 2015.0
@@ -269,7 +269,7 @@ def test_target_epoch_must_be_finite():
 def test_partial_velocity_warns_and_is_treated_as_none():
     g = _gdf(ve=0.02, vn=np.nan, vu=np.nan, coord_epoch=2015.0)
     with pytest.warns(UserWarning, match="partial"):
-        out = propagate_epoch(g, target_epoch=2025.0)
+        out = propagate_epoch(g, target_epoch=2025.0, on_no_velocity="warn")
     assert out.attrs["epoch_propagation"]["n_propagated"] == 0
 
 
@@ -335,7 +335,7 @@ def test_epoch_residual_column_survives_parquet_roundtrip(tmp_path):
 
     g = _gdf(coord_epoch=2015.0)  # no velocity -> no-op with a 1.6 m bound
     with pytest.warns(UserWarning, match="velocity"):
-        out = propagate_epoch(g, target_epoch=2025.0)
+        out = propagate_epoch(g, target_epoch=2025.0, on_no_velocity="warn")
     assert out["epoch_residual_m"].iloc[0] == pytest.approx(1.6)
     path = io.write(out, tmp_path / "pts.parquet")
     back = gpd.read_parquet(path)
@@ -386,7 +386,7 @@ def test_static_frame_noop_rows_fine_without_flag():
     """No velocities -> nothing moves -> the static-frame guard stays quiet."""
     g = _gdf(coord_epoch=2010.0, crs="EPSG:6318")
     with pytest.warns(UserWarning):
-        out = propagate_epoch(g, target_epoch=2020.0)
+        out = propagate_epoch(g, target_epoch=2020.0, on_no_velocity="warn")
     assert out.attrs["epoch_propagation"]["n_propagated"] == 0
 
 
@@ -459,12 +459,12 @@ def test_per_row_report_capped_but_column_complete(monkeypatch):
         geometry=[Point(-115.1 + 0.001 * i, 36.1) for i in range(n)], crs="EPSG:7912")
 
     with pytest.warns(UserWarning, match="velocity"):
-        big = propagate_epoch(g, target_epoch=2025.0)          # under the cap: list present
+        big = propagate_epoch(g, target_epoch=2025.0, on_no_velocity="warn")          # under the cap: list present
     assert len(big.attrs["epoch_propagation"]["residual_bound_m"]) == n
 
     monkeypatch.setattr(C, "PER_ROW_PROVENANCE_MAX", 10)
     with pytest.warns(UserWarning, match="velocity"):
-        out = propagate_epoch(g, target_epoch=2025.0)
+        out = propagate_epoch(g, target_epoch=2025.0, on_no_velocity="warn")
     rep = out.attrs["epoch_propagation"]
     assert rep["residual_bound_m"] is None                      # dropped from attrs...
     assert len(out["epoch_residual_m"]) == n                    # ...but complete as a column
@@ -629,3 +629,71 @@ def test_step_guard_mapping_evidence_and_transform_id():
         == "land:identity:EPSG:9000+prop:noop[step]"
     assert out.loc[out["id"] == "ST01", "transform_id"].iloc[0] \
         == "land:identity:EPSG:9000+prop:per_point->2022.27"
+
+
+# ---------------------------------------------------------------------------
+# on_no_velocity: a mover with no velocity from any tier raises by default
+# ---------------------------------------------------------------------------
+def _novel_gdf(dt_rows):
+    import geopandas as gpd
+    n = len(dt_rows)
+    return gpd.GeoDataFrame({"height": [100.0] * n, "coord_epoch": [2025.0 - d for d in dt_rows],
+                             "vel_e": [np.nan] * n, "vel_n": [np.nan] * n, "vel_u": [np.nan] * n},
+                            geometry=gpd.points_from_xy([-115.1] * n, [36.1] * n), crs="EPSG:7912")
+
+
+def test_no_velocity_mover_raises_by_default_with_count_and_bound():
+    g = _novel_gdf([14.5, 0.0, 3.0])
+    with pytest.raises(ValueError, match=r"2 of 3 row\(s\) have a nonzero Δt \(up to 14.50 yr\)"):
+        propagate_epoch(g, target_epoch=2025.0)
+    with pytest.raises(ValueError, match="on_no_velocity='warn'"):
+        propagate_epoch(g, target_epoch=2025.0)
+
+
+def test_no_velocity_zero_dt_rows_are_noops_not_errors():
+    g = _novel_gdf([0.0, 0.0])
+    out = propagate_epoch(g, target_epoch=2025.0)
+    assert (out["epoch_residual_m"] == 0.0).all()
+
+
+def test_no_velocity_warn_keeps_the_pre_v03_behavior():
+    g = _novel_gdf([14.5])
+    with pytest.warns(UserWarning, match="left at their own epoch"):
+        out = propagate_epoch(g, target_epoch=2025.0, on_no_velocity="warn")
+    from groundcontrol.crs import PLATE_MOTION_RATE_BOUND
+    assert out["epoch_residual_m"].iloc[0] == pytest.approx(14.5 * PLATE_MOTION_RATE_BOUND)
+    assert out.attrs["epoch_propagation"]["models"]["none"] == 1
+
+
+def test_no_velocity_plate_model_fill_does_not_raise():
+    from groundcontrol.crs import EulerPoleModel
+    g = _novel_gdf([14.5])
+    pole = EulerPoleModel(-4.0, -90.0, 0.2, name="synthetic")
+    out = propagate_epoch(g, target_epoch=2025.0, plate_model=pole)
+    assert out.attrs["epoch_propagation"]["models"]["plate"] == 1
+
+
+def test_no_velocity_in_plate_fixed_frame_is_a_noop_not_an_error():
+    # NAD83(2011): plate motion ~0 by construction; a row with no velocity needs no propagation
+    g = _novel_gdf([15.0]).set_crs("EPSG:6318", allow_override=True)
+    out = propagate_epoch(g, target_epoch=2025.0)
+    assert out.geometry.x.iloc[0] == -115.1
+
+
+def test_no_velocity_in_plate_fixed_frame_raises_again_under_allow_static_frame():
+    # allow_static_frame=True says the velocities are real intra-frame motion (subsidence):
+    # a row without one is then un-modeled motion, not a no-op
+    g = _novel_gdf([15.0, 15.0]).set_crs("EPSG:6318", allow_override=True)
+    g.loc[g.index[0], ["vel_e", "vel_n", "vel_u"]] = [0.0, 0.0, -0.02]
+    with pytest.raises(ValueError, match=r"1 of 2 row\(s\) have a nonzero Δt"):
+        propagate_epoch(g, target_epoch=2025.0, allow_static_frame=True)
+
+
+def test_no_velocity_dt_tolerance_absorbs_decyear_noise():
+    g = _novel_gdf([1e-9])
+    propagate_epoch(g, target_epoch=2025.0)            # no raise: Δt is noise, not motion
+
+
+def test_on_no_velocity_validated():
+    with pytest.raises(ValueError, match="on_no_velocity"):
+        propagate_epoch(_novel_gdf([1.0]), target_epoch=2025.0, on_no_velocity="ignore")

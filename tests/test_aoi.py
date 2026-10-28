@@ -15,6 +15,10 @@ from shapely.geometry import box
 from groundcontrol import aoi as aoi_mod
 
 CRS = "EPSG:32612"
+# the synthetic control cache frame: a REALIZED datum on the same grid. The
+# WGS 84 ensemble CRS above is fine for the raster header (which the cli refuses
+# or overrides anyway) but transform_control now refuses ensemble -> NAD83(2011)
+SRC_CRS = "EPSG:6341"
 
 
 def _dem(path, *, crs=CRS, nodata=-9999.0, hole=True, n=40, wkt=None):
@@ -141,7 +145,7 @@ def _compound_wkt():
     return pyproj.CRS("EPSG:6341+5703").to_wkt()
 
 
-def _control_on(dem, n=4):
+def _control_on(dem, n=4, crs=CRS):
     """Landed control inside the DEM's valid data (heights on the plane)."""
     with rasterio.open(dem) as src:
         b = src.bounds
@@ -151,7 +155,7 @@ def _control_on(dem, n=4):
         {"source": ["3dep", "3dep", "opus", "ngs"][:n],
          "point_type": ["NVA", "VVA", "gnss_campaign", "monument"][:n],
          "height": np.full(n, 400.0)},
-        geometry=gpd.points_from_xy(xs, ys), crs=CRS)
+        geometry=gpd.points_from_xy(xs, ys), crs=crs)
 
 
 def test_assess_byod_needs_only_the_product(tmp_path, monkeypatch):
@@ -164,10 +168,10 @@ def test_assess_byod_needs_only_the_product(tmp_path, monkeypatch):
 
     def fake_fetch_control(aoi, sources=(), **kw):
         seen["aoi"] = aoi
-        return _control_on(dem), {s: {"n_rows": 4, "error": None} for s in sources}
+        return _control_on(dem, crs=SRC_CRS), {s: {"n_rows": 4, "error": None} for s in sources}
 
     monkeypatch.setattr("groundcontrol.sources.fetch_control", fake_fetch_control)
-    rc = assess_dem_main(["--product", f"DSM={dem}", "--source-crs", CRS,
+    rc = assess_dem_main(["--product", f"DSM={dem}", "--source-crs", SRC_CRS,
                           "--outdir", str(tmp_path / "out")])
     assert rc == 0
     assert isinstance(seen["aoi"], gpd.GeoDataFrame)  # the footprint, not a bbox
@@ -213,10 +217,10 @@ def test_assess_explicit_aoi_raster_and_site_name_still_win(tmp_path, monkeypatc
 
     def fake_fetch_control(aoi, sources=(), **kw):
         seen["aoi"] = aoi
-        return _control_on(dem), {s: {"n_rows": 4, "error": None} for s in sources}
+        return _control_on(dem, crs=SRC_CRS), {s: {"n_rows": 4, "error": None} for s in sources}
 
     monkeypatch.setattr("groundcontrol.sources.fetch_control", fake_fetch_control)
-    rc = assess_dem_main(["--aoi", other, "--product", f"DSM={dem}", "--source-crs", CRS,
+    rc = assess_dem_main(["--aoi", other, "--product", f"DSM={dem}", "--source-crs", SRC_CRS,
                           "--site-name", "named", "--outdir", str(tmp_path / "out"),
                           "--no-figures"])
     assert rc == 0
@@ -232,7 +236,7 @@ def test_fetch_cli_accepts_raster_aoi(tmp_path, monkeypatch):
 
     def fake_fetch_control(aoi, sources=(), **kw):
         seen["aoi"] = aoi
-        return _control_on(dem), {s: {"n_rows": 4, "error": None} for s in sources}
+        return _control_on(dem, crs=SRC_CRS), {s: {"n_rows": 4, "error": None} for s in sources}
 
     monkeypatch.setattr("groundcontrol.sources.fetch_control", fake_fetch_control)
     rc = fetch_control_main(["--aoi", dem, "--sources", "ngs",
@@ -398,7 +402,7 @@ def test_assess_bbox_aoi_clips_figures_to_the_bbox(tmp_path, monkeypatch):
     from groundcontrol.cli import assess_dem_main
     dem = _dem(tmp_path / "dsm.tif", wkt=_compound_wkt(), hole=False)
     monkeypatch.setattr("groundcontrol.sources.fetch_control",
-                        lambda aoi, sources=(), **k: (_control_on(dem),
+                        lambda aoi, sources=(), **k: (_control_on(dem, crs=SRC_CRS),
                                                       {s: {"n_rows": 4, "error": None}
                                                        for s in sources}))
     seen = {}
@@ -410,7 +414,7 @@ def test_assess_bbox_aoi_clips_figures_to_the_bbox(tmp_path, monkeypatch):
 
     monkeypatch.setattr(assess_mod, "assess_products", spy)
     rc = assess_dem_main(["--aoi=-112,32.6,-111.5,33.0", "--product", f"DSM={dem}",
-                          "--source-crs", CRS, "--outdir", str(tmp_path / "out"),
+                          "--source-crs", SRC_CRS, "--outdir", str(tmp_path / "out"),
                           "--no-figures"])
     assert rc == 0
     assert isinstance(seen["aoi"], gpd.GeoDataFrame) and seen["aoi"].crs.to_epsg() == 4326

@@ -23,6 +23,18 @@ Beyond the snapshot: ``radius=`` neighborhood sampling (median/NMAD/n over all
 pixels whose cell centers fall within a radius of each point) for assessed
 products with inherent geolocation uncertainty and for pre/post co-registration
 comparisons — see :func:`sample_raster`.
+
+Resampling rule (every repo that measures from a DEM): point samples are
+native-resolution windowed reads of the source file — never an overview level,
+a decimated ``out_shape`` read, or a COG/pyramid (half-cell lattice shifts;
+``gauss`` overviews move content +0.5 source px per cascade level). Any
+geometry-bearing resample of a DEM (co-registration input, dh map) is
+``gdalwarp -r average -ovr NONE`` from full resolution; ``nearest`` only for
+classified rasters (measured on a 0.5 m DTM resampled to 2 m: nearest planted a
+(-0.25, +0.25) m shift, gauss overviews at x4 (-0.75, +0.75) m, average 0). A
+planted-shift test goes through the same read path as the data. Overview or
+averaged reads are confined to footprint masks (``aoi``) and display (``plot``);
+nothing here reads them.
 """
 
 from __future__ import annotations

@@ -69,6 +69,14 @@ __all__ = [
     "ecef_to_enu",
     "check_frame_epoch_reduced",
     "propagate_epoch",
+    # projected grid frame <-> true local ENU
+    "grid_jacobian",
+    "grid_to_enu_vector",
+    "enu_to_grid_vector",
+    "grid_to_enu_gradient",
+    "enu_to_grid_gradient",
+    "grid_to_true_azimuth",
+    "grid_convergence",
 ]
 
 
@@ -551,6 +559,174 @@ def _apply_enu_displacement(lon, lat, h, d_e, d_n, d_u, a, e2):
     dlat = np.degrees(d_n / (m + h))
     dlon = np.degrees(d_e / ((n + h) * cos_lat))
     return lon + dlon, lat + dlat, h + d_u
+
+
+# ---------------------------------------------------------------------------
+# Projected GRID frame <-> true local ENU
+# ---------------------------------------------------------------------------
+# A displacement, gradient or azimuth measured on a projected raster (UTM, Albers,
+# ...) is expressed along the GRID axes, which differ from true east/north by the
+# meridian convergence (up to ~3 deg in a UTM zone, ~14 deg in CONUS Albers), by
+# the scale factor (+/-4e-4 in UTM), by shear in non-conformal projections, and by
+# the height of the point above the ellipsoid. The exact local map is the
+# projection Jacobian combined with the ellipsoid radii of curvature:
+#
+#     d_grid = A @ [e, n],   A = J @ diag(1 / ((N + h) cos phi), 1 / (M + h))
+#
+# with J = [[dx/dlam, dx/dphi], [dy/dlam, dy/dphi]] in grid units per radian, taken
+# from PROJ's proj_factors (central differences, step 1e-5 rad; pyproj returns the
+# partials on the unit-semi-major-axis ellipsoid in meters, hence the factor a, and
+# ignores the CRS's linear unit, hence the division by meters-per-unit: US survey
+# and international feet work like meters). Vectors map with A, gradients with A^-T
+# (dz is invariant: g_grid . d_grid == g_true . d_true).
+
+
+def _horizontal_projected(crs_like) -> pyproj.CRS:
+    """The projected horizontal component of ``crs_like`` (compound or 3D allowed)."""
+    crs = pyproj.CRS(crs_like)
+    if crs.is_compound:
+        crs = next((c for c in crs.sub_crs_list if c.is_projected), None)
+    if crs is None or not crs.is_projected:
+        raise ValueError(f"grid<->ENU needs a projected CRS, got {pyproj.CRS(crs_like).name!r}")
+    return crs
+
+
+def grid_jacobian(crs_like, lon, lat, h=0.0):
+    """Local map ``A`` (shape ``(..., 2, 2)``) from a true ENU ground displacement to grid units.
+
+    ``d_grid = A @ [d_e, d_n]`` for a METRIC displacement (a length on the
+    ground, as from an ECEF or pc_align translation) at geodetic ``(lon, lat)``
+    (Greenwich degrees, in the projection's OWN geodetic datum -- no datum shift
+    is applied; a non-Greenwich prime meridian is handled) and ellipsoidal height
+    ``h`` (m; ``h=0`` means on the ellipsoid -- at 4 km the default is off by
+    -6e-4, more than UTM's own scale factor, so pass the real height). ``dx, dy``
+    are always PROJ easting, northing, whatever axis order the CRS declares.
+    Exact for any projection to the precision of PROJ's numerical derivatives
+    (~1e-9 relative) within the projection's domain (no warning outside the
+    USEFUL area: UTM far from its zone is still a valid, exact map); for a conformal
+    projection ``A = k * [[cos g, -sin g], [sin g, cos g]]``, with ``k`` the scale
+    factor and ``g`` the meridian convergence (grid north measured clockwise from
+    true north), so ``az_true = az_grid + g``.
+
+    ``A`` is in grid units per ground meter: the CRS's own linear unit (meters,
+    US survey feet, international feet, ...), read from its axis definitions.
+    """
+    crs = _horizontal_projected(crs_like)
+    per_unit = {ax.unit_conversion_factor for ax in crs.axis_info[:2]}
+    if len(per_unit) != 1:
+        raise ValueError(f"grid<->ENU needs one linear unit on both grid axes, got "
+                         f"{[ax.unit_name for ax in crs.axis_info[:2]]} in {crs.name!r}")
+    m_per_unit = per_unit.pop()
+    lon, lat, h = np.broadcast_arrays(*(np.asarray(v, dtype=float) for v in (lon, lat, h)))
+    if np.any(np.abs(lat) >= 90.0 - 1e-9):
+        raise ValueError("grid<->ENU is undefined at the pole (east/north have no direction "
+                         "there); a polar stereographic grid origin is exactly that point")
+    # get_factors wants longitude in degrees from the CRS's OWN prime meridian (Paris for
+    # EPSG:27572 and the other NTF-based grids: 2.337 deg, a ~1.7 deg convergence error if
+    # ignored); lon here is Greenwich degrees, as everywhere in this module
+    pm = crs.geodetic_crs.prime_meridian
+    lon_pm = lon - np.degrees(pm.longitude * pm.unit_conversion_factor)
+    f = pyproj.Proj(crs).get_factors(lon_pm, lat, radians=False, errcheck=True)
+    a, e2 = _ellipsoid_params(crs.geodetic_crs)
+    J = (a / m_per_unit) * np.stack([np.stack([np.asarray(f.dx_dlam), np.asarray(f.dx_dphi)], -1),
+                      np.stack([np.asarray(f.dy_dlam), np.asarray(f.dy_dphi)], -1)], -2)
+    phi = np.radians(lat)
+    w = np.sqrt(1.0 - e2 * np.sin(phi) ** 2)
+    m = a * (1.0 - e2) / w ** 3                     # meridian radius of curvature
+    n = a / w                                       # prime-vertical radius of curvature
+    J[..., :, 0] /= ((n + h) * np.cos(phi))[..., None]
+    J[..., :, 1] /= (m + h)[..., None]
+    # errcheck only catches PROJ hard failures; a point PROJ cannot project returns HUGE_VAL.
+    # A NaN input propagates (caller's own mask); a finite point with no finite map is an error.
+    finite_in = np.isfinite(lon) & np.isfinite(lat) & np.isfinite(h)
+    bad = ~np.isfinite(J).all(axis=(-2, -1)) & finite_in
+    if np.any(bad):
+        i = np.argwhere(bad)[0]
+        raise ValueError(f"{crs.name!r} has no finite local map at lon={lon[tuple(i)]}, "
+                         f"lat={lat[tuple(i)]} (outside the projection's domain)")
+    J[~finite_in] = np.nan                           # PROJ returns inf for a NaN input
+    return J
+
+
+def _mat2_apply(A, u, v):
+    return A[..., 0, 0] * u + A[..., 0, 1] * v, A[..., 1, 0] * u + A[..., 1, 1] * v
+
+
+def _mat2_inv(A):
+    det = A[..., 0, 0] * A[..., 1, 1] - A[..., 0, 1] * A[..., 1, 0]
+    out = np.empty_like(A)
+    out[..., 0, 0], out[..., 1, 1] = A[..., 1, 1] / det, A[..., 0, 0] / det
+    out[..., 0, 1], out[..., 1, 0] = -A[..., 0, 1] / det, -A[..., 1, 0] / det
+    return out
+
+
+def _mat2_t(A):
+    return np.swapaxes(A, -1, -2)
+
+
+def grid_to_enu_vector(dx, dy, crs_like, lon, lat, h=0.0):
+    """Grid displacement ``(dx, dy)`` (grid units along the grid axes) -> true ground
+    ``(d_e, d_n)`` (m)."""
+    A_inv = _mat2_inv(grid_jacobian(crs_like, lon, lat, h))
+    return _mat2_apply(A_inv, np.asarray(dx, float), np.asarray(dy, float))
+
+
+def enu_to_grid_vector(d_e, d_n, crs_like, lon, lat, h=0.0):
+    """True ground displacement ``(d_e, d_n)`` (m) -> grid ``(dx, dy)`` (grid units).
+    Inverse of :func:`grid_to_enu_vector`."""
+    A = grid_jacobian(crs_like, lon, lat, h)
+    return _mat2_apply(A, np.asarray(d_e, float), np.asarray(d_n, float))
+
+
+def grid_to_enu_gradient(gx, gy, crs_like, lon, lat, h=0.0):
+    """Surface gradient on the grid ``(dz/dx, dz/dy)`` -> true ``(dz/de, dz/dn)``.
+
+    Gradients are covectors: they map with ``A^T`` (the inverse-transpose of the
+    vector map), so ``dz`` for any displacement is the same in both frames. The
+    height unit passes through unchanged: z per grid unit in, z per ground meter
+    out (a slope is dimensionless only when z is in meters).
+    """
+    A_t = _mat2_t(grid_jacobian(crs_like, lon, lat, h))
+    return _mat2_apply(A_t, np.asarray(gx, float), np.asarray(gy, float))
+
+
+def enu_to_grid_gradient(ge, gn, crs_like, lon, lat, h=0.0):
+    """True gradient ``(dz/de, dz/dn)`` -> grid ``(dz/dx, dz/dy)``.
+    Inverse of :func:`grid_to_enu_gradient`."""
+    A_inv_t = _mat2_t(_mat2_inv(grid_jacobian(crs_like, lon, lat, h)))
+    return _mat2_apply(A_inv_t, np.asarray(ge, float), np.asarray(gn, float))
+
+
+def grid_to_true_azimuth(az_grid, crs_like, lon, lat, h=0.0):
+    """Azimuth of a DIRECTION from grid north (deg, clockwise) -> from true north (deg, [0, 360)).
+
+    Maps the unit direction vector, so it is exact for non-conformal projections
+    too; for a conformal one it reduces to ``az_grid + meridian_convergence``.
+    Use this for track headings and displacement directions. A slope ASPECT is
+    the direction of a gradient, not of a displacement: convert the gradient
+    with :func:`grid_to_enu_gradient` and take ``atan2`` of the result (the two
+    agree for conformal projections).
+    """
+    t = np.radians(np.asarray(az_grid, float))
+    e, n = grid_to_enu_vector(np.sin(t), np.cos(t), crs_like, lon, lat, h)
+    return np.degrees(np.arctan2(e, n)) % 360.0
+
+
+def grid_convergence(crs_like, lon, lat, h=0.0):
+    """Meridian convergence (deg): the true azimuth of grid north, signed, in (-180, 180].
+
+    Positive where grid north lies clockwise of true north (east of a
+    transverse Mercator central meridian in the northern hemisphere), zero on
+    the central meridian. Defined as the true azimuth of the direction grid +y
+    maps to (what a step along grid north does on the ground), the convention of
+    the function this replaces downstream. Equals PROJ's ``meridian_convergence``
+    for conformal projections; for a non-conformal one (Albers) PROJ reports the
+    grid angle of the true-north direction instead, a different angle by the
+    shear (~0.04 deg in CONUS Albers), and the grid +x direction is NOT this
+    angle plus 90 deg. Use :func:`grid_to_true_azimuth` for other directions.
+    """
+    az = grid_to_true_azimuth(0.0, crs_like, lon, lat, h)
+    return -((-az + 180.0) % 360.0 - 180.0)
 
 
 class EulerPoleModel:

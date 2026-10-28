@@ -66,6 +66,32 @@ def test_two_different_depth_datums_conflict():
     assert compare_frames(a, a).vertical_conflict is False
 
 
+def test_standalone_vertical_crs_is_classified_as_its_own_member():
+    # Copilot on PR #35 round 2: EPSG:5703 alone read as 'ellipsoidal' via its up axis
+    assert vertical_kind("EPSG:5703") == "gravity"
+    assert vertical_kind("EPSG:3855") == "gravity"
+    assert vertical_kind("EPSG:5715") == "depth"
+
+
+def _feet_height_3d():
+    """NAD83(2011) / UTM 11N with an ellipsoidal height axis in US survey feet."""
+    w = pyproj.CRS("EPSG:6340").to_3d().to_wkt()
+    old = 'AXIS["ellipsoidal height (h)",up,ORDER[3],LENGTHUNIT["metre",1,ID["EPSG",9001]]]'
+    assert w.count(old) == 1
+    return pyproj.CRS(w.replace(old, 'AXIS["ellipsoidal height (h)",up,ORDER[3],'
+                                      'LENGTHUNIT["US survey foot",0.304800609601219]]'))
+
+
+def test_ellipsoidal_heights_in_different_units_conflict():
+    # Copilot on PR #35 round 2: both 'ellipsoidal', horizontal equal, feet vs meters passed
+    ft = _feet_height_3d()
+    c = compare_frames(NAD83_UTM11_3D, ft)
+    assert c.horizontal_equal and c.vertical_a == c.vertical_b == "ellipsoidal"
+    assert c.vertical_conflict and c.problems == ["vertical"]
+    assert compare_frames(ft, ft).vertical_conflict is False
+    assert compare_frames(NAD83_UTM11_3D, "EPSG:6319").vertical_conflict is False   # both metre
+
+
 def test_vertical_kind_survives_wkt1_round_trip():
     # GDAL's WKT1 drops the 'Gravity-related height' axis name; the CRS name still says NAVD88
     wkt1 = pyproj.CRS(NAD83_UTM11_NAVD88).to_wkt(version="WKT1_GDAL")

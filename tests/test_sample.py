@@ -438,6 +438,20 @@ def test_redundant_height_kind_does_not_skip_the_gravity_datum_check():
         sample_raster(pts, _da("EPSG:6340+7968"))
 
 
+def test_declared_crs_must_describe_this_raster_and_frame():
+    # Copilot on PR #35 round 2: with matching horizontals, an unrelated declared_crs (another
+    # UTM zone, ellipsoidal) silently suppressed the NAVD88-vs-ellipsoidal conflict
+    import pyproj
+    pts = _points([(2.3, 5.4)], crs=pyproj.CRS(NAD83_UTM11).to_3d())
+    with pytest.raises(ValueError, match="does not describe this raster"):
+        sample_raster(pts, _da(NAVD88_RASTER), declared_crs=pyproj.CRS("EPSG:6339").to_3d())
+    # a declaration of THIS grid in the points' frame still works, and still checks the vertical
+    with pytest.raises(ValueError, match="ellipsoidal heights .*, the raster gravity"):
+        sample_raster(pts, _da(NAD83_UTM11), declared_crs=NAVD88_RASTER)
+    out = sample_raster(pts, _da(NAD83_UTM11), declared_crs=pyproj.CRS(NAD83_UTM11).to_3d())
+    assert out["sampled"].iloc[0] == pytest.approx(_exp(2.3, 5.4))
+
+
 def test_bad_height_kind_rejected(north_up_tif):
     with pytest.raises(ValueError, match="height_kind"):
         sample_raster(_points([(2.3, 5.4)]), north_up_tif, height_kind="orthometric")

@@ -456,7 +456,12 @@ def vertical_kind(crs_like) -> str:
     carries the test too); a vertical with neither marker is gravity-related
     by the WKT spec's own definition."""
     crs = pyproj.CRS.from_user_input(crs_like)
-    vert = next((c for c in crs.sub_crs_list if c.is_vertical), None) if crs.is_compound else None
+    if crs.is_compound:                              # first: pyproj's is_vertical is True for
+        vert = next((c for c in crs.sub_crs_list if c.is_vertical), None)   # a compound too
+    elif crs.is_vertical:
+        vert = crs                                   # a standalone vertical CRS IS the member
+    else:
+        vert = None
     if vert is None:
         # no vertical member: only an actual height axis declares anything. Three axes
         # alone do not (geocentric XYZ, horizontal + time) -- assess.has_vertical_axis's rule
@@ -475,6 +480,15 @@ def vertical_kind(crs_like) -> str:
     if "ellipsoid" in axes or "ellipsoid" in (vert.name or "").lower():
         return "ellipsoidal"
     return "gravity"
+
+
+def _height_unit(crs: pyproj.CRS):
+    """Meters per unit of the up axis (None when there is no up axis)."""
+    for c in ([crs] + list(crs.sub_crs_list) if crs.is_compound else [crs]):
+        for a in c.axis_info:
+            if (a.direction or "").lower() == "up":
+                return round(a.unit_conversion_factor, 12)
+    return None
 
 
 def _horizontal_epsg(crs: pyproj.CRS):
@@ -557,6 +571,9 @@ def compare_frames(a, b, *, epoch_a=None, epoch_b=None) -> FrameComparison:
         sa = next(c for c in ca.sub_crs_list if c.is_vertical)
         sb = next(c for c in cb.sub_crs_list if c.is_vertical)
         vertical_conflict = not sa.equals(sb)      # NAVD88 vs NGVD29; MSL depth vs LAT depth
+    elif va == "ellipsoidal":
+        # same kind, but a height axis in feet against one in meters is still a conflict
+        vertical_conflict = _height_unit(ca) != _height_unit(cb)
     else:
         vertical_conflict = False
     def _known(e):

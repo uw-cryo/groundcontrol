@@ -182,7 +182,17 @@ def _check_crs(gdf, da: xr.DataArray, check_crs: bool,
             "Transform the points into the raster's CRS first (see groundcontrol.crs), "
             "or pass check_crs=False (expert use) to override."
         )
-    # the declaration overrides the header's vertical too (--vdatum: "the heights ARE NAVD88")
+    # the declaration overrides the header's vertical too (--vdatum: "the heights ARE NAVD88"),
+    # but only a declaration OF THIS RASTER counts: same grid as the header, same horizontal
+    # frame as the points (the mismatch branch above checks the same two things)
+    if declared_crs is not None and not (
+            horizontal_2d(declared_crs).equals(horizontal_2d(gdf.crs))
+            and grid_signature(declared_crs) == grid_signature(raster_crs)):
+        raise ValueError(
+            f"declared_crs {pyproj.CRS.from_user_input(declared_crs).name!r} does not describe "
+            f"this raster ({pyproj.CRS.from_user_input(raster_crs).name!r}) in the points' frame "
+            f"({pyproj.CRS.from_user_input(gdf.crs).name!r}): a declaration must address the "
+            "header's grid and the points' horizontal frame")
     _check_vertical(gdf.crs, declared_crs if declared_crs is not None else raster_crs,
                     height_kind, allow_vertical_mismatch)
 

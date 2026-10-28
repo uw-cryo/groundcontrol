@@ -456,22 +456,25 @@ def vertical_kind(crs_like) -> str:
     carries the test too); a vertical with neither marker is gravity-related
     by the WKT spec's own definition."""
     crs = pyproj.CRS.from_user_input(crs_like)
-    if crs.is_compound:
-        vert = next((c for c in crs.sub_crs_list if c.is_vertical), None)
-        if vert is None:
-            return "ellipsoidal" if len(crs.axis_info) == 3 else "undeclared"
-        axes = " ".join(a.name or "" for a in vert.axis_info).lower()
-        if (any((a.direction or "").lower() == "down" for a in vert.axis_info)
-                or "depth" in axes or "depth" in (vert.name or "").lower()):
-            return "depth"          # the name stem too: old GDAL headers lose the direction
-        if "gravity" in axes:
-            return "gravity"
-        if "ellipsoid" in axes or "ellipsoid" in (vert.name or "").lower():
+    vert = next((c for c in crs.sub_crs_list if c.is_vertical), None) if crs.is_compound else None
+    if vert is None:
+        # no vertical member: only an actual height axis declares anything. Three axes
+        # alone do not (geocentric XYZ, horizontal + time) -- assess.has_vertical_axis's rule
+        dirs = {(a.direction or "").lower() for a in crs.axis_info}
+        if "up" in dirs:
             return "ellipsoidal"
+        if "down" in dirs:
+            return "depth"
+        return "undeclared"
+    axes = " ".join(a.name or "" for a in vert.axis_info).lower()
+    if (any((a.direction or "").lower() == "down" for a in vert.axis_info)
+            or "depth" in axes or "depth" in (vert.name or "").lower()):
+        return "depth"          # the name stem too: old GDAL headers lose the direction
+    if "gravity" in axes:
         return "gravity"
-    if len(crs.axis_info) == 3:
+    if "ellipsoid" in axes or "ellipsoid" in (vert.name or "").lower():
         return "ellipsoidal"
-    return "undeclared"
+    return "gravity"
 
 
 def _horizontal_epsg(crs: pyproj.CRS):
@@ -550,10 +553,10 @@ def compare_frames(a, b, *, epoch_a=None, epoch_b=None) -> FrameComparison:
         vertical_conflict = False
     elif va != vb:
         vertical_conflict = True
-    elif va == "gravity":
+    elif va in ("gravity", "depth") and ca.is_compound and cb.is_compound:
         sa = next(c for c in ca.sub_crs_list if c.is_vertical)
         sb = next(c for c in cb.sub_crs_list if c.is_vertical)
-        vertical_conflict = not sa.equals(sb)      # NAVD88 vs EGM2008 vs NGVD29 ...
+        vertical_conflict = not sa.equals(sb)      # NAVD88 vs NGVD29; MSL depth vs LAT depth
     else:
         vertical_conflict = False
     def _known(e):

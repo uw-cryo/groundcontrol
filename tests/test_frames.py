@@ -48,6 +48,24 @@ def test_vertical_kind(crs, kind):
     assert vertical_kind(crs) == kind
 
 
+def test_three_axes_without_a_height_axis_are_undeclared():
+    # Copilot on PR #35: axis COUNT is not a height declaration
+    assert vertical_kind("EPSG:4978") == "undeclared"                 # geocentric XYZ
+    time_wkt = ('COMPOUNDCRS["UTM12N + time",' + pyproj.CRS("EPSG:32612").to_wkt() +
+                ',TIMECRS["Time",TDATUM["epoch",CALENDAR["proleptic Gregorian"],'
+                'TIMEORIGIN[2000-01-01]],CS[TemporalDateTime,1],AXIS["time (T)",future]]]')
+    assert vertical_kind(time_wkt) == "undeclared"                    # horizontal + time
+    assert compare_frames(time_wkt, "EPSG:32612+5703").vertical_conflict is False
+
+
+def test_two_different_depth_datums_conflict():
+    # Copilot on PR #35: depth kinds were falling through as "same frame"
+    a, b = "EPSG:6340+5612", "EPSG:6340+5715"                       # Baltic 1977 depth vs MSL depth
+    assert vertical_kind(a) == vertical_kind(b) == "depth"
+    assert compare_frames(a, b).vertical_conflict is True
+    assert compare_frames(a, a).vertical_conflict is False
+
+
 def test_vertical_kind_survives_wkt1_round_trip():
     # GDAL's WKT1 drops the 'Gravity-related height' axis name; the CRS name still says NAVD88
     wkt1 = pyproj.CRS(NAD83_UTM11_NAVD88).to_wkt(version="WKT1_GDAL")

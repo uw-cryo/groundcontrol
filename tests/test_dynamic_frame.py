@@ -7,6 +7,7 @@ import pytest
 import rasterio
 from rasterio.transform import from_origin
 
+from groundcontrol import crs as gc_crs
 from groundcontrol.crs import DatasetFrame, compare_frames, dataset_frame, is_dynamic_frame
 
 G2139_UTM10_2D = pyproj.CRS.from_user_input(
@@ -64,3 +65,66 @@ def test_name_fallback_for_id_less_datums(datum_name, expected):
         pytest.skip("PROJ attached a registry id; the registry path is tested above")
     assert is_dynamic_frame(crs) is expected
     assert DatasetFrame(crs, None, "undeclared", "x.tif").dynamic is expected
+
+
+def _lost_dynamic(epsg):
+    """A geographic CRS re-parsed from WKT1_GDAL: the DYNAMIC property is gone,
+    the datum's EPSG id (AUTHORITY) survives, as in a GeoTIFF read-back."""
+    src = pyproj.CRS.from_epsg(epsg)
+    if len(src.axis_info) == 3:
+        src = src.to_2d()                       # WKT1 cannot carry geographic 3D
+    crs = pyproj.CRS.from_wkt(src.to_wkt("WKT1_GDAL"))
+    assert "DYNAMIC" not in crs.to_wkt()
+    assert (crs.datum.to_json_dict().get("id") or {}).get("code") is not None
+    return crs
+
+
+@pytest.mark.parametrize("epsg, expected", [
+    (9309, True),    # ATRF2014: dynamic in EPSG, name misses the plain regex families
+    (9475, True),    # PZ-90.11: dynamic, name has no ITRF/WGS/ETRF token at all
+    (8986, True),    # SIRGAS-CON SIR17P01: dynamic, name misses the regex
+    (10952, False),  # California SRN epoch 2025.0 (ITRF2020): STATIC despite "ITRF2020" in the name
+    (4483, False),   # Mexico ITRF92: static despite the name
+])
+def test_registry_decides_for_a_crs_object_with_an_id(epsg, expected, monkeypatch):
+    """Review HIGH: a CRS OBJECT input must reach the registry, not only a
+    string; the regex alone is wrong on these. The spy proves the path."""
+    calls = []
+    real = gc_crs._registry_dynamic_datum
+    monkeypatch.setattr(gc_crs, "_registry_dynamic_datum",
+                        lambda code: calls.append(code) or real(code))
+    crs = _lost_dynamic(epsg)
+    assert is_dynamic_frame(crs) is expected
+    assert calls, "registry was not consulted for a CRS object with a datum id"
+    assert DatasetFrame(crs, None, "undeclared", "x.tif").dynamic is expected
+
+
+def test_two_d_geotiff_reaches_the_registry(tmp_path, monkeypatch):
+    calls = []
+    real = gc_crs._registry_dynamic_datum
+    monkeypatch.setattr(gc_crs, "_registry_dynamic_datum",
+                        lambda code: calls.append(code) or real(code))
+    f = dataset_frame(_write(tmp_path / "g.tif", G2139_UTM10_2D))
+    assert f.dynamic is True and 1309 in calls
+
+
+def test_plate_fixed_gate_agrees_with_is_dynamic_frame():
+    """propagate_epoch's raise is gated by _plate_fixed_datum; it must not call
+    an ITRF frame plate-fixed just because a GeoTIFF dropped DYNAMIC."""
+    for epsg in (9000, 9755, 9309):          # ITRF2014 2D, WGS 84 (G2139) 3D->to_2d below, ATRF2014
+        crs = _lost_dynamic(epsg)
+        assert is_dynamic_frame(crs) and not gc_crs._plate_fixed_datum(crs)
+    for epsg in (6318, 4269, 10952):
+        crs = _lost_dynamic(epsg)
+        assert not is_dynamic_frame(crs) and gc_crs._plate_fixed_datum(crs)
+    assert not gc_crs._plate_fixed_datum("EPSG:4326")     # WGS 84 ensemble: ITRF-aliased by name
+
+
+def test_registry_query_failure_falls_back_to_the_name(monkeypatch, tmp_path):
+    """A proj.db that cannot be queried (foreign schema, corrupt) must not
+    raise out of is_dynamic_frame; the name decides and a warning is logged."""
+    bad = tmp_path / "proj.db"
+    bad.write_bytes(b"not a database")
+    gc_crs._registry_dynamic_datum_cached.cache_clear()
+    assert gc_crs._registry_dynamic_datum_cached(1165, str(tmp_path)) is None
+    gc_crs._registry_dynamic_datum_cached.cache_clear()

@@ -387,10 +387,9 @@ def _plate_fixed_datum(crs_obj) -> bool:
     frame or ensemble (NAD83*, ETRS89, GDA*, ...) is treated as plate-fixed
     — fail-loud rather than fabricate plate motion.
     """
-    d = pyproj.CRS(crs_obj).datum
-    tname = ((d.type_name or "") if d is not None else "").lower()
-    if "dynamic" in tname:
+    if is_dynamic_frame(crs_obj):      # DYNAMIC property, registry id, or name
         return False
+    d = pyproj.CRS.from_user_input(crs_obj).datum
     name = ((d.name or "") if d is not None else "").upper()
     if "WGS" in name or "WORLD GEODETIC" in name:
         return False
@@ -411,7 +410,9 @@ def is_dynamic_frame(crs_like) -> bool:
     epoch for a datum with an id, else the name (ITRF, IGS, IGb, ETRF,
     WGS 84 (Gnnnn)). A datum ensemble (EPSG:4326) is never dynamic.
     """
-    datum = pyproj.CRS(crs_like).datum
+    # from_user_input keeps a CRS object as is; pyproj.CRS(obj) re-parses
+    # its WKT and loses the nested datum id (PROJ omits it under a parent id)
+    datum = pyproj.CRS.from_user_input(crs_like).datum
     if datum is None:
         return False
     if "dynamic" in (datum.type_name or "").lower():
@@ -430,6 +431,7 @@ def is_dynamic_frame(crs_like) -> bool:
 _DYNAMIC_DATUM_NAME = re.compile(
     r"International Terrestrial Reference Frame|\bITRF ?\d{2,4}|\bIG[Sb] ?\d{2}\b|"
     r"European Terrestrial Reference Frame|\bETRF ?\d{2,4}|"
+    r"Australian Terrestrial Reference Frame|\bATRF ?\d{4}|"
     r"World Geodetic System 1984 \(G\d{3,4}\)|WGS ?84 ?\(G\d{3,4}\)", re.I)
 
 
@@ -441,18 +443,23 @@ def _registry_dynamic_datum(code: int):
 
 @functools.lru_cache(maxsize=None)
 def _registry_dynamic_datum_cached(code: int, data_dir: str):
-    import os
+    import pathlib
     import sqlite3
-    db = os.path.join(data_dir, "proj.db")
-    if not os.path.exists(db):
+    db = pathlib.Path(data_dir) / "proj.db"
+    if not db.exists():
         return None
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     try:
-        row = con.execute(
-            "select frame_reference_epoch from geodetic_datum where auth_name='EPSG' and code=?",
-            (code,)).fetchone()
-    finally:
-        con.close()
+        con = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)
+        try:
+            row = con.execute(
+                "select frame_reference_epoch from geodetic_datum "
+                "where auth_name='EPSG' and code=?", (code,)).fetchone()
+        finally:
+            con.close()
+    except sqlite3.Error as exc:    # foreign schema or unreadable file: fall back to the name
+        logger.warning("proj.db at %s could not be queried for datum %d (%s); deciding by name",
+                       db, code, exc)
+        return None
     if row is None:
         return None
     return row[0] is not None

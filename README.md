@@ -10,7 +10,14 @@ Fetch ground control points for an arbitrary AOI and assess DEM accuracy — wit
 > and given a DEM, sample the control, run the accuracy assessment, and produce the
 > analysis + visualization for vertical/horizontal accuracy.
 
-![control map](docs/img/casagrande_control_map.jpg)
+<p align="center">
+  <a href="docs/img/casagrande_control_map.jpg"><img src="docs/img/casagrande_control_map.jpg" width="35%" align="top" alt="Control map: five sources over the site hillshade"></a>
+  <a href="docs/img/casagrande_validation_dz_DTM.png"><img src="docs/img/casagrande_validation_dz_DTM.png" width="63%" align="top" alt="DTM validation: every control segment on one map with per-segment statistics"></a>
+</p>
+
+*Casa Grande, AZ: control from five sources over the 3DEP hillshade (left) and the DTM
+validation figure, every control segment on one map with per-segment statistics (right).
+Click either image for full resolution.*
 
 ## Status
 
@@ -214,8 +221,6 @@ sampled, stats, artifacts = assess_products(
 ```
 
 What the standard outputs look like on a real site: **[docs/gallery.md](docs/gallery.md)**.
-
-![DTM validation: every control segment on one map](docs/img/casagrande_validation_dz_DTM.png)
 
 ![MIDAS GNSS velocities around the site](docs/img/casagrande_midas_velocity.jpg)
 

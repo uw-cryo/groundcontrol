@@ -66,7 +66,9 @@ per-source status report:
   points or a datum-label difference on one grid is refused by name instead of becoming
   a co-registration "offset"; `get_transformer` refuses a WGS 84 ensemble against a
   realization (PROJ's null operation, 2 m stated accuracy) until the realization is
-  declared. **Projected grid ↔ true ENU** (`grid_jacobian`, `grid_convergence`, vector /
+  declared; `dataset_frame(path)` reads a raster's CRS and its GDAL coordinate epoch
+  together (rasterio exposes no epoch), and says whether the epoch was checked at all.
+  **Projected grid ↔ true ENU** (`grid_jacobian`, `grid_convergence`, vector /
   gradient / azimuth conversions): exact per-point map between grid axes and true
   east/north for any projection PROJ can differentiate, with the grids it cannot
   describe refused.

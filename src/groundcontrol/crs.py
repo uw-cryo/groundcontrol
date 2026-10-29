@@ -387,10 +387,17 @@ def _plate_fixed_datum(crs_obj) -> bool:
     frame or ensemble (NAD83*, ETRS89, GDA*, ...) is treated as plate-fixed
     — fail-loud rather than fabricate plate motion.
     """
-    if is_dynamic_frame(crs_obj):      # DYNAMIC property, registry id, or name
-        return False
     d = pyproj.CRS.from_user_input(crs_obj).datum
     name = ((d.name or "") if d is not None else "").upper()
+    # ETRF realizations are ITRF rotated onto the Eurasian plate: a point on
+    # the stable plate keeps its coordinates by construction, so applying
+    # ITRF-frame velocities to them fabricates plate motion. EPSG types them
+    # dynamic (frame reference epoch 1989.0); for propagation they are
+    # plate-fixed, whether the datum arrives with DYNAMIC, an id, or a name.
+    if re.search(r"EUROPEAN TERRESTRIAL REFERENCE FRAME|\bETRF ?\d{2,4}", name.replace("_", " ")):
+        return True
+    if is_dynamic_frame(crs_obj):      # DYNAMIC property, registry id, or name
+        return False
     # WGS 84 by name is ITRF-aliased; PROJ's synthesized "Unknown based on ...
     # using towgs84=..." names carry no frame identity and must not match
     if re.search(r"\bWGS ?(19)?84\b|WORLD GEODETIC", name) and not name.startswith("UNKNOWN"):
@@ -416,6 +423,8 @@ def is_dynamic_frame(crs_like) -> bool:
     # its WKT and loses the nested datum id (PROJ omits it under a parent id)
     crs = pyproj.CRS.from_user_input(crs_like)
     datum = crs.datum
+    if datum is None and crs.is_compound:      # older pyproj: no datum on a compound
+        datum = crs.sub_crs_list[0].datum
     if datum is None:
         return False
     if "dynamic" in (datum.type_name or "").lower():

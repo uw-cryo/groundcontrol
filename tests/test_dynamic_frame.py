@@ -205,3 +205,32 @@ def test_towgs84_proj_string_is_not_treated_as_wgs84():
     assert crs.datum.name.lower().startswith("unknown")
     assert gc_crs._plate_fixed_datum(crs) is True
     assert gc_crs._plate_fixed_datum("EPSG:4326") is False      # the real WGS 84 ensemble still passes
+
+
+@pytest.mark.parametrize("compound, expected", [("EPSG:9755+3855", True), ("EPSG:9000+5703", True),
+                                                ("EPSG:6340+5703", False), ("EPSG:32611+5773", False)])
+def test_compound_crs_classifies_by_its_horizontal_member(compound, expected):
+    """PR #43 bot: a compound CRS, as an object and as a WKT2 string (ids
+    dropped), classifies by the horizontal member's datum."""
+    crs = pyproj.CRS(compound)
+    assert is_dynamic_frame(crs) is expected
+    assert is_dynamic_frame(crs.to_wkt()) is expected
+    assert DatasetFrame(crs, None, "undeclared", "x.tif").dynamic is expected
+
+
+@pytest.mark.parametrize("form", ["object", "wkt2", "wkt1", "idless"])
+def test_etrf_realizations_are_plate_fixed_for_propagation(form):
+    """PR #43 bot: ETRF is ITRF rotated onto the Eurasian plate; ITRF-frame
+    velocities must not be applied to it, however the datum arrives."""
+    from groundcontrol.crs import propagate_epoch
+    base = _need(8401)                                    # ETRF2014 geographic 2D
+    crs = {"object": base, "wkt2": pyproj.CRS(base.to_wkt()),
+           "wkt1": pyproj.CRS.from_wkt(base.to_wkt("WKT1_GDAL")),
+           "idless": pyproj.CRS('GEOGCS["x",DATUM["European Terrestrial Reference Frame 2014",'
+                                'SPHEROID["GRS 1980",6378137,298.257222101]],PRIMEM["Greenwich",0],'
+                                'UNIT["degree",0.0174532925199433]]')}[form]
+    assert gc_crs._plate_fixed_datum(crs) is True
+    if crs.is_geographic:   # pyproj reports some WKT1 re-parses of ETRF2014 as projected
+        with pytest.raises(ValueError, match="plate-fixed"):
+            propagate_epoch(_points(crs, 0.02, 0.01, 0.0), target_epoch=2025.0)
+    assert gc_crs._plate_fixed_datum("EPSG:4258") is True   # the ETRS89 ensemble, as before

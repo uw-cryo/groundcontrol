@@ -281,3 +281,40 @@ def test_file_without_coordinates_parses_empty_at_shift_zero():
     assert faa._rwy_layout_shift(lines) == 0
     assert len(faa.parse({"cycle": "x", "aoi_bounds_4326": WORLD,
                           "lines": lines})) == 0
+
+
+def _blank(line, sl):
+    return line[:sl.start] + " " * (sl.stop - sl.start) + line[sl.stop:]
+
+
+def _reciprocal_only(raw, shift):
+    """Every runway's BASE-end geographic block blanked (id through the
+    displaced threshold, as the FAA blanks a block without published
+    coordinates), so only the reciprocal ends carry coordinates."""
+    base_block = slice(faa._END_ID.start, faa._END_ID.start + faa._END_OFF)
+    lines = []
+    for line in raw["lines"]:
+        if line[:3] == "RWY":
+            line = _blank(line, faa._shift(base_block, shift))
+        lines.append(line)
+    assert {len(line) for line in lines} == {1532}
+    return {**raw, "lines": lines}
+
+
+def test_reciprocal_only_runway_ends_decide_the_shift():
+    """A file whose runways publish coordinates only on the reciprocal end
+    still gets the right shift (PR #38 bot finding): the detector reads the
+    reciprocal block when the base block is blank."""
+    aug = _reciprocal_only(_raw(), 0)
+    oct_ = _reciprocal_only(_raw_oct(), 5)
+    assert faa._rwy_layout_shift(aug["lines"]) == 0
+    assert faa._rwy_layout_shift(oct_["lines"]) == 5
+    a = faa.parse(aug, ownership="all").set_index("id").sort_index()
+    b = faa.parse(oct_, ownership="all").set_index("id").sort_index()
+    full = faa.parse(_raw(), ownership="all").set_index("id")
+    raw = pd.DataFrame([json.loads(s) for s in full["raw"]], index=full.index)
+    base_ids = set(raw.index[raw["end"] == raw["rwy"].str.split("/").str[0]])
+    expected = sorted(set(full.index) - base_ids)
+    assert len(expected) > 0 and list(a.index) == list(b.index) == expected
+    assert np.allclose(a.geometry.x, b.geometry.x, atol=1e-9)
+    assert np.allclose(a.geometry.y, b.geometry.y, atol=1e-9)

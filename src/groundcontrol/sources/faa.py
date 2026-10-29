@@ -276,29 +276,32 @@ _SEC_RE = re.compile(r"^\d{4,7}\.\d{4}[NSEW]$")
 def _rwy_layout_shift(lines) -> int:
     """Column shift of the RWY layout in ``lines``.
 
-    Decided by the first runway end with published coordinates: its
-    base-end latitude must fill the 12-character field at exactly one
-    shift in :data:`_RWY_SHIFTS`. A record that fits none fails HERE, by
-    name, instead of as a ``float()`` error deep in the parse (the
-    2026-10-01 cycle read ``'200N 186762.'`` as a latitude). Files with
-    no coordinates parse to nothing at any shift, so they return 0.
+    Decided by the first runway end with published coordinates, base end
+    first, then the reciprocal end: its latitude must fill the
+    12-character field at exactly one shift in :data:`_RWY_SHIFTS`. A
+    record that fits none fails HERE, by name, instead of as a
+    ``float()`` error deep in the parse (the 2026-10-01 cycle read
+    ``'200N 186762.'`` as a latitude). Files with no coordinates parse to
+    nothing at any shift, so they return 0.
     """
     for rec in lines:
         if rec[0:3] != "RWY":
             continue
-        fields = {s: rec[_shift(_END_LAT, s)].strip() for s in _RWY_SHIFTS}
-        if not any(fields.values()):
-            continue  # runway without published coordinates
-        hits = [s for s, v in fields.items() if _SEC_RE.match(v)]
-        if len(hits) == 1:
-            return hits[0]
-        raise ValueError(
-            "NASR RWY layout not recognized: the base-end latitude field of "
-            f"record {rec[3:23].strip()!r} reads {fields} at the known column "
-            f"shifts {_RWY_SHIFTS}. The "
-            "FAA changed the fixed-width APT.txt layout again (last: the "
-            "2026-10-01 cycle, +5 columns); check the RWY layout document "
-            "and add the new shift to groundcontrol.sources.faa._RWY_SHIFTS.")
+        for end, off in (("base", 0), ("reciprocal", _END_OFF)):
+            fields = {s: rec[_shift(_END_LAT, off + s)].strip()
+                      for s in _RWY_SHIFTS}
+            if not any(fields.values()):
+                continue  # this end has no published coordinates
+            hits = [s for s, v in fields.items() if _SEC_RE.match(v)]
+            if len(hits) == 1:
+                return hits[0]
+            raise ValueError(
+                f"NASR RWY layout not recognized: the {end}-end latitude "
+                f"field of record {rec[3:23].strip()!r} reads {fields} at "
+                f"the known column shifts {_RWY_SHIFTS}. The FAA changed "
+                "the fixed-width APT.txt layout again (last: the 2026-10-01 "
+                "cycle, +5 columns); check the RWY layout document and add "
+                "the new shift to groundcontrol.sources.faa._RWY_SHIFTS.")
     return 0
 
 

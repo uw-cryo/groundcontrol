@@ -162,5 +162,39 @@ def test_propagate_epoch_gate_sees_the_datum_identity():
     pz = _lost_dynamic(9475)                          # PZ-90.11: dynamic, DYNAMIC lost
     out = propagate_epoch(_points(pz, 0.01, 0.01, 0.0), target_epoch=2025.0)
     assert out.attrs["epoch_propagation"]["n_propagated"] == 1
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="no usable velocity"):
         propagate_epoch(_points(pz), target_epoch=2025.0)   # no velocity: raise, not no-op
+
+
+@pytest.mark.parametrize("epsg, expected", [(6365, False), (10952, False), (9475, True), (9000, True)])
+def test_bound_crs_through_geoparquet_keeps_the_datum_identity(tmp_path, epsg, expected):
+    """A TOWGS84-bound CRS (GDAL-2-era sources) serialized by geopandas to
+    GeoParquet (PROJJSON) loses the nested datum id under its source CRS;
+    the source CRS id resolves it (round 3 MEDIUM)."""
+    import geopandas as gpd
+    from shapely.geometry import Point
+    wkt1 = pyproj.CRS.from_epsg(epsg).to_wkt("WKT1_GDAL")
+    if "TOWGS84" not in wkt1:   # a GDAL-2-era header: the tie sits inside DATUM after SPHEROID
+        i = wkt1.index("SPHEROID[") + len("SPHEROID[")
+        depth = 1
+        while depth:              # walk to the SPHEROID node's closing bracket (AUTHORITY nests)
+            depth += {"[": 1, "]": -1}.get(wkt1[i], 0)
+            i += 1
+        wkt1 = wkt1[:i] + ",TOWGS84[0,0,0,0,0,0,0]" + wkt1[i:]
+    bound = pyproj.CRS.from_wkt(wkt1)
+    assert bound.is_bound, wkt1
+    g = gpd.GeoDataFrame({"a": [1]}, geometry=[Point(-100.0, 20.0)], crs=bound)
+    g.to_parquet(tmp_path / "b.parquet")
+    back = gpd.read_parquet(tmp_path / "b.parquet").crs
+    assert back.is_bound and (back.datum.to_json_dict().get("id") or {}).get("code") is None
+    assert is_dynamic_frame(back) is expected
+    assert gc_crs._plate_fixed_datum(back) is (not expected)
+
+
+def test_towgs84_proj_string_is_not_treated_as_wgs84():
+    """PROJ names a +towgs84 proj-string datum 'Unknown based on ... using
+    towgs84=...'; the substring WGS must not pass the plate-fixed guard."""
+    crs = pyproj.CRS("+proj=longlat +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +no_defs")
+    assert crs.datum.name.lower().startswith("unknown")
+    assert gc_crs._plate_fixed_datum(crs) is True
+    assert gc_crs._plate_fixed_datum("EPSG:4326") is False      # the real WGS 84 ensemble still passes

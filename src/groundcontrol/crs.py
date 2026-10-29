@@ -391,7 +391,9 @@ def _plate_fixed_datum(crs_obj) -> bool:
         return False
     d = pyproj.CRS.from_user_input(crs_obj).datum
     name = ((d.name or "") if d is not None else "").upper()
-    if "WGS" in name or "WORLD GEODETIC" in name:
+    # WGS 84 by name is ITRF-aliased; PROJ's synthesized "Unknown based on ...
+    # using towgs84=..." names carry no frame identity and must not match
+    if re.search(r"\bWGS ?(19)?84\b|WORLD GEODETIC", name) and not name.startswith("UNKNOWN"):
         return False
     return True
 
@@ -425,6 +427,8 @@ def is_dynamic_frame(crs_like) -> bool:
         # a WKT2 export omits the nested datum id under the CRS's own id;
         # the CRS id (which survives) names the datum through the registry
         member = pyproj.CRS(crs.sub_crs_list[0]) if crs.is_compound else crs
+        if member.is_bound and member.source_crs is not None:
+            member = member.source_crs      # a TOWGS84-bound CRS: the id sits on its source
         auth = member.to_authority()
         if auth is not None:
             try:

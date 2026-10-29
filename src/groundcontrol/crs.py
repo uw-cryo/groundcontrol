@@ -412,7 +412,8 @@ def is_dynamic_frame(crs_like) -> bool:
     """
     # from_user_input keeps a CRS object as is; pyproj.CRS(obj) re-parses
     # its WKT and loses the nested datum id (PROJ omits it under a parent id)
-    datum = pyproj.CRS.from_user_input(crs_like).datum
+    crs = pyproj.CRS.from_user_input(crs_like)
+    datum = crs.datum
     if datum is None:
         return False
     if "dynamic" in (datum.type_name or "").lower():
@@ -420,11 +421,21 @@ def is_dynamic_frame(crs_like) -> bool:
     if "ensemble" in (datum.type_name or "").lower():
         return False
     ident = datum.to_json_dict().get("id") or {}
-    if ident.get("authority") == "EPSG" and ident.get("code") is not None:
-        known = _registry_dynamic_datum(int(ident["code"]))
+    if ident.get("code") is None:
+        # a WKT2 export omits the nested datum id under the CRS's own id;
+        # the CRS id (which survives) names the datum through the registry
+        member = pyproj.CRS(crs.sub_crs_list[0]) if crs.is_compound else crs
+        auth = member.to_authority()
+        if auth is not None:
+            try:
+                ident = (pyproj.CRS.from_authority(*auth).datum.to_json_dict().get("id") or {})
+            except pyproj.exceptions.CRSError:
+                ident = {}
+    if ident.get("code") is not None:
+        known = _registry_dynamic_datum(str(ident.get("authority") or "EPSG"), str(ident["code"]))
         if known is not None:
             return known
-    return bool(_DYNAMIC_DATUM_NAME.search(datum.name or ""))
+    return bool(_DYNAMIC_DATUM_NAME.search((datum.name or "").replace("_", " ")))
 
 
 #: datum names of dynamic frames, for a datum without a registry id
@@ -435,17 +446,17 @@ _DYNAMIC_DATUM_NAME = re.compile(
     r"World Geodetic System 1984 \(G\d{3,4}\)|WGS ?84 ?\(G\d{3,4}\)", re.I)
 
 
-def _registry_dynamic_datum(code: int):
-    """True/False from PROJ's EPSG registry (a dynamic datum carries a frame
-    reference epoch), None when the code is not in the installed proj.db."""
-    return _registry_dynamic_datum_cached(code, pyproj.datadir.get_data_dir())
+def _registry_dynamic_datum(auth: str, code: str):
+    """True/False from PROJ's registry (a dynamic datum carries a frame
+    reference epoch), None when the datum is not in the installed proj.db."""
+    return _registry_dynamic_datum_cached(auth, str(code), pyproj.datadir.get_data_dir())
 
 
 @functools.lru_cache(maxsize=None)
-def _registry_dynamic_datum_cached(code: int, data_dir: str):
+def _registry_dynamic_datum_cached(auth: str, code: str, data_dir: str):
     import pathlib
     import sqlite3
-    db = pathlib.Path(data_dir) / "proj.db"
+    db = pathlib.Path(data_dir).resolve() / "proj.db"   # as_uri needs an absolute path
     if not db.exists():
         return None
     try:
@@ -453,12 +464,12 @@ def _registry_dynamic_datum_cached(code: int, data_dir: str):
         try:
             row = con.execute(
                 "select frame_reference_epoch from geodetic_datum "
-                "where auth_name='EPSG' and code=?", (code,)).fetchone()
+                "where auth_name=? and code=?", (auth, code)).fetchone()
         finally:
             con.close()
-    except sqlite3.Error as exc:    # foreign schema or unreadable file: fall back to the name
-        logger.warning("proj.db at %s could not be queried for datum %d (%s); deciding by name",
-                       db, code, exc)
+    except (sqlite3.Error, ValueError) as exc:  # foreign schema, unreadable file, odd path
+        logger.warning("proj.db at %s could not be queried for datum %s:%s (%s); deciding by name",
+                       db, auth, code, exc)
         return None
     if row is None:
         return None
@@ -2169,7 +2180,7 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
         raise ValueError(
             "propagate_epoch needs a geographic CRS: gdf.crs is None and "
             "source_crs was not given (the ENU→geodetic step needs the ellipsoid)")
-    crs_obj = pyproj.CRS(crs_like)
+    crs_obj = pyproj.CRS.from_user_input(crs_like)   # keeps a CRS object's datum id
     if not crs_obj.is_geographic:
         raise ValueError(
             f"propagate_epoch expects geographic lon/lat coordinates; got "

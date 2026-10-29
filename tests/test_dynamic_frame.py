@@ -92,7 +92,7 @@ def test_registry_decides_for_a_crs_object_with_an_id(epsg, expected, monkeypatc
     calls = []
     real = gc_crs._registry_dynamic_datum
     monkeypatch.setattr(gc_crs, "_registry_dynamic_datum",
-                        lambda code: calls.append(code) or real(code))
+                        lambda auth, code: calls.append(int(code)) or real(auth, code))
     crs = _lost_dynamic(epsg)
     assert is_dynamic_frame(crs) is expected
     assert calls, "registry was not consulted for a CRS object with a datum id"
@@ -103,7 +103,7 @@ def test_two_d_geotiff_reaches_the_registry(tmp_path, monkeypatch):
     calls = []
     real = gc_crs._registry_dynamic_datum
     monkeypatch.setattr(gc_crs, "_registry_dynamic_datum",
-                        lambda code: calls.append(code) or real(code))
+                        lambda auth, code: calls.append(int(code)) or real(auth, code))
     f = dataset_frame(_write(tmp_path / "g.tif", G2139_UTM10_2D))
     assert f.dynamic is True and 1309 in calls
 
@@ -126,5 +126,41 @@ def test_registry_query_failure_falls_back_to_the_name(monkeypatch, tmp_path):
     bad = tmp_path / "proj.db"
     bad.write_bytes(b"not a database")
     gc_crs._registry_dynamic_datum_cached.cache_clear()
-    assert gc_crs._registry_dynamic_datum_cached(1165, str(tmp_path)) is None
+    assert gc_crs._registry_dynamic_datum_cached("EPSG", "1165", str(tmp_path)) is None
     gc_crs._registry_dynamic_datum_cached.cache_clear()
+
+
+@pytest.mark.parametrize("epsg, expected", [(6365, False), (10952, False), (4483, False),
+                                            (9000, True), (9475, True)])
+def test_wkt2_string_round_trip_resolves_the_datum_through_the_crs_id(epsg, expected):
+    """A WKT2 export omits the nested datum id under the CRS id; the CRS id
+    survives and names the datum in the registry (round 2 M1)."""
+    wkt2 = pyproj.CRS.from_epsg(epsg).to_wkt()
+    assert is_dynamic_frame(wkt2) is expected
+    assert is_dynamic_frame(pyproj.CRS.from_wkt(wkt2)) is expected
+
+
+def _points(crs, ve=np.nan, vn=np.nan, vu=np.nan):
+    import geopandas as gpd
+    import pandas as pd
+    from shapely.geometry import Point
+    data = {"height": [700.0], "coord_epoch": [2015.0], "frame_epoch": [np.nan],
+            "vel_e": [ve], "vel_n": [vn], "vel_u": [vu],
+            "transform_id": pd.array([pd.NA], dtype="string")}
+    return gpd.GeoDataFrame(data, geometry=[Point(-115.1, 36.1)], crs=crs)
+
+
+def test_propagate_epoch_gate_sees_the_datum_identity():
+    """The gate that matters is propagate_epoch's own (round 2 HIGH): a static
+    frame with ITRF in its name must still refuse velocities as plate-fixed,
+    and a dynamic frame that lost DYNAMIC must propagate or raise on no
+    velocity, never silently no-op."""
+    from groundcontrol.crs import propagate_epoch
+    mexico = pyproj.CRS.from_epsg(6365)                # Mexico ITRF2008: static
+    with pytest.raises(ValueError, match="plate-fixed"):
+        propagate_epoch(_points(mexico, 0.01, 0.01, 0.0), target_epoch=2025.0)
+    pz = _lost_dynamic(9475)                          # PZ-90.11: dynamic, DYNAMIC lost
+    out = propagate_epoch(_points(pz, 0.01, 0.01, 0.0), target_epoch=2025.0)
+    assert out.attrs["epoch_propagation"]["n_propagated"] == 1
+    with pytest.raises(ValueError):
+        propagate_epoch(_points(pz), target_epoch=2025.0)   # no velocity: raise, not no-op

@@ -41,6 +41,31 @@ def test_pair_without_any_operation_raises():
         realization_shift(LV[0], LV[1], "NAD83(CORS96)")
 
 
+@pytest.mark.parametrize("src, dst, lonlat", [
+    ("NAD83(CSRS)", "NAD83(2011)", (-123.1, 49.3)),   # WGS 84 hub Helmert: 1.3 m artifact
+    ("NAD83(1986)", "NAD83(CSRS)", (-123.1, 49.3)),   # EPSG null transform: exact zero
+    ("NAD83(PA11)", "NAD83(2011)", (-157.8, 21.3)),   # time-dependent Helmert via ITRF
+])
+def test_non_grid_best_routes_are_refused(src, dst, lonlat):
+    """Review HIGH: PROJ's best operation for these pairs is not a grid shift
+    and would return a hub artifact, an exact zero, or an epoch-dependent
+    number at an unstated epoch."""
+    with pytest.raises(NoTransformPathError, match="not a grid-based datum shift"):
+        realization_shift(lonlat[0], lonlat[1], src, dst)
+
+
+def test_non_finite_and_out_of_range_inputs_raise():
+    with pytest.raises(ValueError, match="non-finite"):
+        realization_shift([LV[0], np.nan], [LV[1], 36.0], "NAD83(HARN)")
+    with pytest.raises(ValueError, match="non-finite"):          # identity branch too
+        realization_shift([np.inf], [36.0], "NAD83(2011)", "NAD83(2011)")
+    masked = np.ma.masked_array([LV[0], -98.0], mask=[False, True])
+    with pytest.raises(ValueError, match="non-finite"):
+        realization_shift(masked, [LV[1], 38.5], "NAD83(2011)", "NAD83(2011)")
+    with pytest.raises(ValueError, match="out of range"):
+        realization_shift([LV[0]], [95.0], "NAD83(2011)", "NAD83(2011)")
+
+
 @pytest.mark.network
 def test_las_vegas_harn_matches_the_published_table():
     """The 3DEP datum provenance page tabulates Las Vegas HARN -> NAD83(2011)
@@ -60,7 +85,9 @@ def test_nadcon5_magnitudes_in_the_documented_range(src, lo, hi):
     lon = np.array([LV[0], KS[0], -122.3])
     lat = np.array([LV[1], KS[1], 47.6])
     r = realization_shift(lon, lat, src)
-    assert r.dE.shape == (3,) and "NADCON5" in r.route or src == "NAD83(NSRS2007)"
+    assert r.dE.shape == (3,)
+    assert "NADCON5" in r.route or src == "NAD83(NSRS2007)"   # the NSRS2007 op is unnamed
+    assert "hgridshift" in r.definition or "gridshift" in r.definition
     assert (r.magnitude >= lo).all() and (r.magnitude <= hi).all(), r.magnitude
 
 
@@ -88,3 +115,13 @@ def test_reverse_direction_negates():
     a = realization_shift(LV[0], LV[1], "NAD83(HARN)", "NAD83(2011)")
     b = realization_shift(LV[0], LV[1], "NAD83(2011)", "NAD83(HARN)")
     assert a.dE == pytest.approx(-b.dE, abs=1e-3) and a.dN == pytest.approx(-b.dN, abs=1e-3)
+
+
+@pytest.mark.network
+def test_points_outside_the_grid_raise_with_indices_and_an_aoi_remedy():
+    anchorage = (-149.9, 61.2)
+    with pytest.raises(NoTransformPathError, match=r"outside the grid.*indices \[1\].*aoi_bounds_4326"):
+        realization_shift([LV[0], anchorage[0]], [LV[1], anchorage[1]], "NAD83(HARN)")
+    r = realization_shift(anchorage[0], anchorage[1], "NAD83(HARN)",
+                          aoi_bounds_4326=(-170, 51, -129, 72))
+    assert "Alaska" in r.route and 0.05 < float(r.magnitude) < 0.5

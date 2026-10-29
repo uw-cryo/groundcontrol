@@ -209,12 +209,22 @@ WKT files; the constructed WKT2 is exported into output metadata for provenance.
   GeoTIFF `CoordinateEpochGeoKey` code **5120** (DOUBLE); CLI `-a_coord_epoch`,
   `-s/-t_coord_epoch` (https://gdal.org/en/stable/user/coordinate_epoch.html, RFC 81). Verified:
   round-trips through GeoTIFF; `gdalinfo` prints "Coordinate epoch: 2005.0".
-- **rasterio has no coordinate-epoch API** (verified, 1.4.4) — read via
-  `osgeo.osr.SpatialReference.GetCoordinateEpoch()`; most commercial DSM GeoTIFFs won't carry the
-  key, so `assess_dem` takes `--dem-epoch` (and `--dem-vcrs`) as first-class inputs and **requires
-  them for dynamic-frame DEMs** when undeclared. Stamp the epoch via GDAL when groundcontrol
-  writes rasters. GDAL's epoch-aware warping is frame-relabeling too (§1) — the propagation caveat
-  applies to rasters equally.
+- **rasterio has no coordinate-epoch API** (verified, 1.4.4 and 1.5.1: nothing on the CRS
+  object, in its WKT, or in the tags). `crs.dataset_frame(path)` reads a raster's CRS (rasterio)
+  and its epoch together: through `osgeo.osr.SpatialReference.GetCoordinateEpoch()` when the
+  GDAL bindings are importable, else through `gdalinfo -json` (top-level `coordinateEpoch`)
+  when an executable of GDAL >= 3.4 is on PATH (an older one never emits the key and is not
+  used as a reader). Its `epoch_source` keeps two cases apart that a consumer must not merge:
+  `'undeclared'` (a reader opened the file and it carries no epoch) and `'unreadable'` (no
+  reader available, the file was not checked). Most commercial DSM GeoTIFFs carry no key; a
+  dynamic-frame DEM with an undeclared epoch needs the epoch from the caller. Derived datasets
+  lose the key unless the writer carries it: `gdal.Translate` to GTiff, COG, VRT and GPKG
+  preserves it; `gdal.BuildVRT` always drops it; `gdal.Warp` drops it whenever the target CRS is
+  static (NAD83(2011) included, with or without `-t_coord_epoch`) and keeps or sets it only for a
+  dynamic target CRS — so a VRT mosaic or a warped static-frame product reads as undeclared
+  (verified, GDAL 3.13.3). Stamp the epoch via GDAL
+  when groundcontrol writes rasters. GDAL's epoch-aware warping is frame-relabeling too (§1) —
+  the propagation caveat applies to rasters equally.
 
 ## 7. Transform provenance & logging
 

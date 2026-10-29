@@ -80,6 +80,11 @@ __all__ = [
     "FrameComparison",
     "compare_frames",
     "assert_same_frame",
+    # what a raster dataset declares (CRS + GDAL coordinate epoch)
+    "EPOCH_SOURCES",
+    "CRS_SOURCES",
+    "DatasetFrame",
+    "dataset_frame",
     # projected grid frame <-> true local ENU
     "grid_jacobian",
     "grid_to_enu_vector",
@@ -528,6 +533,9 @@ class FrameComparison:
     epoch_b: float | None = None
     epoch_equal: bool | None = None
     problems: list[str] = field(default_factory=list)
+    #: whether each side's datum is a dynamic frame (None: no datum)
+    dynamic_a: bool | None = None
+    dynamic_b: bool | None = None
 
     def describe(self) -> str:
         bits = []
@@ -557,7 +565,15 @@ def compare_frames(a, b, *, epoch_a=None, epoch_b=None) -> FrameComparison:
     DEM header cannot be checked, only trusted), and whether the epochs differ
     (``epoch_equal`` is None when either epoch is None). ``problems`` holds the
     keys ``'horizontal'``, ``'vertical'``, ``'epoch'`` that differ.
+    ``dynamic_a``/``dynamic_b`` say whether each side is a dynamic frame, so a
+    consumer can record "dynamic frame, epoch undeclared" when an epoch is None.
+
+    Either side may be a :class:`DatasetFrame` (from :func:`dataset_frame`);
+    its CRS is used and its epoch supplies ``epoch_a``/``epoch_b`` unless the
+    caller passes one explicitly. A record with no CRS raises.
     """
+    a, epoch_a = _frame_input(a, epoch_a, "a")
+    b, epoch_b = _frame_input(b, epoch_b, "b")
     ca, cb = pyproj.CRS.from_user_input(a), pyproj.CRS.from_user_input(b)
     ha, hb = horizontal_2d(ca), horizontal_2d(cb)
     da = (ha.datum.name if ha.datum is not None else "") or ""
@@ -599,7 +615,21 @@ def compare_frames(a, b, *, epoch_a=None, epoch_b=None) -> FrameComparison:
     return FrameComparison(ca.name, cb.name, horizontal_equal, grid_signature(ca) == grid_signature(cb),
                            da, db, ensemble_vs_realization, va, vb, vertical_conflict,
                            float(epoch_a) if _known(epoch_a) else None,
-                           float(epoch_b) if _known(epoch_b) else None, epoch_equal, problems)
+                           float(epoch_b) if _known(epoch_b) else None, epoch_equal, problems,
+                           _dynamic_or_none(ca), _dynamic_or_none(cb))
+
+
+def _dynamic_or_none(crs) -> bool | None:
+    return is_dynamic_frame(crs) if crs.datum is not None else None
+
+
+def _frame_input(x, epoch, side: str):
+    """Unpack a DatasetFrame into (crs, epoch); anything else passes through."""
+    if isinstance(x, DatasetFrame):
+        if x.crs is None:
+            raise ValueError(f"side {side}: {x.path!r} declares no CRS; nothing to compare")
+        return x.crs, (x.epoch if epoch is None else epoch)
+    return x, epoch
 
 
 def assert_same_frame(a, b, *, epoch_a=None, epoch_b=None, allow=(),
@@ -622,6 +652,248 @@ def assert_same_frame(a, b, *, epoch_a=None, epoch_b=None, allow=(),
     if cmp.problems:
         logger.warning("%s accepted with allow=%s: %s", what, sorted(cmp.problems), cmp.describe())
     return cmp
+
+
+#: how :func:`dataset_frame` learned the coordinate epoch of a dataset
+EPOCH_SOURCES = ("gdal", "gdalinfo", "undeclared", "unreadable")
+#: where the CRS came from: the dataset itself; only its GDAL PAM ``.aux.xml``
+#: sidecar (a copy without the sidecar has NO CRS); or a sidecar that
+#: overrides a DIFFERENT CRS held in the dataset (a copy without the sidecar
+#: carries the wrong CRS, and nothing fails loud downstream)
+CRS_SOURCES = ("dataset", "pam", "pam-override")
+
+
+@dataclass(frozen=True)
+class DatasetFrame:
+    """What a raster dataset declares about its frame: the CRS and the GDAL
+    coordinate epoch (RFC 81; GeoTIFF ``CoordinateEpochGeoKey``).
+
+    ``crs_source`` says where the CRS came from: ``'dataset'``, ``'pam'``
+    (only in the ``.aux.xml`` sidecar) or ``'pam-override'`` (the sidecar
+    replaces a different CRS held in the dataset; GDAL reads PAM first).
+    Both PAM values mean the file is not safe to copy without its sidecar.
+    What rasterio cannot see is not reported: a caller's own GDAL
+    configuration that hides sidecars (``GDAL_PAM_ENABLED=NO``,
+    ``GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR``) makes a sidecar-only file
+    read as no CRS. ``epoch_source`` says how the epoch was read, and the
+    last two values
+    are NOT the same thing: ``'undeclared'`` means a reader opened the file
+    and it carries no epoch; ``'unreadable'`` means no reader was available
+    (neither the GDAL Python bindings nor the ``gdalinfo`` executable), so
+    the file was not checked. A consumer that treats an unknown epoch as
+    "none declared" must look at this field, not at ``epoch`` alone;
+    :func:`compare_frames` does not flag a None epoch on either side.
+    """
+    crs: pyproj.CRS | None
+    epoch: float | None
+    epoch_source: str
+    path: str
+    crs_source: str | None = None
+
+    @property
+    def epoch_checked(self) -> bool:
+        """True when a reader looked at the file (``epoch`` is then authoritative)."""
+        return self.epoch_source != "unreadable"
+
+    @property
+    def dynamic(self) -> bool | None:
+        """True when the datum is a dynamic frame (an epoch is then required to
+        place the coordinates); None when the dataset has no CRS or no datum."""
+        if self.crs is None or self.crs.datum is None:
+            return None
+        return is_dynamic_frame(self.crs)
+
+    @property
+    def horizontal_datum(self) -> str | None:
+        """Name of the horizontal datum (the realization, e.g. ``'NAD83
+        (National Spatial Reference System 2011)'``), None without a CRS."""
+        if self.crs is None:
+            return None
+        d = horizontal_2d(self.crs).datum
+        return d.name if d is not None else None
+
+    @property
+    def ensemble(self) -> bool | None:
+        """True when the horizontal datum is the WGS 84 ensemble (no realization)."""
+        return None if self.crs is None else _is_wgs84_ensemble(horizontal_2d(self.crs))
+
+
+#: first GDAL with a coordinate epoch (RFC 81); an older gdalinfo never emits the key
+_EPOCH_MIN_GDAL = (3, 4)
+
+
+def _declared_epoch(value) -> float | None:
+    """GDAL stores "no epoch" as 0.0 (negative and NaN are coerced to 0.0 at
+    stamp time); a stamped inf is declared garbage and raises."""
+    if value is None:
+        return None
+    value = float(value)
+    if not np.isfinite(value):   # GDAL stores and returns inf; that is not "no epoch"
+        raise ValueError(f"dataset declares a non-finite coordinate epoch {value!r}")
+    return value if value > 0 else None
+
+
+def _epoch_via_gdal(path: str):
+    """(epoch or None, 'gdal') through the GDAL Python bindings; None when absent."""
+    try:
+        from osgeo import gdal
+    except ImportError:
+        return None
+    if tuple(int(v) for v in gdal.__version__.split(".")[:2]) < _EPOCH_MIN_GDAL:
+        logger.info("GDAL bindings %s predate coordinate-epoch support (needs >= 3.4)",
+                    gdal.__version__)
+        return None
+    try:
+        mgr = gdal.ExceptionMgr(useExceptions=True)  # GDAL >= 3.7: scoped, no global state
+    except AttributeError:
+        import contextlib
+        mgr = contextlib.nullcontext()
+    # the caller's effective GDAL configuration (a rasterio.Env that hides
+    # sidecars) applies to this open too, whether or not the bindings share
+    # rasterio's config scope
+    cfg = dict(_effective_gdal_config(("GDAL_PAM_ENABLED", "GDAL_DISABLE_READDIR_ON_OPEN")))
+    with mgr, _gdal_config(gdal, cfg):
+        ds = gdal.OpenEx(path, gdal.OF_RASTER | gdal.OF_READONLY)
+        if ds is None:
+            raise OSError(f"GDAL could not open {path!r}")
+        srs = ds.GetSpatialRef()
+        epoch = srs.GetCoordinateEpoch() if srs is not None else 0.0
+    return _declared_epoch(epoch), "gdal"
+
+
+def _gdal_config(gdal, options: dict):
+    """Scoped GDAL config options for the bindings: ``gdal.config_options``
+    where it exists, else set and restore by hand."""
+    import contextlib
+    if not options:
+        return contextlib.nullcontext()
+    if hasattr(gdal, "config_options"):
+        return gdal.config_options({k: str(v) for k, v in options.items()})
+
+    # thread-local accessors (GDAL >= 2.x) so an overlapping call on another
+    # thread never sees, or clobbers, this call's settings
+    get = getattr(gdal, "GetThreadLocalConfigOption", gdal.GetConfigOption)
+    set_ = getattr(gdal, "SetThreadLocalConfigOption", gdal.SetConfigOption)
+
+    @contextlib.contextmanager
+    def _manual():
+        previous = {k: get(k) for k in options}
+        try:
+            for k, v in options.items():
+                set_(k, str(v))
+            yield
+        finally:
+            for k, v in previous.items():
+                set_(k, v)
+    return _manual()
+
+
+def _gdalinfo_version(exe: str):
+    """(major, minor) of the gdalinfo executable, or None when unparseable."""
+    import subprocess
+    try:
+        out = subprocess.run([exe, "--version"], capture_output=True, text=True)
+    except OSError:              # found on PATH but not executable here
+        return None
+    m = re.search(r"GDAL (\d+)\.(\d+)", out.stdout or "")
+    return (int(m.group(1)), int(m.group(2))) if (out.returncode == 0 and m) else None
+
+
+def _epoch_via_gdalinfo(path: str):
+    """(epoch or None, 'gdalinfo') through the ``gdalinfo -json`` executable.
+
+    None (not a reader) when the executable is absent, older than GDAL 3.4
+    (it would silently omit the key) or of unknown version.
+    """
+    import json
+    import shutil
+    import subprocess
+    exe = shutil.which("gdalinfo")
+    if exe is None:
+        return None
+    version = _gdalinfo_version(exe)
+    if version is None or version < _EPOCH_MIN_GDAL:
+        logger.info("gdalinfo at %s is %s: no coordinate-epoch support (needs GDAL >= 3.4)",
+                    exe, "of unknown version" if version is None else "GDAL %d.%d" % version)
+        return None
+    # the caller's in-process GDAL configuration (a rasterio.Env that hides
+    # sidecars) must reach the subprocess, or the epoch could come from a PAM
+    # sidecar the CRS read ignored
+    args = [exe, "-json"]
+    for key, val in _effective_gdal_config(("GDAL_PAM_ENABLED", "GDAL_DISABLE_READDIR_ON_OPEN")):
+        args += ["--config", key, str(val)]
+    out = subprocess.run(args + [path], capture_output=True, text=True)
+    if out.returncode != 0:
+        raise OSError(f"gdalinfo failed on {path!r}: {out.stderr.strip()}")
+    return _declared_epoch(json.loads(out.stdout).get("coordinateEpoch")), "gdalinfo"
+
+
+def _effective_gdal_config(keys):
+    """(key, value) for the named GDAL config options the caller has set
+    through rasterio's environment or the process environment."""
+    import os
+    import rasterio.env
+    try:
+        env = rasterio.env.getenv()
+    except Exception:          # no rasterio Env active
+        env = {}
+    for key in keys:
+        val = env.get(key, os.environ.get(key))
+        if val is not None:
+            yield key, val
+
+
+def dataset_frame(path) -> DatasetFrame:
+    """The CRS and coordinate epoch a raster dataset declares.
+
+    The CRS comes from rasterio (None when the file has none). The epoch is
+    not exposed by rasterio at all (verified through 1.5.1), so it is read
+    through the GDAL Python bindings when importable, else through the
+    ``gdalinfo`` executable (GDAL >= 3.4) when on PATH; with neither,
+    ``epoch`` is None and ``epoch_source`` is ``'unreadable'`` (the file was
+    not checked). GDAL stores "no epoch" as 0.0; that reads back as None
+    with ``'undeclared'``. A file that cannot be opened raises, by rasterio
+    or by the epoch reader (a dataset only rasterio's own GDAL build can
+    open, or an in-process ``/vsimem/`` path under the ``gdalinfo`` route,
+    fails there); nothing is guessed. Point files are not covered:
+    groundcontrol's control contract carries ``coord_epoch`` and
+    ``ref_frame`` per row.
+
+    :func:`compare_frames` compares two KNOWN epochs only: a None on either
+    side is no ``'epoch'`` problem. A consumer that must not pass an
+    unchecked file checks ``epoch_checked`` itself.
+    """
+    import os
+    import rasterio
+    path = str(path)
+    if path.startswith("-"):
+        path = os.path.abspath(path)   # gdalinfo has no '--': a dash-leading name is an option
+    with rasterio.open(path) as r:
+        crs = pyproj.CRS.from_wkt(r.crs.to_wkt()) if r.crs is not None else None
+    crs_source = None
+    if crs is not None:
+        # GDAL writes a 3-D CRS given to a GeoTIFF writer into the PAM sidecar
+        # only (no GeoKeys), silently, and reads PAM before the dataset's own
+        # keys. Reopen with PAM off to see what the dataset itself holds.
+        with rasterio.Env(GDAL_PAM_ENABLED="NO"), rasterio.open(path) as r:
+            inner = pyproj.CRS.from_wkt(r.crs.to_wkt()) if r.crs is not None else None
+        if inner is None:
+            crs_source = "pam"
+        elif inner.equals(crs):      # the whole CRS, vertical member included
+            crs_source = "dataset"
+        else:
+            crs_source = "pam-override"
+            logger.warning("%s: the PAM sidecar overrides the dataset's own CRS (%r -> %r); "
+                           "a copy without the sidecar carries the wrong CRS", path,
+                           inner.name, crs.name)
+    elif os.path.exists(path + ".aux.xml"):
+        logger.info("%s declares no CRS although a PAM sidecar exists; a GDAL "
+                    "configuration that hides sidecars would read it this way", path)
+    read = _epoch_via_gdal(path) or _epoch_via_gdalinfo(path)
+    if read is None:
+        return DatasetFrame(crs, None, "unreadable", path, crs_source)
+    epoch, how = read
+    return DatasetFrame(crs, epoch, how if epoch is not None else "undeclared", path, crs_source)
 
 
 def land_horizontal(gdf, target: str = "EPSG:6318", datum_col: str = "horizontal_crs"):

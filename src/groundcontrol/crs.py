@@ -690,13 +690,24 @@ def realization_shift(lon, lat, from_realization, to="NAD83(2011)",
 
     Magnitudes vary by place, more than summary figures suggest. Over the
     CONUS NADCON5 extent on a one-degree grid, bare NAD83 to NAD83(2011) has
-    5th, 50th and 95th percentiles of about 0.08, 0.29 and 0.74 m; the
-    maxima depend on the sampling and coastal California edge cells exceed
-    2.5 m at quarter-degree sampling. HARN to NAD83(2011) reaches about
-    1 m and NSRS2007 to NAD83(2011) about 0.3 m in the same cells (PROJ
-    9.8.1). At single places: HARN to NAD83(2011) is 2 cm in Kansas, 7 cm
-    at Las Vegas and 15 cm at Seattle; NSRS2007 to NAD83(2011) is 1 cm at
-    Las Vegas and 6 cm at Seattle.
+    5th, 50th and 95th percentiles of about 0.08, 0.29 and 0.74 m. The
+    maxima depend on the sampling: at quarter-degree sampling an interior
+    Indiana cell exceeds 2.5 m, entirely from the NAD83 to HARN leg; HARN
+    to NAD83(2011) reaches about 1 m on the northern California coast and
+    NSRS2007 to NAD83(2011) about 0.3 m in South Carolina (PROJ 9.8.1). At
+    single places: HARN to NAD83(2011) is 2 cm in Kansas, 7 cm at Las Vegas
+    and 15 cm at Seattle; NSRS2007 to NAD83(2011) is 1 cm at Las Vegas and
+    6 cm at Seattle.
+
+    Two things a grid route cannot say for itself, so the call warns. A
+    CONUS grid's EPSG area of use is a bounding box that spills into
+    southern Canada, and the NADCON5 rasters are padded there, so a point
+    in Vancouver or Toronto gets an extrapolated or zero value through a
+    US-only grid; use the NAD83(CSRS) tokens for Canadian data. The HARN to
+    FBN grid is exactly zero over 80 percent of its cells, NGS's statement
+    that no FBN readjustment was done there, so an exact zero from a grid
+    route is a statement, not a measurement. Any exact-zero result from a
+    non-identity route is logged at WARNING with the point indices.
     """
     lon = np.asarray(np.ma.filled(np.ma.asarray(lon, dtype=float), np.nan))
     lat = np.asarray(np.ma.filled(np.ma.asarray(lat, dtype=float), np.nan))
@@ -730,6 +741,13 @@ def realization_shift(lon, lat, from_realization, to="NAD83(2011)",
     az, _, dist = pyproj.Geod(ellps="GRS80").inv(lon, lat, lon2, lat2)
     az = np.radians(np.asarray(az, dtype=float))
     dist = np.asarray(dist, dtype=float)
+    zero = np.flatnonzero(dist.ravel() == 0.0)
+    if zero.size:
+        logger.warning(
+            "realization_shift %s -> %s: exact zero at %d of %d point(s) (flat indices %s) "
+            "through %r: the grid states no shift there (no readjustment, or raster padding "
+            "outside the grid's region, e.g. CONUS grids over Canada); not a measurement",
+            src_tok, dst_tok, zero.size, dist.size, zero[:10].tolist(), t.description)
     return RealizationShift(np.asarray(dist * np.sin(az)), np.asarray(dist * np.cos(az)),
                             src_tok, dst_tok, t.description, t.definition, t.accuracy)
 

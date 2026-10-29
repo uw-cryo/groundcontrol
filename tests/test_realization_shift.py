@@ -140,3 +140,16 @@ def test_concatenated_routes_with_a_gridless_leg_are_refused(src, dst):
     """Review round 2 HIGH: the pipeline string showed only the grid legs."""
     with pytest.raises(NoTransformPathError, match="leg\\(s\\) without a grid"):
         realization_shift(LV[0], LV[1], src, dst)
+
+
+@pytest.mark.network
+def test_exact_zero_from_a_grid_route_warns(caplog):
+    """The HARN to FBN NADCON5 grid is exactly zero where NGS did no FBN
+    readjustment (Kansas) and in its padding over Canada (Vancouver); an
+    exact zero is a statement, not a measurement, and is logged."""
+    import logging
+    with caplog.at_level(logging.WARNING, logger="groundcontrol.crs"):
+        r = realization_shift([KS[0], -123.1, LV[0]], [KS[1], 49.3, LV[1]],
+                              "NAD83(HARN)", "NAD83(FBN)")
+    assert r.magnitude[0] == 0.0 and r.magnitude[1] == 0.0 and r.magnitude[2] > 0.01
+    assert "exact zero at 2 of 3" in caplog.text and "[0, 1]" in caplog.text

@@ -387,7 +387,7 @@ def _plate_fixed_datum(crs_obj) -> bool:
     frame or ensemble (NAD83*, ETRS89, GDA*, ...) is treated as plate-fixed
     — fail-loud rather than fabricate plate motion.
     """
-    d = pyproj.CRS.from_user_input(crs_obj).datum
+    d = _horizontal_datum_of(pyproj.CRS.from_user_input(crs_obj))
     name = ((d.name or "") if d is not None else "").upper()
     # ETRF realizations are ITRF rotated onto the Eurasian plate: a point on
     # the stable plate keeps its coordinates by construction, so applying
@@ -403,6 +403,15 @@ def _plate_fixed_datum(crs_obj) -> bool:
     if re.search(r"\bWGS ?(19)?84\b|WORLD GEODETIC", name) and not name.startswith("UNKNOWN"):
         return False
     return True
+
+
+def _horizontal_datum_of(crs):
+    """The datum of the horizontal member: a compound CRS on an older pyproj
+    carries none of its own, and the member object keeps its datum id."""
+    datum = crs.datum
+    if datum is None and crs.is_compound:
+        datum = crs.sub_crs_list[0].datum
+    return datum
 
 
 def is_dynamic_frame(crs_like) -> bool:
@@ -422,9 +431,7 @@ def is_dynamic_frame(crs_like) -> bool:
     # from_user_input keeps a CRS object as is; pyproj.CRS(obj) re-parses
     # its WKT and loses the nested datum id (PROJ omits it under a parent id)
     crs = pyproj.CRS.from_user_input(crs_like)
-    datum = crs.datum
-    if datum is None and crs.is_compound:      # older pyproj: no datum on a compound
-        datum = crs.sub_crs_list[0].datum
+    datum = _horizontal_datum_of(crs)
     if datum is None:
         return False
     if "dynamic" in (datum.type_name or "").lower():

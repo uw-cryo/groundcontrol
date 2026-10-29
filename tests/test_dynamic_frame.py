@@ -234,3 +234,17 @@ def test_etrf_realizations_are_plate_fixed_for_propagation(form):
         with pytest.raises(ValueError, match="plate-fixed"):
             propagate_epoch(_points(crs, 0.02, 0.01, 0.0), target_epoch=2025.0)
     assert gc_crs._plate_fixed_datum("EPSG:4258") is True   # the ETRS89 ensemble, as before
+
+
+@pytest.mark.parametrize("compound, plate_fixed", [
+    ("EPSG:32611+5773", False),   # WGS 84 ensemble member: ITRF-aliased by name, never plate-fixed
+    ("EPSG:9000+5703", False),    # ITRF2014: dynamic
+    ("EPSG:6340+5703", True),     # NAD83(2011): plate-fixed
+])
+def test_plate_fixed_gate_sees_the_compound_member(compound, plate_fixed):
+    """PR #43 bot: the gate must derive the member's datum for a compound CRS
+    too, as an object and as a WKT2 string."""
+    crs = pyproj.CRS(compound)
+    assert gc_crs._plate_fixed_datum(crs) is plate_fixed
+    assert gc_crs._plate_fixed_datum(crs.to_wkt()) is plate_fixed
+    assert gc_crs._horizontal_datum_of(crs) is not None

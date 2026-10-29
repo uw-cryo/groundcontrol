@@ -739,6 +739,10 @@ def _epoch_via_gdal(path: str):
         from osgeo import gdal
     except ImportError:
         return None
+    if tuple(int(v) for v in gdal.__version__.split(".")[:2]) < _EPOCH_MIN_GDAL:
+        logger.info("GDAL bindings %s predate coordinate-epoch support (needs >= 3.4)",
+                    gdal.__version__)
+        return None
     try:
         mgr = gdal.ExceptionMgr(useExceptions=True)  # GDAL >= 3.7: scoped, no global state
     except AttributeError:
@@ -781,10 +785,31 @@ def _epoch_via_gdalinfo(path: str):
         logger.info("gdalinfo at %s is %s: no coordinate-epoch support (needs GDAL >= 3.4)",
                     exe, "of unknown version" if version is None else "GDAL %d.%d" % version)
         return None
-    out = subprocess.run([exe, "-json", path], capture_output=True, text=True)
+    # the caller's in-process GDAL configuration (a rasterio.Env that hides
+    # sidecars) must reach the subprocess, or the epoch could come from a PAM
+    # sidecar the CRS read ignored
+    args = [exe, "-json"]
+    for key, val in _effective_gdal_config(("GDAL_PAM_ENABLED", "GDAL_DISABLE_READDIR_ON_OPEN")):
+        args += ["--config", key, str(val)]
+    out = subprocess.run(args + [path], capture_output=True, text=True)
     if out.returncode != 0:
         raise OSError(f"gdalinfo failed on {path!r}: {out.stderr.strip()}")
     return _declared_epoch(json.loads(out.stdout).get("coordinateEpoch")), "gdalinfo"
+
+
+def _effective_gdal_config(keys):
+    """(key, value) for the named GDAL config options the caller has set
+    through rasterio's environment or the process environment."""
+    import os
+    import rasterio.env
+    try:
+        env = rasterio.env.getenv()
+    except Exception:          # no rasterio Env active
+        env = {}
+    for key in keys:
+        val = env.get(key, os.environ.get(key))
+        if val is not None:
+            yield key, val
 
 
 def dataset_frame(path) -> DatasetFrame:
@@ -823,8 +848,7 @@ def dataset_frame(path) -> DatasetFrame:
             inner = pyproj.CRS.from_wkt(r.crs.to_wkt()) if r.crs is not None else None
         if inner is None:
             crs_source = "pam"
-        elif inner.equals(crs) or horizontal_2d(inner).equals(horizontal_2d(crs)) and \
-                len(inner.axis_info) == len(crs.axis_info):
+        elif inner.equals(crs):      # the whole CRS, vertical member included
             crs_source = "dataset"
         else:
             crs_source = "pam-override"

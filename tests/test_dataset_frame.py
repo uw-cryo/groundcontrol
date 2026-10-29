@@ -315,3 +315,43 @@ def test_crs_source_pam_override_when_sidecar_and_keys_disagree(tmp_path, caplog
         '<PAMDataset><PAMRasterBand band="1"><Metadata><MDI key="STATISTICS_MEAN">0</MDI>'
         '</Metadata></PAMRasterBand></PAMDataset>')
     assert dataset_frame(q).crs_source == "dataset"
+
+
+# --- PR #39 bot findings ---
+
+def test_vertical_only_pam_override_is_not_dataset(tmp_path):
+    """Embedded NAD83(2011)+NAVD88, sidecar NAD83(2011)+NGVD29: same horizontal,
+    different vertical datum; dropping the sidecar changes the heights' datum."""
+    p = _write_tif(tmp_path / "v.tif", "EPSG:6340+5703")
+    (tmp_path / "v.tif.aux.xml").write_text(
+        f'<PAMDataset><SRS dataAxisToSRSAxisMapping="1,2">'
+        f'{pyproj.CRS("EPSG:6340+7968").to_wkt()}</SRS></PAMDataset>')
+    f = dataset_frame(p)
+    assert f.crs_source == "pam-override"
+    assert "NGVD29" in f.crs.name or "7968" in f.crs.to_wkt()
+
+
+def test_gdal_bindings_older_than_3_4_are_not_a_reader(tmp_path, monkeypatch):
+    import types
+    fake = types.ModuleType("osgeo")
+    fake.gdal = types.SimpleNamespace(__version__="3.2.2")
+    monkeypatch.setitem(sys.modules, "osgeo", fake)
+    monkeypatch.setitem(sys.modules, "osgeo.gdal", fake.gdal)
+    assert gc_crs._epoch_via_gdal(_write_tif(tmp_path / "a.tif", "EPSG:6340")) is None
+
+
+def test_gdalinfo_route_receives_the_callers_pam_setting(tmp_path, canned_gdalinfo):
+    """A caller that hides sidecars (rasterio.Env(GDAL_PAM_ENABLED='NO')) must
+    have gdalinfo hide them too, or the epoch could come from a sidecar the
+    CRS read ignored."""
+    p = _write_tif(tmp_path / "a.tif", "EPSG:6340")
+    run = canned_gdalinfo(MODERN, '{"coordinateEpoch": 2010.0}')
+    with rasterio.Env(GDAL_PAM_ENABLED="NO"):
+        dataset_frame(p)
+    json_call = run.calls[1]
+    assert "--config" in json_call and "GDAL_PAM_ENABLED" in json_call
+    assert json_call[json_call.index("GDAL_PAM_ENABLED") + 1] in ("NO", "False", "false")
+    # without a caller setting, no --config is added
+    run = canned_gdalinfo(MODERN, '{"coordinateEpoch": 2010.0}')
+    dataset_frame(p)
+    assert "--config" not in run.calls[1]

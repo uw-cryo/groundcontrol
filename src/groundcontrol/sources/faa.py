@@ -61,6 +61,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import re
 import zipfile
 from datetime import date, timedelta
 
@@ -260,6 +261,47 @@ def _shift(sl: slice, off: int) -> slice:
     return slice(sl.start + off, sl.stop + off)
 
 
+#: RWY layouts seen so far, as the column shift of every field at or after
+#: the pavement-classification field (0-based column 49): 0 in the
+#: 2026-08-06 cycle and earlier; 5 from the 2026-10-01 cycle, when that
+#: field grew from the PCN value to an ICAO PCR code ('PCR/630 /F/B/X/T')
+#: and every later field moved right by five columns (record length
+#: unchanged at 1532, APT records unchanged). The slices above are the
+#: shift-0 layout.
+_RWY_SHIFTS = (0, 5)
+#: a NASR coordinate field: total arcseconds to 4 decimals + hemisphere
+_SEC_RE = re.compile(r"^\d{4,7}\.\d{4}[NSEW]$")
+
+
+def _rwy_layout_shift(lines) -> int:
+    """Column shift of the RWY layout in ``lines``.
+
+    Decided by the first runway end with published coordinates: its
+    base-end latitude must fill the 12-character field at exactly one
+    shift in :data:`_RWY_SHIFTS`. A record that fits none fails HERE, by
+    name, instead of as a ``float()`` error deep in the parse (the
+    2026-10-01 cycle read ``'200N 186762.'`` as a latitude). Files with
+    no coordinates parse to nothing at any shift, so they return 0.
+    """
+    for rec in lines:
+        if rec[0:3] != "RWY":
+            continue
+        fields = {s: rec[_shift(_END_LAT, s)].strip() for s in _RWY_SHIFTS}
+        if not any(fields.values()):
+            continue  # runway without published coordinates
+        hits = [s for s, v in fields.items() if _SEC_RE.match(v)]
+        if len(hits) == 1:
+            return hits[0]
+        raise ValueError(
+            "NASR RWY layout not recognized: the base-end latitude field of "
+            f"record {rec[3:23].strip()!r} reads {fields} at the known column "
+            f"shifts {_RWY_SHIFTS}. The "
+            "FAA changed the fixed-width APT.txt layout again (last: the "
+            "2026-10-01 cycle, +5 columns); check the RWY layout document "
+            "and add the new shift to groundcontrol.sources.faa._RWY_SHIFTS.")
+    return 0
+
+
 def _sec(s: str) -> float:
     """'130806.0700N' (total arcseconds + hemisphere) -> signed degrees."""
     s = s.strip()
@@ -277,6 +319,10 @@ def _feet_m(s: str) -> float:
 def _rows(lines) -> list[dict]:
     apts: dict[str, dict] = {}
     rows: list[dict] = []
+    lines = list(lines)  # read twice: layout detection, then the parse
+    shift = _rwy_layout_shift(lines)
+    if shift:
+        logger.info("NASR RWY layout: fields after column 49 shifted %d columns", shift)
     for rec in lines:
         rt = rec[0:3]
         if rt == "APT":
@@ -293,7 +339,9 @@ def _rows(lines) -> list[dict]:
             if ap is None:  # file is sorted APT-first per facility
                 raise ValueError(f"RWY record precedes APT for site {site}")
             rwy = rec[_RWY_ID].strip()
-            for off, soff in ((0, 0), (_END_OFF, _SRC_OFF)):
+            # every slice below sits after column 49: shift them all
+            for off, soff in ((shift, shift),
+                              (_END_OFF + shift, _SRC_OFF + shift)):
                 end_id = rec[_shift(_END_ID, off)].strip()
                 if not end_id:
                     continue

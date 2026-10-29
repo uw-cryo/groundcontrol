@@ -213,3 +213,108 @@ def test_true_alignment_in_raw():
     assert az["LAS_01L"] == "25.0" and az["LAS_19R"] == "205.0"
     assert az["LAS_01L_DT"] == "25.0"   # DT rides its end's alignment
     assert az["NV53_H1"] is None        # helipads have no runway azimuth
+
+
+# --- NASR layout change, 2026-10-01 cycle -----------------------------------
+# The same five facilities as faa_apt_sample.txt, from the 2026-10-01 cycle:
+# the RWY pavement-classification field grew by five characters, moving every
+# later field right by five columns. Record length unchanged (1532).
+
+def _raw_oct(bounds=WORLD):
+    with open(DATA / "faa_apt_sample_2026-10-01.txt", encoding="latin-1") as f:
+        lines = f.readlines()
+    return {"cycle": "2026-10-01", "aoi_bounds_4326": bounds, "lines": lines}
+
+
+def test_rwy_layout_shift_detected_per_cycle():
+    assert faa._rwy_layout_shift(_raw()["lines"]) == 0
+    assert faa._rwy_layout_shift(_raw_oct()["lines"]) == 5
+    assert len(_raw()["lines"]) == len(_raw_oct()["lines"]) == 17
+    assert {len(line) for line in _raw_oct()["lines"]} == {1532}
+
+
+def test_oct_2026_cycle_parses_identically_to_aug():
+    """Every runway end and displaced threshold of the five facilities reads
+    the same coordinates, heights, provenance and alignment from both
+    cycles once the shift is applied (the facilities did not change
+    between the cycles)."""
+    a = faa.parse(_raw(), ownership="all").set_index("id").sort_index()
+    b = faa.parse(_raw_oct(), ownership="all").set_index("id").sort_index()
+    assert len(a) == len(b) == 31
+    assert list(a.index) == list(b.index)
+    assert np.allclose(a.geometry.x, b.geometry.x, atol=1e-9)
+    assert np.allclose(a.geometry.y, b.geometry.y, atol=1e-9)
+    assert np.allclose(a["height"], b["height"], atol=1e-6)
+    for col in ("point_type", "height_datum"):
+        assert a[col].tolist() == b[col].tolist(), col
+    for col in ("acc_h", "acc_v"):  # NaN where the class has no budget
+        assert np.allclose(a[col].astype(float), b[col].astype(float),
+                           equal_nan=True), col
+    assert a["measurement_datetime"].astype(str).tolist() == \
+        b["measurement_datetime"].astype(str).tolist()
+    ra = pd.DataFrame([json.loads(s) for s in a["raw"]], index=a.index)
+    rb = pd.DataFrame([json.loads(s) for s in b["raw"]], index=b.index)
+    for col in ("pos_src", "pos_src_date", "elev_src", "true_az", "dt_len_ft",
+                "end", "rwy", "ownership"):
+        assert ra[col].fillna("NA").tolist() == rb[col].fillna("NA").tolist(), col
+    # the shifted cycle gives the LAS 01L anchor exactly as the Aug cycle
+    r = b.loc["LAS_01L"]
+    assert r.geometry.y == pytest.approx(36.075327, abs=1e-6)
+    assert r["height"] == pytest.approx(664.830, abs=0.001)
+
+
+def test_unknown_rwy_layout_shift_fails_by_name():
+    """A shift that is not in _RWY_SHIFTS (here +3) fails at the layout
+    check with the layout named, not as a float() error on a field."""
+    lines = []
+    for line in _raw()["lines"]:
+        if line[:3] == "RWY":
+            line = line[:49] + "   " + line[49:-4] + line[-1]  # keep 1532
+        lines.append(line)
+    assert {len(line) for line in lines if line[:3] == "RWY"} == {1532}
+    with pytest.raises(ValueError, match="NASR RWY layout not recognized"):
+        faa.parse({"cycle": "x", "aoi_bounds_4326": WORLD, "lines": lines})
+
+
+def test_file_without_coordinates_parses_empty_at_shift_zero():
+    lines = [line for line in _raw()["lines"] if line[:3] == "APT"]
+    assert faa._rwy_layout_shift(lines) == 0
+    assert len(faa.parse({"cycle": "x", "aoi_bounds_4326": WORLD,
+                          "lines": lines})) == 0
+
+
+def _blank(line, sl):
+    return line[:sl.start] + " " * (sl.stop - sl.start) + line[sl.stop:]
+
+
+def _reciprocal_only(raw, shift):
+    """Every runway's BASE-end geographic block blanked (id through the
+    displaced threshold, as the FAA blanks a block without published
+    coordinates), so only the reciprocal ends carry coordinates."""
+    base_block = slice(faa._END_ID.start, faa._END_ID.start + faa._END_OFF)
+    lines = []
+    for line in raw["lines"]:
+        if line[:3] == "RWY":
+            line = _blank(line, faa._shift(base_block, shift))
+        lines.append(line)
+    assert {len(line) for line in lines} == {1532}
+    return {**raw, "lines": lines}
+
+
+def test_reciprocal_only_runway_ends_decide_the_shift():
+    """A file whose runways publish coordinates only on the reciprocal end
+    still gets the right shift (PR #38 bot finding): the detector reads the
+    reciprocal block when the base block is blank."""
+    aug = _reciprocal_only(_raw(), 0)
+    oct_ = _reciprocal_only(_raw_oct(), 5)
+    assert faa._rwy_layout_shift(aug["lines"]) == 0
+    assert faa._rwy_layout_shift(oct_["lines"]) == 5
+    a = faa.parse(aug, ownership="all").set_index("id").sort_index()
+    b = faa.parse(oct_, ownership="all").set_index("id").sort_index()
+    full = faa.parse(_raw(), ownership="all").set_index("id")
+    raw = pd.DataFrame([json.loads(s) for s in full["raw"]], index=full.index)
+    base_ids = set(raw.index[raw["end"] == raw["rwy"].str.split("/").str[0]])
+    expected = sorted(set(full.index) - base_ids)
+    assert len(expected) > 0 and list(a.index) == list(b.index) == expected
+    assert np.allclose(a.geometry.x, b.geometry.x, atol=1e-9)
+    assert np.allclose(a.geometry.y, b.geometry.y, atol=1e-9)

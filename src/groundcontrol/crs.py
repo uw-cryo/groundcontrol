@@ -12,6 +12,7 @@ see docs/crs_implementation.md §1. Validate numerically against the CRS fixture
 
 from __future__ import annotations
 
+import functools
 import logging
 import warnings
 from typing import Protocol, runtime_checkable
@@ -386,14 +387,31 @@ def _plate_fixed_datum(crs_obj) -> bool:
     frame or ensemble (NAD83*, ETRS89, GDA*, ...) is treated as plate-fixed
     — fail-loud rather than fabricate plate motion.
     """
-    d = pyproj.CRS(crs_obj).datum
-    tname = ((d.type_name or "") if d is not None else "").lower()
-    if "dynamic" in tname:
-        return False
+    d = _horizontal_datum_of(pyproj.CRS.from_user_input(crs_obj))
     name = ((d.name or "") if d is not None else "").upper()
-    if "WGS" in name or "WORLD GEODETIC" in name:
+    # ETRF realizations are ITRF rotated onto the Eurasian plate: a point on
+    # the stable plate keeps its coordinates by construction, so applying
+    # ITRF-frame velocities to them fabricates plate motion. EPSG types them
+    # dynamic (frame reference epoch 1989.0); for propagation they are
+    # plate-fixed, whether the datum arrives with DYNAMIC, an id, or a name.
+    if re.search(r"EUROPEAN TERRESTRIAL REFERENCE FRAME|\bETRF ?\d{2,4}", name.replace("_", " ")):
+        return True
+    if is_dynamic_frame(crs_obj):      # DYNAMIC property, registry id, or name
+        return False
+    # WGS 84 by name is ITRF-aliased; PROJ's synthesized "Unknown based on ...
+    # using towgs84=..." names carry no frame identity and must not match
+    if re.search(r"\bWGS ?(19)?84\b|WORLD GEODETIC", name) and not name.startswith("UNKNOWN"):
         return False
     return True
+
+
+def _horizontal_datum_of(crs):
+    """The datum of the horizontal member: a compound CRS on an older pyproj
+    carries none of its own, and the member object keeps its datum id."""
+    datum = crs.datum
+    if datum is None and crs.is_compound:
+        datum = crs.sub_crs_list[0].datum
+    return datum
 
 
 def is_dynamic_frame(crs_like) -> bool:
@@ -402,9 +420,80 @@ def is_dynamic_frame(crs_like) -> bool:
     Dynamic-frame coordinates are only meaningful with a coordinate epoch —
     time-dependent transforms must be evaluated at each point's
     ``coord_epoch`` (crs_implementation §1).
+
+    The WKT2 ``DYNAMIC`` property decides when present. GeoTIFF keys cannot
+    carry it, so a 2D raster in WGS 84 (G2139) or ITRF2014 reads back as a
+    plain geodetic reference frame with its datum name and EPSG id intact;
+    the datum identity then decides: the EPSG registry's frame reference
+    epoch for a datum with an id, else the name (ITRF, IGS, IGb, ETRF,
+    WGS 84 (Gnnnn)). A datum ensemble (EPSG:4326) is never dynamic.
     """
-    datum = pyproj.CRS(crs_like).datum
-    return datum is not None and "dynamic" in (datum.type_name or "").lower()
+    # from_user_input keeps a CRS object as is; pyproj.CRS(obj) re-parses
+    # its WKT and loses the nested datum id (PROJ omits it under a parent id)
+    crs = pyproj.CRS.from_user_input(crs_like)
+    datum = _horizontal_datum_of(crs)
+    if datum is None:
+        return False
+    if "dynamic" in (datum.type_name or "").lower():
+        return True
+    if "ensemble" in (datum.type_name or "").lower():
+        return False
+    ident = datum.to_json_dict().get("id") or {}
+    if ident.get("code") is None:
+        # a WKT2 export omits the nested datum id under the CRS's own id;
+        # the CRS id (which survives) names the datum through the registry
+        member = pyproj.CRS(crs.sub_crs_list[0]) if crs.is_compound else crs
+        if member.is_bound and member.source_crs is not None:
+            member = member.source_crs      # a TOWGS84-bound CRS: the id sits on its source
+        auth = member.to_authority()
+        if auth is not None:
+            try:
+                ident = (pyproj.CRS.from_authority(*auth).datum.to_json_dict().get("id") or {})
+            except pyproj.exceptions.CRSError:
+                ident = {}
+    if ident.get("code") is not None:
+        known = _registry_dynamic_datum(str(ident.get("authority") or "EPSG"), str(ident["code"]))
+        if known is not None:
+            return known
+    return bool(_DYNAMIC_DATUM_NAME.search((datum.name or "").replace("_", " ")))
+
+
+#: datum names of dynamic frames, for a datum without a registry id
+_DYNAMIC_DATUM_NAME = re.compile(
+    r"International Terrestrial Reference Frame|\bITRF ?\d{2,4}|\bIG[Sb] ?\d{2}\b|"
+    r"European Terrestrial Reference Frame|\bETRF ?\d{2,4}|"
+    r"Australian Terrestrial Reference Frame|\bATRF ?\d{4}|"
+    r"World Geodetic System 1984 \(G\d{3,4}\)|WGS ?84 ?\(G\d{3,4}\)", re.I)
+
+
+def _registry_dynamic_datum(auth: str, code: str):
+    """True/False from PROJ's registry (a dynamic datum carries a frame
+    reference epoch), None when the datum is not in the installed proj.db."""
+    return _registry_dynamic_datum_cached(auth, str(code), pyproj.datadir.get_data_dir())
+
+
+@functools.lru_cache(maxsize=None)
+def _registry_dynamic_datum_cached(auth: str, code: str, data_dir: str):
+    import pathlib
+    import sqlite3
+    db = pathlib.Path(data_dir).resolve() / "proj.db"   # as_uri needs an absolute path
+    if not db.exists():
+        return None
+    try:
+        con = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)
+        try:
+            row = con.execute(
+                "select frame_reference_epoch from geodetic_datum "
+                "where auth_name=? and code=?", (auth, code)).fetchone()
+        finally:
+            con.close()
+    except (sqlite3.Error, ValueError) as exc:  # foreign schema, unreadable file, odd path
+        logger.warning("proj.db at %s could not be queried for datum %s:%s (%s); deciding by name",
+                       db, auth, code, exc)
+        return None
+    if row is None:
+        return None
+    return row[0] is not None
 
 
 # ---------------------------------------------------------------------------
@@ -973,7 +1062,7 @@ def compare_frames(a, b, *, epoch_a=None, epoch_b=None) -> FrameComparison:
 
 
 def _dynamic_or_none(crs) -> bool | None:
-    return is_dynamic_frame(crs) if crs.datum is not None else None
+    return is_dynamic_frame(crs) if _horizontal_datum_of(crs) is not None else None
 
 
 def _frame_input(x, epoch, side: str):
@@ -1025,6 +1114,10 @@ class DatasetFrame:
     (only in the ``.aux.xml`` sidecar) or ``'pam-override'`` (the sidecar
     replaces a different CRS held in the dataset; GDAL reads PAM first).
     Both PAM values mean the file is not safe to copy without its sidecar.
+    ``'pam'`` is the normal state of a 3D projected product with ellipsoidal
+    heights, not a sign of editing: GeoTIFF keys cannot carry that CRS, so
+    GDAL writes the 2D part in the file and the whole CRS in the sidecar;
+    2D and compound CRSs stay in the file.
     What rasterio cannot see is not reported: a caller's own GDAL
     configuration that hides sidecars (``GDAL_PAM_ENABLED=NO``,
     ``GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR``) makes a sidecar-only file
@@ -1052,7 +1145,7 @@ class DatasetFrame:
     def dynamic(self) -> bool | None:
         """True when the datum is a dynamic frame (an epoch is then required to
         place the coordinates); None when the dataset has no CRS or no datum."""
-        if self.crs is None or self.crs.datum is None:
+        if self.crs is None or _horizontal_datum_of(self.crs) is None:
             return None
         return is_dynamic_frame(self.crs)
 
@@ -2107,7 +2200,7 @@ def propagate_epoch(gdf, target_epoch, *, source_crs=None, height_col: str = "he
         raise ValueError(
             "propagate_epoch needs a geographic CRS: gdf.crs is None and "
             "source_crs was not given (the ENU→geodetic step needs the ellipsoid)")
-    crs_obj = pyproj.CRS(crs_like)
+    crs_obj = pyproj.CRS.from_user_input(crs_like)   # keeps a CRS object's datum id
     if not crs_obj.is_geographic:
         raise ValueError(
             f"propagate_epoch expects geographic lon/lat coordinates; got "

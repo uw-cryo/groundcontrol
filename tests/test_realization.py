@@ -77,6 +77,10 @@ def test_every_table_code_round_trips_by_code_and_by_name(datum_code, geog):
     """The EPSG input hits the code path; its WKT2 re-parse (PROJ drops the
     datum id) must hit the name path with the SAME token (review L5)."""
     from groundcontrol.crs import _NAD83_DATUM_CODES
+    try:
+        pyproj.CRS.from_epsg(geog)
+    except pyproj.exceptions.CRSError:
+        pytest.skip(f"EPSG:{geog} not in this PROJ database ({pyproj.proj_version_str})")
     by_code = nad83_realization(geog)
     by_name = nad83_realization(pyproj.CRS.from_epsg(geog).to_wkt())
     assert by_code.matched_by == "datum_code" and by_code.datum_code == datum_code
@@ -97,6 +101,11 @@ MN_COUNTY_WKT1 = ('GEOGCS["GCS_NAD_1983_HARN_Adj_MN_Anoka",DATUM["D_NAD_1983_HAR
     (10910, "not in the realization table"),             # California SRN 2025.0 (NAD83 2011), EPSG 1414
 ])
 def test_nad83_family_that_cannot_be_placed_raises(crs_like, msg):
+    if isinstance(crs_like, int):
+        try:                         # a code newer than the runner's PROJ database
+            pyproj.CRS.from_epsg(crs_like)
+        except pyproj.exceptions.CRSError:
+            pytest.skip(f"EPSG:{crs_like} not in this PROJ database ({pyproj.proj_version_str})")
     with pytest.raises(ValueError, match=msg):
         nad83_realization(crs_like)
 

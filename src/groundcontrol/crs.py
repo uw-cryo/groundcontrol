@@ -1062,7 +1062,7 @@ def compare_frames(a, b, *, epoch_a=None, epoch_b=None) -> FrameComparison:
 
 
 def _dynamic_or_none(crs) -> bool | None:
-    return is_dynamic_frame(crs) if crs.datum is not None else None
+    return is_dynamic_frame(crs) if _horizontal_datum_of(crs) is not None else None
 
 
 def _frame_input(x, epoch, side: str):
@@ -1145,7 +1145,7 @@ class DatasetFrame:
     def dynamic(self) -> bool | None:
         """True when the datum is a dynamic frame (an epoch is then required to
         place the coordinates); None when the dataset has no CRS or no datum."""
-        if self.crs is None or self.crs.datum is None:
+        if self.crs is None or _horizontal_datum_of(self.crs) is None:
             return None
         return is_dynamic_frame(self.crs)
 

@@ -248,3 +248,16 @@ def test_plate_fixed_gate_sees_the_compound_member(compound, plate_fixed):
     assert gc_crs._plate_fixed_datum(crs) is plate_fixed
     assert gc_crs._plate_fixed_datum(crs.to_wkt()) is plate_fixed
     assert gc_crs._horizontal_datum_of(crs) is not None
+
+
+def test_dynamic_flags_use_the_member_datum_for_compounds(monkeypatch):
+    """PR #43 bot: the flag consumers must not short-circuit on a compound's
+    own (possibly empty) datum. Simulate an older pyproj by hiding it."""
+    crs = pyproj.CRS("EPSG:9755+3855")
+    orig = pyproj.CRS.datum                            # the class property, whatever defines it
+    monkeypatch.setattr(pyproj.CRS, "datum",
+                        property(lambda self: None if self.is_compound else orig.fget(self)))
+    assert crs.datum is None                          # the simulated older pyproj
+    assert gc_crs._horizontal_datum_of(crs) is not None
+    assert DatasetFrame(crs, None, "undeclared", "x.tif").dynamic is True
+    assert compare_frames(crs, crs).dynamic_a is True

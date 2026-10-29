@@ -64,6 +64,9 @@ __all__ = [
     "NAD83_REALIZATIONS",
     "NAD83Realization",
     "nad83_realization",
+    "NAD83_GEOGRAPHIC_CRS",
+    "RealizationShift",
+    "realization_shift",
     # stage 2 — intra-frame epoch propagation
     "PLATE_MOTION_RATE_BOUND",
     "PlateMotionModel",
@@ -568,6 +571,186 @@ def nad83_realization(crs_like) -> NAD83Realization | None:
     raise ValueError(
         f"NAD83-family datum {raw_name!r} matches no known realization; add it to "
         "groundcontrol.crs._NAD83_DATUM_CODES with its EPSG code")
+
+
+#: the 2D geographic CRS (EPSG) of each realization token, the pair
+#: :func:`realization_shift` transforms between
+NAD83_GEOGRAPHIC_CRS = {
+    "NAD83(1986)": 4269, "NAD83(HARN)": 4152, "NAD83(HARN Corrected)": 8545,
+    "NAD83(CORS96)": 6783, "NAD83(FBN)": 8860, "NAD83(NSRS2007)": 4759, "NAD83(2011)": 6318,
+    "NAD83(PA11)": 6322, "NAD83(MA11)": 6324, "NAD83(MARP00)": 9072, "NAD83(PACP00)": 9075,
+    "NAD83(CSRS)": 4617, "NAD83(CSRS96)": 8232, "NAD83(CSRS)v2": 8237, "NAD83(CSRS)v3": 8240,
+    "NAD83(CSRS)v4": 8246, "NAD83(CSRS)v5": 8249, "NAD83(CSRS)v6": 8252, "NAD83(CSRS)v7": 8255,
+    "NAD83(CSRS)v8": 10414,
+}
+
+
+@dataclass(frozen=True)
+class RealizationShift:
+    """Result of :func:`realization_shift`: where the same point lands in the
+    target realization, minus where it sits in the source, in local meters."""
+    dE: np.ndarray
+    dN: np.ndarray
+    source: str
+    target: str
+    route: str
+    definition: str
+    accuracy: float | None
+
+    @property
+    def magnitude(self) -> np.ndarray:
+        return np.hypot(self.dE, self.dN)
+
+
+def _realization_token(x) -> str:
+    if isinstance(x, str) and x in NAD83_GEOGRAPHIC_CRS:
+        return x
+    r = nad83_realization(x)
+    if r is None:
+        raise ValueError(f"{x!r} is not a NAD83 realization (nad83_realization returned None)")
+    return r.realization
+
+
+def _grid_transformer_or_raise(src, dst, aoi_bounds_4326=None) -> pyproj.Transformer:
+    """The BEST available operation when every datum-changing leg of it is a
+    published grid, else NoTransformPathError.
+
+    A lower-accuracy fallback would be a different number. A leg that is
+    not a grid (an EPSG null transform, a Helmert through WGS 84 or a
+    time-dependent Helmert through ITRF) is not a realization shift: it
+    returns an exact zero, a hub artifact of about 1 m, or a number at an
+    unstated epoch. PROJ elides a null leg from the pipeline string of a
+    concatenated operation, so the check reads the sub-operations
+    (``Transformer.operations``), not the string: every ``Transformation``
+    must carry a grid; ``Conversion`` legs (axis order, geographic to
+    geocentric) are exempt. EPSG's stated 0 m identities between NAD83(CSRS)
+    versions and NAD83(2011) are statements, not grids, and are refused the
+    same way; a consumer that trusts them treats the tokens as one
+    realization explicitly."""
+    aoi = pyproj.aoi.AreaOfInterest(*aoi_bounds_4326) if aoi_bounds_4326 is not None else None
+    tg = TransformerGroup(src, dst, area_of_interest=aoi, allow_ballpark=False, always_xy=True)
+    missing = sorted({g.short_name for op in tg.unavailable_operations
+                      for g in op.grids if not g.available})
+    diag = {"source_crs": src, "target_crs": dst, "aoi_bounds_4326": aoi_bounds_4326,
+            "missing_grids": missing}
+    if not tg.transformers or not tg.best_available:
+        why = "no operation" if not tg.transformers else "the best operation is unavailable"
+        raise NoTransformPathError(
+            f"realization_shift {src!r} -> {dst!r}: {why} (allow_ballpark=False; missing grids: "
+            f"{missing}). Remedies: TransformerGroup(...).download_grids(), `pyproj sync`, or "
+            "PROJ_NETWORK=ON. No lower-accuracy fallback is used.", diag)
+    t = tg.transformers[0]
+    legs = [(op.name, op.method_name, [g.short_name for g in op.grids], op.accuracy)
+            for op in (t.operations or []) if op.type_name != "Conversion"]
+    gridless = [leg for leg in legs if not leg[2]]
+    if not legs or gridless:
+        raise NoTransformPathError(
+            f"realization_shift {src!r} -> {dst!r}: PROJ's best operation {t.description!r} is "
+            f"not a grid-based datum shift: leg(s) without a grid {gridless or legs}. A null "
+            "transform, a Helmert through WGS 84 or ITRF, or an EPSG 0 m identity is not a "
+            "realization shift, and EPSG publishes no grid for this pair. Nothing is returned.",
+            {**diag, "route": t.description, "definition": t.definition, "legs": legs})
+    return t
+
+
+def realization_shift(lon, lat, from_realization, to="NAD83(2011)",
+                      aoi_bounds_4326=None) -> RealizationShift:
+    """Predicted horizontal shift between two NAD83 realizations at points.
+
+    ``dE``/``dN`` are the target-realization position of each point minus
+    its source-realization position, in meters east and north on the GRS 80
+    ellipsoid (:class:`pyproj.Geod` inverse), so the shift a wrong or true
+    declaration implies. ``from_realization`` and ``to`` are realization
+    tokens (:data:`NAD83_REALIZATIONS`) or anything :func:`nad83_realization`
+    classifies (a CRS, an EPSG code, a WESM ``horiz_crs`` value).
+
+    The route is PROJ's best available operation for the pair and must be a
+    grid-based datum shift (NADCON5 over CONUS, Alaska, Hawaii, Puerto Rico
+    and Guam; NTv2 or deformation grids in Canada), recorded in ``route``,
+    ``definition`` and ``accuracy`` (PROJ's root-sum-square of the steps'
+    stated accuracies). No fallback and no substitute: a missing grid, a
+    pair EPSG defines no operation for (NAD83(CORS96) to NAD83(2011)), and a
+    pair whose best route is a null operation or a Helmert through WGS 84
+    or ITRF (NAD83(CSRS) to NAD83(2011), NAD83(PA11) to NAD83(2011)) all
+    raise :class:`NoTransformPathError`; a Helmert would return a hub
+    artifact of about 1 m or an epoch-dependent number at an unstated
+    epoch, and a null operation an exact zero. The check reads every leg
+    of a concatenated operation, since PROJ drops a null leg from the
+    pipeline string (NAD83(CSRS) to NAD83(FBN) is such a chain). EPSG's
+    stated 0 m identities between NAD83(CSRS) versions 6 to 8 and
+    NAD83(2011) are refused too: they are statements, not grids. The same
+    realization on both sides is an identity with zero shift.
+
+    Points outside the chosen grid raise :class:`NoTransformPathError`
+    naming their indices; PROJ sorts grids by area, so a CONUS grid is
+    chosen by default and Alaska, Hawaii or Puerto Rico points need
+    ``aoi_bounds_4326`` over their region to select that grid. Non-finite
+    coordinates raise ``ValueError`` (a masked array's masked points count
+    as non-finite).
+
+    Magnitudes vary by place, more than summary figures suggest. Over the
+    CONUS NADCON5 extent on a one-degree grid, bare NAD83 to NAD83(2011) has
+    5th, 50th and 95th percentiles of about 0.08, 0.29 and 0.74 m. The
+    maxima depend on the sampling: at quarter-degree sampling an interior
+    Indiana cell exceeds 2.5 m, entirely from the NAD83 to HARN leg; HARN
+    to NAD83(2011) reaches about 1 m on the northern California coast and
+    NSRS2007 to NAD83(2011) about 0.3 m in South Carolina (PROJ 9.8.1). At
+    single places: HARN to NAD83(2011) is 2 cm in Kansas, 7 cm at Las Vegas
+    and 15 cm at Seattle; NSRS2007 to NAD83(2011) is 1 cm at Las Vegas and
+    6 cm at Seattle.
+
+    Two things a grid route cannot say for itself, so the call warns. A
+    CONUS grid's EPSG area of use is a bounding box that spills into
+    southern Canada, and the NADCON5 rasters are padded there, so a point
+    in Vancouver or Toronto gets an extrapolated or zero value through a
+    US-only grid; use the NAD83(CSRS) tokens for Canadian data. The HARN to
+    FBN grid is exactly zero over 80 percent of its cells, NGS's statement
+    that no FBN readjustment was done there, so an exact zero from a grid
+    route is a statement, not a measurement. Any zero result (under one
+    micrometer) from a non-identity route is logged at WARNING with the
+    point indices.
+    """
+    lon = np.asarray(np.ma.filled(np.ma.asarray(lon, dtype=float), np.nan))
+    lat = np.asarray(np.ma.filled(np.ma.asarray(lat, dtype=float), np.nan))
+    if lon.shape != lat.shape:
+        raise ValueError(f"lon and lat shapes differ: {lon.shape} vs {lat.shape}")
+    finite = np.isfinite(lon) & np.isfinite(lat)
+    if not finite.all():
+        raise ValueError(f"non-finite coordinates at flat indices "
+                         f"{np.flatnonzero(~finite.ravel())[:10].tolist()}; nothing is guessed")
+    if (np.abs(lat) > 90).any() or (np.abs(lon) > 360).any():
+        raise ValueError("lon/lat out of range (degrees expected)")
+    src_tok, dst_tok = _realization_token(from_realization), _realization_token(to)
+    if src_tok == dst_tok:
+        z = np.zeros(lon.shape)
+        return RealizationShift(z, z.copy(), src_tok, dst_tok, "identity (same realization)",
+                                "", 0.0)
+    src, dst = f"EPSG:{NAD83_GEOGRAPHIC_CRS[src_tok]}", f"EPSG:{NAD83_GEOGRAPHIC_CRS[dst_tok]}"
+    t = _grid_transformer_or_raise(src, dst, aoi_bounds_4326)
+    lon2, lat2 = t.transform(lon, lat, errcheck=False)
+    lon2, lat2 = np.asarray(lon2, dtype=float), np.asarray(lat2, dtype=float)
+    out = ~(np.isfinite(lon2) & np.isfinite(lat2))
+    if out.any():
+        idx = np.flatnonzero(out.ravel())
+        raise NoTransformPathError(
+            f"realization_shift {src_tok} -> {dst_tok}: {idx.size} of {out.size} point(s) fall "
+            f"outside the grid of {t.description!r} (flat indices {idx[:10].tolist()}). PROJ sorts "
+            "grids by area, so a CONUS grid is chosen by default; for Alaska, Hawaii, Puerto "
+            "Rico or Guam pass aoi_bounds_4326 over that region to select its grid.",
+            {"source_crs": src, "target_crs": dst, "route": t.description,
+             "outside_indices": idx.tolist()})
+    az, _, dist = pyproj.Geod(ellps="GRS80").inv(lon, lat, lon2, lat2)
+    az = np.radians(np.asarray(az, dtype=float))
+    dist = np.asarray(dist, dtype=float)
+    zero = np.flatnonzero(dist.ravel() < 1e-6)       # grid zeros interpolate to < 1 um
+    if zero.size:
+        logger.warning(
+            "realization_shift %s -> %s: zero shift at %d of %d point(s) (flat indices %s) "
+            "through %r: the grid states no shift there (no readjustment, or raster padding "
+            "outside the grid's region, e.g. CONUS grids over Canada); not a measurement",
+            src_tok, dst_tok, zero.size, dist.size, zero[:10].tolist(), t.description)
+    return RealizationShift(np.asarray(dist * np.sin(az)), np.asarray(dist * np.cos(az)),
+                            src_tok, dst_tok, t.description, t.definition, t.accuracy)
 
 
 # ---------------------------------------------------------------------------

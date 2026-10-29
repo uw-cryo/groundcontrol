@@ -62,6 +62,9 @@ def test_non_finite_and_out_of_range_inputs_raise():
     masked = np.ma.masked_array([LV[0], -98.0], mask=[False, True])
     with pytest.raises(ValueError, match="non-finite"):
         realization_shift(masked, [LV[1], 38.5], "NAD83(2011)", "NAD83(2011)")
+    masked_int = np.ma.masked_array([-115, -98], mask=[False, True])   # int dtype, masked
+    with pytest.raises(ValueError, match="non-finite"):
+        realization_shift(masked_int, [36, 38], "NAD83(2011)", "NAD83(2011)")
     with pytest.raises(ValueError, match="out of range"):
         realization_shift([LV[0]], [95.0], "NAD83(2011)", "NAD83(2011)")
 
@@ -125,3 +128,15 @@ def test_points_outside_the_grid_raise_with_indices_and_an_aoi_remedy():
     r = realization_shift(anchorage[0], anchorage[1], "NAD83(HARN)",
                           aoi_bounds_4326=(-170, 51, -129, 72))
     assert "Alaska" in r.route and 0.05 < float(r.magnitude) < 0.5
+
+
+@pytest.mark.network
+@pytest.mark.parametrize("src, dst", [
+    ("NAD83(CSRS)", "NAD83(FBN)"),         # null leg (EPSG:1950, 2 m) elided from the pipeline string
+    ("NAD83(FBN)", "NAD83(CSRS)"),
+    ("NAD83(CSRS)v8", "NAD83(NSRS2007)"),  # EPSG 0 m identity leg + a NADCON5 grid leg
+])
+def test_concatenated_routes_with_a_gridless_leg_are_refused(src, dst):
+    """Review round 2 HIGH: the pipeline string showed only the grid legs."""
+    with pytest.raises(NoTransformPathError, match="leg\\(s\\) without a grid"):
+        realization_shift(LV[0], LV[1], src, dst)

@@ -110,7 +110,8 @@ control is present. It fetches Esri World Imagery tiles to underlay them.
 ## groundcontrol-assess
 
 ```bash
-groundcontrol-assess dsm.tif --vdatum ellipsoid
+groundcontrol-assess dem.tif                       # the embedded CRS declares the heights
+groundcontrol-assess dem.tif --vdatum EPSG:5703    # a 2D CRS: state the vertical datum
 groundcontrol-assess --product DSM=dsm.tif --product DTM=dtm.tif --target-crs dsm_frame.wkt --aoi site.geojson
 ```
 

@@ -34,18 +34,26 @@ pip install git+https://github.com/uw-cryo/groundcontrol.git@v0.4.0
 
 ## Quick start
 
-**Assess your own DEM.** The DEM is the only required input besides its vertical datum.
-The AOI defaults to the DEM footprint and the control is fetched for you.
+**Assess your own DEM.** The DEM is the only required input. The AOI defaults to the
+DEM footprint, the control is fetched for you, and the results land in
+`dem_groundcontrol/` next to it.
 
 ```bash
-groundcontrol-assess dsm.tif --vdatum ellipsoid:itrf2014
+groundcontrol-assess dem.tif
 ```
 
-`--vdatum` states what the heights are: `ellipsoid:<realization>`, a vertical CRS such as
-`EPSG:5703` (NAVD88), or a product preset such as `3dep` or `cop30`. A DEM whose embedded
-CRS already declares its heights needs nothing. A 2D CRS with no `--vdatum` is refused,
-never guessed, because an assumed vertical datum shows up as a geoid-sized bias of tens of
-meters. See the [vertical datum field guide](docs/vdatum.md).
+That works when the DEM's embedded CRS declares what its heights are (a compound or 3D
+CRS). Most DEMs carry only a 2D CRS, and then the command stops and asks you to state the
+vertical datum with `--vdatum`, because an assumed one shows up as a geoid-sized bias of
+tens of meters:
+
+```bash
+groundcontrol-assess dem.tif --vdatum EPSG:5703            # NAVD88 heights
+groundcontrol-assess dem.tif --vdatum ellipsoid:itrf2014   # ellipsoidal heights, realization named
+groundcontrol-assess dem.tif --vdatum cop30                # a product preset
+```
+
+See the [vertical datum field guide](docs/vdatum.md) for what common products are on.
 
 **Fetch control for an AOI.** A bbox, a vector file, or a raster footprint.
 

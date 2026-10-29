@@ -388,3 +388,52 @@ def test_bindings_route_honors_the_callers_pam_setting(tmp_path):
     with rasterio.Env(GDAL_PAM_ENABLED="NO"):
         f = dataset_frame(q)
     assert f.epoch is None and f.epoch_source == "undeclared"   # hidden for both reads
+
+
+def test_manual_gdal_config_fallback_is_thread_local_and_restores():
+    """Without gdal.config_options (GDAL < 3.7) the fallback must use the
+    thread-local accessors and put the previous value back (PR #39 bot)."""
+    import types
+    calls = []
+    store = {}
+
+    def get_tl(k):
+        calls.append(("get", k))
+        return store.get(k)
+
+    def set_tl(k, v):
+        calls.append(("set", k, v))
+        if v is None:
+            store.pop(k, None)
+        else:
+            store[k] = v
+
+    def forbidden(*a, **k):
+        raise AssertionError("process-global accessor used")
+
+    fake = types.SimpleNamespace(GetThreadLocalConfigOption=get_tl, SetThreadLocalConfigOption=set_tl,
+                                 GetConfigOption=forbidden, SetConfigOption=forbidden)
+    with gc_crs._gdal_config(fake, {"GDAL_PAM_ENABLED": "NO"}):
+        assert store == {"GDAL_PAM_ENABLED": "NO"}
+    assert store == {} and ("set", "GDAL_PAM_ENABLED", None) in calls
+    assert gc_crs._gdal_config(fake, {}).__class__.__name__ == "nullcontext"
+
+
+@pytest.mark.skipif(not HAVE_OSGEO, reason="needs the GDAL bindings")
+def test_bindings_config_scope_does_not_leak_across_threads(tmp_path):
+    import threading
+    from osgeo import gdal
+    p = _write_tif(tmp_path / "a.tif", "EPSG:6340")
+    seen = {}
+
+    def other_thread():
+        seen["during"] = gdal.GetThreadLocalConfigOption("GDAL_PAM_ENABLED")
+
+    with gc_crs._gdal_config(gdal, {"GDAL_PAM_ENABLED": "NO"}):
+        th = threading.Thread(target=other_thread)
+        th.start()
+        th.join()
+        assert gdal.GetThreadLocalConfigOption("GDAL_PAM_ENABLED") == "NO"
+    assert seen["during"] is None                      # the other thread never saw it
+    assert gdal.GetThreadLocalConfigOption("GDAL_PAM_ENABLED") is None   # restored
+    assert dataset_frame(p).crs_source == "dataset"

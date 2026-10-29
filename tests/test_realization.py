@@ -137,3 +137,17 @@ def test_authority_less_bare_datum_spellings_classify_as_bare(datum_name):
            'PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]')
     r = nad83_realization(wkt)
     assert r.realization == "NAD83(1986)" and r.bare
+
+
+@pytest.mark.parametrize("datum_name", ["NAD83(CSRS)v9", "North American Datum of 1983 (CSRS) version 9",
+                                        "NAD83 Canadian Spatial Reference System v12"])
+def test_unknown_csrs_version_raises_instead_of_collapsing(datum_name):
+    """PR #40 bot: a versioned CSRS name outside the table must not fall
+    through to the base NAD83(CSRS) token."""
+    wkt = (f'GEOGCS["x",DATUM["{datum_name}",SPHEROID["GRS 1980",6378137,298.257222101]],'
+           'PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]')
+    with pytest.raises(ValueError, match="no known realization"):
+        nad83_realization(wkt)
+    # the known versions and the plain base still classify
+    assert nad83_realization(4617).realization == "NAD83(CSRS)"
+    assert nad83_realization(8255).realization == "NAD83(CSRS)v7"

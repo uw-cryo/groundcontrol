@@ -453,7 +453,10 @@ _NAD83_DATUM_NAMES = (
     (re.compile(r"\bPACP00\b", re.I), "NAD83(PACP00)"),
     (re.compile(r"\bCSRS96\b", re.I), "NAD83(CSRS96)"),
     (re.compile(r"CSRS\)? ?(version |v)(?P<v>[2-8])\b", re.I), "NAD83(CSRS)v{v}"),
-    (re.compile(r"Canadian Spatial Reference System|\bCSRS\b", re.I), "NAD83(CSRS)"),
+    # the base CSRS token only when no version follows: an unknown version
+    # (v9, "version 9") must raise, not collapse to the base
+    (re.compile(r"(Canadian Spatial Reference System|\bCSRS\b)(?!.*(version|v) ?\d)", re.I),
+     "NAD83(CSRS)"),
     # the bare datum, including PROJ's own aliases for it, NAD83(1986) and NAD83(Original)
     (re.compile(r"^(D )?(North ?American ?Datum ?(of ?)?1983|NAD ?(19)?83) ?(\(?(1986|Original)\)?)?$",
                 re.I), "NAD83(1986)"),

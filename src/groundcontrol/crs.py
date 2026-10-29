@@ -64,6 +64,9 @@ __all__ = [
     "NAD83_REALIZATIONS",
     "NAD83Realization",
     "nad83_realization",
+    "NAD83_GEOGRAPHIC_CRS",
+    "RealizationShift",
+    "realization_shift",
     # stage 2 — intra-frame epoch propagation
     "PLATE_MOTION_RATE_BOUND",
     "PlateMotionModel",
@@ -568,6 +571,102 @@ def nad83_realization(crs_like) -> NAD83Realization | None:
     raise ValueError(
         f"NAD83-family datum {raw_name!r} matches no known realization; add it to "
         "groundcontrol.crs._NAD83_DATUM_CODES with its EPSG code")
+
+
+#: the 2D geographic CRS (EPSG) of each realization token, the pair
+#: :func:`realization_shift` transforms between
+NAD83_GEOGRAPHIC_CRS = {
+    "NAD83(1986)": 4269, "NAD83(HARN)": 4152, "NAD83(HARN Corrected)": 8545,
+    "NAD83(CORS96)": 6783, "NAD83(FBN)": 8860, "NAD83(NSRS2007)": 4759, "NAD83(2011)": 6318,
+    "NAD83(PA11)": 6322, "NAD83(MA11)": 6324, "NAD83(MARP00)": 9072, "NAD83(PACP00)": 9075,
+    "NAD83(CSRS)": 4617, "NAD83(CSRS96)": 8232, "NAD83(CSRS)v2": 8237, "NAD83(CSRS)v3": 8240,
+    "NAD83(CSRS)v4": 8246, "NAD83(CSRS)v5": 8249, "NAD83(CSRS)v6": 8252, "NAD83(CSRS)v7": 8255,
+    "NAD83(CSRS)v8": 10414,
+}
+
+
+@dataclass(frozen=True)
+class RealizationShift:
+    """Result of :func:`realization_shift`: where the same point lands in the
+    target realization, minus where it sits in the source, in local meters."""
+    dE: np.ndarray
+    dN: np.ndarray
+    source: str
+    target: str
+    route: str
+    definition: str
+    accuracy: float | None
+
+    @property
+    def magnitude(self) -> np.ndarray:
+        return np.hypot(self.dE, self.dN)
+
+
+def _realization_token(x) -> str:
+    if isinstance(x, str) and x in NAD83_GEOGRAPHIC_CRS:
+        return x
+    r = nad83_realization(x)
+    if r is None:
+        raise ValueError(f"{x!r} is not a NAD83 realization (nad83_realization returned None)")
+    return r.realization
+
+
+def _best_transformer_or_raise(src, dst, aoi_bounds_4326=None) -> pyproj.Transformer:
+    """The BEST available operation, or NoTransformPathError: a shift
+    computed through a lower-accuracy fallback is a different number."""
+    aoi = pyproj.aoi.AreaOfInterest(*aoi_bounds_4326) if aoi_bounds_4326 is not None else None
+    tg = TransformerGroup(src, dst, area_of_interest=aoi, allow_ballpark=False, always_xy=True)
+    missing = sorted({g.short_name for op in tg.unavailable_operations
+                      for g in op.grids if not g.available})
+    if not tg.transformers or not tg.best_available:
+        why = "no operation" if not tg.transformers else "the best operation is unavailable"
+        msg = (f"realization_shift {src!r} -> {dst!r}: {why} (allow_ballpark=False; missing "
+               f"grids: {missing}). Remedies: TransformerGroup(...).download_grids(), "
+               "`pyproj sync`, or PROJ_NETWORK=ON. No lower-accuracy fallback is used.")
+        raise NoTransformPathError(msg, {"source_crs": src, "target_crs": dst,
+                                         "missing_grids": missing})
+    return tg.transformers[0]
+
+
+def realization_shift(lon, lat, from_realization, to="NAD83(2011)",
+                      aoi_bounds_4326=None) -> RealizationShift:
+    """Predicted horizontal shift between two NAD83 realizations at points.
+
+    ``dE``/``dN`` are the target-realization position of each point minus
+    its source-realization position, in meters east and north on the GRS 80
+    ellipsoid (:class:`pyproj.Geod` inverse), so the shift a wrong or true
+    declaration implies. The magnitudes vary by place: bare NAD83 to
+    NAD83(2011) is 0.2 to 0.45 m over CONUS; HARN to NAD83(2011) is 2 cm
+    in Kansas, 7 cm at Las Vegas and 15 cm at Seattle; NSRS2007 to
+    NAD83(2011) is 1 cm at Las Vegas and 6 cm at Seattle (PROJ 9.8.1,
+    NADCON5). ``from_realization`` and ``to`` are realization tokens
+    (:data:`NAD83_REALIZATIONS`) or anything :func:`nad83_realization`
+    classifies (a CRS, an EPSG code, a WESM ``horiz_crs`` value).
+
+    The route is PROJ's best available operation for the pair (NADCON5
+    grids over CONUS), recorded in ``route``/``definition``/``accuracy``.
+    No fallback: a missing grid or a pair with no operation (EPSG has none
+    for NAD83(CORS96) to NAD83(2011)) raises :class:`NoTransformPathError`
+    instead of returning a ballpark or lower-accuracy number. The same
+    realization on both sides is an identity with zero shift.
+    """
+    lon = np.asarray(lon, dtype=float)
+    lat = np.asarray(lat, dtype=float)
+    if lon.shape != lat.shape:
+        raise ValueError(f"lon and lat shapes differ: {lon.shape} vs {lat.shape}")
+    src_tok, dst_tok = _realization_token(from_realization), _realization_token(to)
+    if src_tok == dst_tok:
+        z = np.zeros(lon.shape)
+        return RealizationShift(z, z.copy(), src_tok, dst_tok, "identity (same realization)",
+                                "", 0.0)
+    src, dst = f"EPSG:{NAD83_GEOGRAPHIC_CRS[src_tok]}", f"EPSG:{NAD83_GEOGRAPHIC_CRS[dst_tok]}"
+    t = _best_transformer_or_raise(src, dst, aoi_bounds_4326)
+    lon2, lat2 = t.transform(lon, lat, errcheck=True)
+    az, _, dist = pyproj.Geod(ellps="GRS80").inv(lon, lat, lon2, lat2)
+    az = np.radians(np.asarray(az, dtype=float))
+    dist = np.asarray(dist, dtype=float)
+    return RealizationShift(dist * np.sin(az), dist * np.cos(az), src_tok, dst_tok,
+                            t.description, t.definition, t.accuracy)
 
 
 # ---------------------------------------------------------------------------

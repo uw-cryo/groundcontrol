@@ -17,12 +17,15 @@ from rasterio.transform import from_origin
 from groundcontrol import crs as gc_crs
 from groundcontrol.crs import DatasetFrame, EPOCH_SOURCES, compare_frames, dataset_frame
 
+# a reader counts only when it can read epochs: the production gates (GDAL >= 3.4)
 try:
-    from osgeo import gdal  # noqa: F401
-    HAVE_OSGEO = True
+    from osgeo import gdal
+    HAVE_OSGEO = tuple(int(v) for v in gdal.__version__.split(".")[:2]) >= gc_crs._EPOCH_MIN_GDAL
 except ImportError:
     HAVE_OSGEO = False
-HAVE_GDALINFO = shutil.which("gdalinfo") is not None
+_gdalinfo = shutil.which("gdalinfo")
+HAVE_GDALINFO = (_gdalinfo is not None
+                 and (gc_crs._gdalinfo_version(_gdalinfo) or (0, 0)) >= gc_crs._EPOCH_MIN_GDAL)
 ANY_READER = HAVE_OSGEO or HAVE_GDALINFO
 
 NAD83_UTM11_3D = pyproj.CRS("EPSG:6340").to_3d()
@@ -34,15 +37,27 @@ def _write_tif(path, crs_input=None, epoch=None):
                        dtype="float32", transform=from_origin(500000, 4000000, 1, 1),
                        **kw) as dst:
         dst.write(np.zeros((1, 3, 3), np.float32))
-    if epoch is not None:  # stamp the way lidar_tools does: through GDAL
-        from osgeo import gdal
-        with gdal.ExceptionMgr(useExceptions=True):
-            ds = gdal.Open(str(path), gdal.GA_Update)
-            srs = ds.GetSpatialRef()
-            srs.SetCoordinateEpoch(epoch)
-            ds.SetSpatialRef(srs)
-            ds = None
+    if epoch is not None:  # stamp the way a writer does: through GDAL
+        _stamp_epoch(str(path), epoch)
     return str(path)
+
+
+def _gdal_exceptions():
+    """gdal.ExceptionMgr where it exists (GDAL >= 3.7); a no-op context before."""
+    import contextlib
+    from osgeo import gdal
+    return gdal.ExceptionMgr(useExceptions=True) if hasattr(gdal, "ExceptionMgr") \
+        else contextlib.nullcontext()
+
+
+def _stamp_epoch(path, epoch):
+    from osgeo import gdal
+    with _gdal_exceptions():
+        ds = gdal.Open(path, gdal.GA_Update)
+        srs = ds.GetSpatialRef()
+        srs.SetCoordinateEpoch(epoch)
+        ds.SetSpatialRef(srs)
+        ds = None
 
 
 @pytest.fixture
@@ -250,7 +265,7 @@ def test_crs_source_pam_reproduces_the_translate_3d_case(tmp_path):
     from osgeo import gdal
     src = _write_tif(tmp_path / "src.tif", "EPSG:32611")
     dst = str(tmp_path / "dst.tif")
-    with gdal.ExceptionMgr(useExceptions=True):
+    with _gdal_exceptions():
         gdal.Translate(dst, src, outputSRS=NAD83_UTM11_3D.to_wkt())
     assert (tmp_path / "dst.tif.aux.xml").exists()
     assert dataset_frame(dst).crs_source == "pam"
@@ -355,3 +370,21 @@ def test_gdalinfo_route_receives_the_callers_pam_setting(tmp_path, canned_gdalin
     run = canned_gdalinfo(MODERN, '{"coordinateEpoch": 2010.0}')
     dataset_frame(p)
     assert "--config" not in run.calls[1]
+
+
+@pytest.mark.skipif(not HAVE_OSGEO, reason="needs the GDAL bindings")
+def test_bindings_route_honors_the_callers_pam_setting(tmp_path):
+    """A stamped epoch that lives only in the sidecar must not be reported as
+    checked-and-present when the caller hides sidecars: the CRS read and the
+    epoch read must see the same file."""
+    p = _write_tif(tmp_path / "a.tif", "EPSG:6340")
+    _stamp_epoch(p, 2023.5)                        # GeoTIFF key: in the file itself
+    assert dataset_frame(p).epoch == 2023.5
+    q = _write_tif(tmp_path / "b.tif", "EPSG:6340")
+    (tmp_path / "b.tif.aux.xml").write_text(      # epoch only in the sidecar
+        f'<PAMDataset><SRS dataAxisToSRSAxisMapping="1,2" coordinateEpoch="2015.0">'
+        f'{pyproj.CRS("EPSG:6340").to_wkt()}</SRS></PAMDataset>')
+    assert dataset_frame(q).epoch == 2015.0        # sidecars honored by default
+    with rasterio.Env(GDAL_PAM_ENABLED="NO"):
+        f = dataset_frame(q)
+    assert f.epoch is None and f.epoch_source == "undeclared"   # hidden for both reads

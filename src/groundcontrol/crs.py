@@ -748,13 +748,39 @@ def _epoch_via_gdal(path: str):
     except AttributeError:
         import contextlib
         mgr = contextlib.nullcontext()
-    with mgr:
+    # the caller's effective GDAL configuration (a rasterio.Env that hides
+    # sidecars) applies to this open too, whether or not the bindings share
+    # rasterio's config scope
+    cfg = dict(_effective_gdal_config(("GDAL_PAM_ENABLED", "GDAL_DISABLE_READDIR_ON_OPEN")))
+    with mgr, _gdal_config(gdal, cfg):
         ds = gdal.OpenEx(path, gdal.OF_RASTER | gdal.OF_READONLY)
         if ds is None:
             raise OSError(f"GDAL could not open {path!r}")
         srs = ds.GetSpatialRef()
-        epoch = srs.GetCoordinateEpoch() if srs is not None else 0.0  # AttributeError < 3.4
+        epoch = srs.GetCoordinateEpoch() if srs is not None else 0.0
     return _declared_epoch(epoch), "gdal"
+
+
+def _gdal_config(gdal, options: dict):
+    """Scoped GDAL config options for the bindings: ``gdal.config_options``
+    where it exists, else set and restore by hand."""
+    import contextlib
+    if not options:
+        return contextlib.nullcontext()
+    if hasattr(gdal, "config_options"):
+        return gdal.config_options({k: str(v) for k, v in options.items()})
+
+    @contextlib.contextmanager
+    def _manual():
+        previous = {k: gdal.GetConfigOption(k) for k in options}
+        try:
+            for k, v in options.items():
+                gdal.SetConfigOption(k, str(v))
+            yield
+        finally:
+            for k, v in previous.items():
+                gdal.SetConfigOption(k, v)
+    return _manual()
 
 
 def _gdalinfo_version(exe: str):

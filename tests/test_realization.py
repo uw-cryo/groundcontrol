@@ -123,3 +123,14 @@ def test_bad_input_raises():
         nad83_realization("not a crs")
     with pytest.raises(pyproj.exceptions.CRSError):
         nad83_realization(999999999)
+
+
+@pytest.mark.parametrize("datum_name", ["NAD83(1986)", "NAD83 (1986)", "NAD83(Original)",
+                                        "North American Datum 1983 (1986)", "D_NAD_1983"])
+def test_authority_less_bare_datum_spellings_classify_as_bare(datum_name):
+    """PR #40 bot: an id-less WKT naming the datum by PROJ's own alias
+    'NAD83(1986)' must classify as the bare realization, not raise."""
+    wkt = (f'GEOGCS["x",DATUM["{datum_name}",SPHEROID["GRS 1980",6378137,298.257222101]],'
+           'PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]')
+    r = nad83_realization(wkt)
+    assert r.realization == "NAD83(1986)" and r.bare

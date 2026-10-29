@@ -454,7 +454,9 @@ _NAD83_DATUM_NAMES = (
     (re.compile(r"\bCSRS96\b", re.I), "NAD83(CSRS96)"),
     (re.compile(r"CSRS\)? ?(version |v)(?P<v>[2-8])\b", re.I), "NAD83(CSRS)v{v}"),
     (re.compile(r"Canadian Spatial Reference System|\bCSRS\b", re.I), "NAD83(CSRS)"),
-    (re.compile(r"^(D )?North ?American ?Datum ?(of ?)?1983$|^(D )?NAD ?(19)?83$", re.I), "NAD83(1986)"),
+    # the bare datum, including PROJ's own aliases for it, NAD83(1986) and NAD83(Original)
+    (re.compile(r"^(D )?(North ?American ?Datum ?(of ?)?1983|NAD ?(19)?83) ?(\(?(1986|Original)\)?)?$",
+                re.I), "NAD83(1986)"),
 )
 #: any NAD83-family spelling, EPSG or Esri ("NAD_1983", "D_NAD_1983_...")
 _NAD83_FAMILY = re.compile(r"NAD ?(19)?83|North ?American ?Datum ?(of ?)?1983", re.I)

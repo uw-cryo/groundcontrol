@@ -12,6 +12,7 @@ see docs/crs_implementation.md §1. Validate numerically against the CRS fixture
 
 from __future__ import annotations
 
+import functools
 import logging
 import warnings
 from typing import Protocol, runtime_checkable
@@ -402,9 +403,59 @@ def is_dynamic_frame(crs_like) -> bool:
     Dynamic-frame coordinates are only meaningful with a coordinate epoch —
     time-dependent transforms must be evaluated at each point's
     ``coord_epoch`` (crs_implementation §1).
+
+    The WKT2 ``DYNAMIC`` property decides when present. GeoTIFF keys cannot
+    carry it, so a 2D raster in WGS 84 (G2139) or ITRF2014 reads back as a
+    plain geodetic reference frame with its datum name and EPSG id intact;
+    the datum identity then decides: the EPSG registry's frame reference
+    epoch for a datum with an id, else the name (ITRF, IGS, IGb, ETRF,
+    WGS 84 (Gnnnn)). A datum ensemble (EPSG:4326) is never dynamic.
     """
     datum = pyproj.CRS(crs_like).datum
-    return datum is not None and "dynamic" in (datum.type_name or "").lower()
+    if datum is None:
+        return False
+    if "dynamic" in (datum.type_name or "").lower():
+        return True
+    if "ensemble" in (datum.type_name or "").lower():
+        return False
+    ident = datum.to_json_dict().get("id") or {}
+    if ident.get("authority") == "EPSG" and ident.get("code") is not None:
+        known = _registry_dynamic_datum(int(ident["code"]))
+        if known is not None:
+            return known
+    return bool(_DYNAMIC_DATUM_NAME.search(datum.name or ""))
+
+
+#: datum names of dynamic frames, for a datum without a registry id
+_DYNAMIC_DATUM_NAME = re.compile(
+    r"International Terrestrial Reference Frame|\bITRF ?\d{2,4}|\bIG[Sb] ?\d{2}\b|"
+    r"European Terrestrial Reference Frame|\bETRF ?\d{2,4}|"
+    r"World Geodetic System 1984 \(G\d{3,4}\)|WGS ?84 ?\(G\d{3,4}\)", re.I)
+
+
+def _registry_dynamic_datum(code: int):
+    """True/False from PROJ's EPSG registry (a dynamic datum carries a frame
+    reference epoch), None when the code is not in the installed proj.db."""
+    return _registry_dynamic_datum_cached(code, pyproj.datadir.get_data_dir())
+
+
+@functools.lru_cache(maxsize=None)
+def _registry_dynamic_datum_cached(code: int, data_dir: str):
+    import os
+    import sqlite3
+    db = os.path.join(data_dir, "proj.db")
+    if not os.path.exists(db):
+        return None
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        row = con.execute(
+            "select frame_reference_epoch from geodetic_datum where auth_name='EPSG' and code=?",
+            (code,)).fetchone()
+    finally:
+        con.close()
+    if row is None:
+        return None
+    return row[0] is not None
 
 
 # ---------------------------------------------------------------------------
@@ -1025,6 +1076,10 @@ class DatasetFrame:
     (only in the ``.aux.xml`` sidecar) or ``'pam-override'`` (the sidecar
     replaces a different CRS held in the dataset; GDAL reads PAM first).
     Both PAM values mean the file is not safe to copy without its sidecar.
+    ``'pam'`` is the normal state of a 3D projected product with ellipsoidal
+    heights, not a sign of editing: GeoTIFF keys cannot carry that CRS, so
+    GDAL writes the 2D part in the file and the whole CRS in the sidecar;
+    2D and compound CRSs stay in the file.
     What rasterio cannot see is not reported: a caller's own GDAL
     configuration that hides sidecars (``GDAL_PAM_ENABLED=NO``,
     ``GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR``) makes a sidecar-only file

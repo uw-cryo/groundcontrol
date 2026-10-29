@@ -60,6 +60,10 @@ __all__ = [
     "land_horizontal",
     "ngs_datum_to_epsg",
     "is_dynamic_frame",
+    # NAD83 realization classifier
+    "NAD83_REALIZATIONS",
+    "NAD83Realization",
+    "nad83_realization",
     # stage 2 — intra-frame epoch propagation
     "PLATE_MOTION_RATE_BOUND",
     "PlateMotionModel",
@@ -398,6 +402,172 @@ def is_dynamic_frame(crs_like) -> bool:
     """
     datum = pyproj.CRS(crs_like).datum
     return datum is not None and "dynamic" in (datum.type_name or "").lower()
+
+
+# ---------------------------------------------------------------------------
+# NAD83 realization — one classifier for every consumer
+# ---------------------------------------------------------------------------
+# Three repos classified NAD83 realizations by hand in one week (datum-name
+# string matching, each slightly different). The EPSG datum code is the
+# authority when the CRS carries one; a WKT1 LAS header or an Esri .prj
+# without ids falls back to the datum NAME as PROJ normalizes it (an Esri
+# "D_North_American_1983_HARN" comes back as the EPSG name). A CRS that is
+# NAD83-family but matches neither table raises: a new realization is a fact
+# to add here, not to guess.
+
+#: canonical realization token by EPSG geodetic datum code (every NAD83-family
+#: geodetic datum in EPSG as of PROJ 9.8 except 1414, the California SRN epoch
+#: 2025.0 network realization, which raises until it has a token)
+_NAD83_DATUM_CODES = {
+    6269: "NAD83(1986)",
+    6152: "NAD83(HARN)",
+    1212: "NAD83(HARN Corrected)",
+    1133: "NAD83(CORS96)",
+    1211: "NAD83(FBN)",
+    6759: "NAD83(NSRS2007)",
+    1116: "NAD83(2011)",
+    1117: "NAD83(PA11)",
+    1118: "NAD83(MA11)",
+    1221: "NAD83(MARP00)",
+    1249: "NAD83(PACP00)",
+    6140: "NAD83(CSRS)",
+    1192: "NAD83(CSRS96)",
+    1193: "NAD83(CSRS)v2",
+    1194: "NAD83(CSRS)v3",
+    1195: "NAD83(CSRS)v4",
+    1196: "NAD83(CSRS)v5",
+    1197: "NAD83(CSRS)v6",
+    1198: "NAD83(CSRS)v7",
+    1365: "NAD83(CSRS)v8",
+}
+#: the same tokens by datum name, for a CRS that carries no datum id (a WKT
+#: rebuilt by PROJ, a compound member, an Esri .prj); matched on the name with
+#: underscores turned to spaces; order matters, the bare name last
+_NAD83_DATUM_NAMES = (
+    (re.compile(r"High Accuracy Reference Network ?-? ?Corrected|HARN ?-? ?Corrected", re.I),
+     "NAD83(HARN Corrected)"),
+    (re.compile(r"High ?Accuracy ?Reference ?Network|\bHARN\b", re.I), "NAD83(HARN)"),
+    (re.compile(r"Continuously Operating Reference Station 1996|\bCORS96\b", re.I), "NAD83(CORS96)"),
+    (re.compile(r"Federal Base Network|\bFBN\b", re.I), "NAD83(FBN)"),
+    (re.compile(r"National Spatial Reference System 2007|NSRS ?2007", re.I), "NAD83(NSRS2007)"),
+    (re.compile(r"National Spatial Reference System 2011|NSRS ?2011|NAD ?(19)?83 ?\(?2011\)?", re.I),
+     "NAD83(2011)"),
+    (re.compile(r"National Spatial Reference System PA11|\bPA11\b", re.I), "NAD83(PA11)"),
+    (re.compile(r"National Spatial Reference System MA11|\bMA11\b", re.I), "NAD83(MA11)"),
+    (re.compile(r"\bMARP00\b", re.I), "NAD83(MARP00)"),
+    (re.compile(r"\bPACP00\b", re.I), "NAD83(PACP00)"),
+    (re.compile(r"\bCSRS96\b", re.I), "NAD83(CSRS96)"),
+    (re.compile(r"CSRS\)? ?(version |v)(?P<v>[2-8])\b", re.I), "NAD83(CSRS)v{v}"),
+    # the base CSRS token only when no version follows: an unknown version
+    # (v9, "version 9") must raise, not collapse to the base
+    (re.compile(r"(Canadian Spatial Reference System|\bCSRS\b)(?!.*(version|v) ?\d)", re.I),
+     "NAD83(CSRS)"),
+    # the bare datum, including PROJ's own aliases for it, NAD83(1986) and NAD83(Original)
+    (re.compile(r"^(D )?(North ?American ?Datum ?(of ?)?1983|NAD ?(19)?83) ?(\(?(1986|Original)\)?)?$",
+                re.I), "NAD83(1986)"),
+)
+#: any NAD83-family spelling, EPSG or Esri ("NAD_1983", "D_NAD_1983_...")
+_NAD83_FAMILY = re.compile(r"NAD ?(19)?83|North ?American ?Datum ?(of ?)?1983", re.I)
+#: county-adjusted HARN systems (Minnesota, Wisconsin) sit on a raised
+#: ellipsoid: HARN in name, not in geometry
+_NAD83_COUNTY_ADJ = re.compile(r"HARN ?Adj|\bAdj ?(MN|WI)\b", re.I)
+_GRS80_A = 6378137.0
+NAD83_REALIZATIONS = tuple(dict.fromkeys(_NAD83_DATUM_CODES.values()))
+
+
+@dataclass(frozen=True)
+class NAD83Realization:
+    """What a CRS declares about its NAD83 realization (:func:`nad83_realization`).
+
+    ``realization`` is one of :data:`NAD83_REALIZATIONS`, the fixed vocabulary
+    downstream tables freeze on. ``bare`` is True for the ``NAD83(1986)`` token:
+    EPSG:6269 formally names the 1986 adjustment, but in practice a bare
+    "NAD83" label means the realization was not stated, and the 0.2 to
+    0.45 m question between it and NAD83(2011) is open until measured.
+    ``matched_by`` is ``'datum_code'`` when the CRS carried an EPSG datum id,
+    else ``'datum_name'`` (a WKT rebuilt by PROJ, a compound member or a 3D
+    cast loses the id; the token is the same, ``datum_code`` is then None).
+    """
+    realization: str
+    datum_name: str
+    datum_code: int | None
+    matched_by: str
+
+    @property
+    def bare(self) -> bool:
+        return self.realization == "NAD83(1986)"
+
+
+def _datum_code(datum) -> int | None:
+    ident = datum.to_json_dict().get("id") or {}
+    if ident.get("authority") == "EPSG" and ident.get("code") is not None:
+        return int(ident["code"])
+    return None
+
+
+def nad83_realization(crs_like) -> NAD83Realization | None:
+    """The NAD83 realization a CRS declares, or None for a non-NAD83 datum.
+
+    Accepts anything :func:`pyproj.CRS.from_user_input` does (EPSG code as
+    int or string, WKT of any flavor, a CRS) plus a bare numeric string or an
+    integral float such as a WESM ``horiz_crs`` value; an integer that is not
+    an EPSG CRS code is tried as ``ESRI:<code>`` (WESM carries 102247).
+    Compound CRSs classify their horizontal member. Returns None for WGS 84,
+    ITRF, NAD27, ETRS89 and every other family.
+
+    Raises ``ValueError``, never guessing, when the input is NAD83-family but
+    cannot be placed: an EPSG datum code not in the table (add it to
+    ``groundcontrol.crs._NAD83_DATUM_CODES``), an Esri-only name no table
+    covers, a county-adjusted HARN system on a raised ellipsoid, or an
+    ellipsoid-only definition that names no datum (a PROJ string with
+    ``+ellps=GRS80`` and no ``+datum``; PROJ strings can carry only the bare
+    ``+datum=NAD83``, so every other realization is lost in that encoding).
+    """
+    if isinstance(crs_like, float) and float(crs_like).is_integer():
+        crs_like = int(crs_like)
+    if isinstance(crs_like, (int, np.integer)) or (isinstance(crs_like, str) and crs_like.strip().isdigit()):
+        code = int(crs_like)
+        try:
+            crs = pyproj.CRS.from_epsg(code)
+        except pyproj.exceptions.CRSError:
+            crs = pyproj.CRS.from_user_input(f"ESRI:{code}")
+    else:
+        crs = pyproj.CRS.from_user_input(crs_like)
+    # the datum of the horizontal member as the CRS carries it (ids intact);
+    # horizontal_2d rebuilds the CRS and can drop the authority ids
+    member = pyproj.CRS(crs.sub_crs_list[0]) if crs.is_compound else crs
+    datum = member.datum if member.datum is not None else horizontal_2d(crs).datum
+    if datum is None:
+        return None
+    raw_name = datum.name or ""
+    name = raw_name.replace("_", " ")
+    code = _datum_code(datum)
+    if code in _NAD83_DATUM_CODES:
+        return NAD83Realization(_NAD83_DATUM_CODES[code], raw_name, code, "datum_code")
+    if not _NAD83_FAMILY.search(name):
+        if name.lower().startswith("unknown based on"):
+            raise ValueError(
+                f"{raw_name!r} names an ellipsoid, not a datum: this CRS cannot declare a "
+                "realization (a PROJ string carries at most '+datum=NAD83')")
+        return None
+    # NAD83-family, no table hit
+    if code is not None:
+        raise ValueError(
+            f"NAD83-family datum {raw_name!r} (EPSG datum code {code}) is not in the realization "
+            "table; add it to groundcontrol.crs._NAD83_DATUM_CODES")
+    ell = horizontal_2d(crs).ellipsoid
+    if _NAD83_COUNTY_ADJ.search(name) or (ell is not None and abs(ell.semi_major_metre - _GRS80_A) > 1e-3):
+        raise ValueError(
+            f"{raw_name!r} is a county-adjusted NAD83 system on a modified ellipsoid "
+            f"(a={ell.semi_major_metre if ell else 'unknown'} m); it is not a plain NAD83 "
+            "realization. Transform it with its own definition first.")
+    for rx, token in _NAD83_DATUM_NAMES:
+        m = rx.search(name)
+        if m:
+            return NAD83Realization(token.format(**m.groupdict()), raw_name, None, "datum_name")
+    raise ValueError(
+        f"NAD83-family datum {raw_name!r} matches no known realization; add it to "
+        "groundcontrol.crs._NAD83_DATUM_CODES with its EPSG code")
 
 
 # ---------------------------------------------------------------------------

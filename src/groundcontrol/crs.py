@@ -706,8 +706,9 @@ def realization_shift(lon, lat, from_realization, to="NAD83(2011)",
     US-only grid; use the NAD83(CSRS) tokens for Canadian data. The HARN to
     FBN grid is exactly zero over 80 percent of its cells, NGS's statement
     that no FBN readjustment was done there, so an exact zero from a grid
-    route is a statement, not a measurement. Any exact-zero result from a
-    non-identity route is logged at WARNING with the point indices.
+    route is a statement, not a measurement. Any zero result (under one
+    micrometer) from a non-identity route is logged at WARNING with the
+    point indices.
     """
     lon = np.asarray(np.ma.filled(np.ma.asarray(lon, dtype=float), np.nan))
     lat = np.asarray(np.ma.filled(np.ma.asarray(lat, dtype=float), np.nan))
@@ -741,10 +742,10 @@ def realization_shift(lon, lat, from_realization, to="NAD83(2011)",
     az, _, dist = pyproj.Geod(ellps="GRS80").inv(lon, lat, lon2, lat2)
     az = np.radians(np.asarray(az, dtype=float))
     dist = np.asarray(dist, dtype=float)
-    zero = np.flatnonzero(dist.ravel() == 0.0)
+    zero = np.flatnonzero(dist.ravel() < 1e-6)       # grid zeros interpolate to < 1 um
     if zero.size:
         logger.warning(
-            "realization_shift %s -> %s: exact zero at %d of %d point(s) (flat indices %s) "
+            "realization_shift %s -> %s: zero shift at %d of %d point(s) (flat indices %s) "
             "through %r: the grid states no shift there (no readjustment, or raster padding "
             "outside the grid's region, e.g. CONUS grids over Canada); not a measurement",
             src_tok, dst_tok, zero.size, dist.size, zero[:10].tolist(), t.description)

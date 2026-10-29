@@ -151,5 +151,5 @@ def test_exact_zero_from_a_grid_route_warns(caplog):
     with caplog.at_level(logging.WARNING, logger="groundcontrol.crs"):
         r = realization_shift([KS[0], -123.1, LV[0]], [KS[1], 49.3, LV[1]],
                               "NAD83(HARN)", "NAD83(FBN)")
-    assert r.magnitude[0] == 0.0 and r.magnitude[1] == 0.0 and r.magnitude[2] > 0.01
-    assert "exact zero at 2 of 3" in caplog.text and "[0, 1]" in caplog.text
+    assert r.magnitude[0] < 1e-6 and r.magnitude[1] < 1e-6 and r.magnitude[2] > 0.01
+    assert "zero shift at 2 of 3" in caplog.text and "[0, 1]" in caplog.text

@@ -78,7 +78,7 @@ GeoParquet and provenance outputs.
 ## Accuracy (`accuracy.py`)
 
 Dual-track reporting: robust median and NMAD over all finite residuals, plus the parametric
-set the cal/val community expects (mean, standard deviation, RMSE, LE90, LE95, CE90) after
+set the cal/val community expects (mean, standard deviation, RMSE, LE90, LE95) after
 an outlier gate, in the vocabulary of ASPRS Positional Accuracy Standards Ed. 2 and the
 USGS Lidar Base Specification. See [accuracy conventions](accuracy_conventions.md).
 
@@ -108,6 +108,10 @@ GeoParquet and CSV export with an embedded, replayable transform-provenance side
 
 ## Not yet implemented
 
+- **Horizontal accuracy measurement.** The assessment samples DEM heights at control
+  points, so it measures vertical residuals only. `accuracy.ce90` and
+  `accuracy.error_report_3d` compute horizontal and 3D statistics from east and north
+  residuals measured elsewhere.
 - **Fetch-side `--target-crs` and `--target-epoch` landing.** Fetch lands on EPSG:6318
   plus NAVD88; target-frame landing happens in the assess step (`transform_control`).
   Passing a target to `fetch_control` raises.

@@ -3,20 +3,17 @@
 [![CI](https://github.com/uw-cryo/groundcontrol/actions/workflows/ci.yml/badge.svg)](https://github.com/uw-cryo/groundcontrol/actions/workflows/ci.yml)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21846300.svg)](https://doi.org/10.5281/zenodo.21846300)
 
-Fetch ground control points for any area of interest and assess the accuracy of a DEM
-against them, with the 3D coordinate reference system, datum and epoch handled correctly.
-
-Given an AOI, groundcontrol fetches the available control points with their datum and
-epoch. Given a DEM, it samples the control, runs the accuracy assessment, and writes the
-statistics and figures for vertical and horizontal accuracy.
+Fetch ground control points for an arbitrary AOI and assess DEM accuracy, with rigorous
+3D CRS / datum / epoch handling. Given a DEM, groundcontrol samples the control, runs the
+accuracy assessment, and produces the analysis and visualization.
 
 <p align="center">
   <a href="docs/img/casagrande_control_map.jpg"><img src="docs/img/casagrande_control_map.jpg" width="35%" align="top" alt="Control map: five sources over the site hillshade"></a>
-  <a href="docs/img/casagrande_validation_dz_DTM.png"><img src="docs/img/casagrande_validation_dz_DTM.png" width="63%" align="top" alt="DTM validation: every control segment on one map with per-segment statistics"></a>
+  <a href="docs/img/casagrande_validation_dz_DTM.png"><img src="docs/img/casagrande_validation_dz_DTM.png" width="63%" align="top" alt="DTM validation map with per-segment statistics"></a>
 </p>
 
 *Casa Grande, AZ: control from five sources over the 3DEP hillshade (left) and the DTM
-validation figure, every control segment on one map with per-segment statistics (right).
+validation figure with per-segment statistics (right).
 Click either image for full resolution.*
 
 ## Install
@@ -95,17 +92,15 @@ What these look like on a real site: [gallery](docs/gallery.md).
 
 ## Control sources
 
-| Source | Key | What it is |
-|--------|-----|------------|
-| USGS 3DEP checkpoints | `3dep` | the surveyed checkpoints behind every 3DEP lidar project |
-| NGS Data Explorer | `ngs` | monumented control, landed per NAD83 realization |
-| OPUS shared solutions | `opus` | campaign GNSS occupations with the NGS stability tier |
-| Nevada Geodetic Lab | `ngl` | continuous GNSS stations with MIDAS velocities and earthquake-step evidence |
-| FAA NASR runways | `faa` | photo-identifiable runway ends, thresholds and helipads with survey provenance |
+| Source | Key | What it is | Coverage | Approx size (Oct 2026) |
+|--------|-----|------------|----------|----------------|
+| [USGS 3DEP survey checkpoints](https://www.sciencebase.gov/catalog/item/67075e6bd34e969edc59c3e7) | `3dep` | Independent survey checkpoints collected to assess 3DEP lidar projects, 2004-2025: non-vegetated (NVA) and vegetated (VVA) vertical accuracy points with NAVD88 heights and survey dates | US: 50 states, DC, Puerto Rico | 145,000 points from 550 projects (77k NVA, 55k VVA) |
+| [NGS datasheets](https://geodesy.noaa.gov/datasheets/) | `ngs` | NGS datasheet survey marks (benchmarks, triangulation and GPS-observed marks) with published horizontal and vertical datums, network accuracies and last-recovered date | US: 50 states, DC, territories | 797,000 marks in the NGS datasheet database; 445,000 with adjusted orthometric heights, 305,000 with adjusted horizontal positions |
+| [OPUS shared solutions](https://geodesy.noaa.gov/OPUS/view.jsp) | `opus` | Static GNSS occupations that surveyors submitted to NGS OPUS and chose to share, with reference frame, observation epoch and a monument-stability rating | US: 50 states, DC, territories | 52,800 marks (83,600 solutions) |
+| [Nevada Geodetic Laboratory](https://geodesy.unr.edu/) | `ngl` | Daily GNSS position time series for continuous and campaign stations from public archives, with MIDAS velocities and a catalog of equipment and earthquake steps | Global | 23,800 stations (8,100 in the US; 14,300 with data since 2025), MIDAS velocities for 20,000 |
+| [FAA National Airspace System Resources (NASR)](https://www.faa.gov/air_traffic/flight_info/aeronav/aero_data/NASR_Subscription/) | `faa` | Runway ends, displaced thresholds and helipads from the FAA 28-day airport database, each with its position source; surveyed points meet AC 150/5300-18C (±1 ft horizontal, ±0.25 ft vertical at 95%) | US: 50 states, DC, territories | 25,300 points at civil facilities, 10,600 of them surveyed |
 
-Each source degrades into a per-source status report when it is unavailable or empty;
-one failing provider never poisons the rest. Details per source are in the
-[capabilities page](docs/features.md).
+Details per source are in the [capabilities page](docs/features.md).
 
 ## Design principles
 
@@ -129,8 +124,8 @@ works end to end from the CLI and from Python. It is covered by 815 offline test
 Python 3.10 and 3.12, and the geodesy core is adversarially audited with math checked
 against external oracles. The API may still move between minor versions; pin the tag.
 
-Not yet implemented: fetch-side landing in a target frame (landing happens in the assess
-step), a `user_points` source for your own checkpoint tables, accumulated per-point
+Not yet implemented: horizontal accuracy measurement (the assessment samples DEM heights
+only), fetch-side landing in a target frame (landing happens in the assess step), a `user_points` source for your own checkpoint tables, accumulated per-point
 transform budgets, velocity-uncertainty propagation, and ICESat-2 as a dense control
 source. Details in the [capabilities page](docs/features.md#not-yet-implemented).
 

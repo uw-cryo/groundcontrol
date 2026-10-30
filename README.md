@@ -22,7 +22,7 @@ Install from a git tag and pin it. The schema is not frozen yet, so column names
 still change between minor versions.
 
 ```bash
-pip install git+https://github.com/uw-cryo/groundcontrol.git@v0.4.0
+pip install git+https://github.com/uw-cryo/groundcontrol.git@v0.4.1
 ```
 
 > ⚠️ `pip install groundcontrol` installs an **unrelated, abandoned** PyPI package, not
@@ -119,8 +119,8 @@ Details per source are in the [capabilities page](docs/features.md).
 
 ## Status
 
-**v0.4.0, pre-alpha.** The fetch, transform, sample, statistics and figures pipeline
-works end to end from the CLI and from Python. It is covered by 815 offline tests on
+**v0.4.1, pre-alpha.** The fetch, transform, sample, statistics and figures pipeline
+works end to end from the CLI and from Python. It is covered by 864 offline tests on
 Python 3.10 and 3.12, and the geodesy core is adversarially audited with math checked
 against external oracles. The API may still move between minor versions; pin the tag.
 
@@ -175,7 +175,7 @@ Archived on Zenodo. The concept DOI below always resolves to the latest release,
 release also gets its own version DOI. Machine-readable metadata lives in
 [`CITATION.cff`](CITATION.cff) (GitHub's *Cite this repository* button reads it).
 
-> Shean, D. (2026). *groundcontrol* (v0.4.0). Zenodo. https://doi.org/10.5281/zenodo.21846300
+> Shean, D. (2026). *groundcontrol* (v0.4.1). Zenodo. https://doi.org/10.5281/zenodo.21846300
 
 ## Origin
 

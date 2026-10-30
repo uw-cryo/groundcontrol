@@ -130,8 +130,9 @@ Options:
 - `--site-name`, `--outdir`.
 - `--target-epoch`: the epoch the control is propagated to.
 - `--landing-crs`: the horizontal landing frame for the control fetch. The default is the
-  CONUS EPSG:6318 + NAVD88 contract. A target datum outside the NAD83 family derives the
-  landing frame, so an ITRF2014 target lands at EPSG:7912. Geographic CRS only.
+  CONUS EPSG:6318 + NAVD88 contract. When the AOI is outside the NAD83 area of use, the
+  landing frame is derived from the target datum, so an ITRF2014 target lands at EPSG:7912.
+  Geographic CRS only.
 - `--method`, `--radius`: point sampling with `linear` (the default) or `nearest`, or a
   neighborhood median within a radius in raster units. The two flags are mutually exclusive.
 - `--point-lim`, `--vendor-lim`, `--wide-lim`: pin the empirical dz color and axis tiers

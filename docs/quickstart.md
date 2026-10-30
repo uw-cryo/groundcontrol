@@ -216,7 +216,7 @@ layers = [("ortho 0.5 m", "ortho.tif", "rgb"),
 pages = point_context_gallery(sampled[sampled["source"] == "faa"], layers, "out",
                               "mysite", half_m=60, subset_tag="faa_runway",
                               class_col="point_type")
-# -> out/mysite_faa_runway_gallery_120m[_pN].png
+# -> out/mysite_faa_runway_gallery_120m[_pN].jpg
 ```
 
 ## Caveats (current interim state)

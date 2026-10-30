@@ -379,7 +379,7 @@ def context_sheets(sampled, products, outdir, site_name, *, rgb=None,
     with no renderable layer at all, no sheets. Control in a geographic CRS
     (the fetch landing) gets its web basemap built in the AOI's estimated
     UTM. Returns the written pages
-    (``<site>_<subset>_gallery_<tier>[_pN].png``).
+    (``<site>_<subset>_gallery_<tier>[_pN].jpg``).
     """
     from contextlib import ExitStack
 
@@ -1068,14 +1068,14 @@ def point_context_gallery(points, layers, outdir, site_name, *,
         ``class_colors`` KEY ORDER is also the sort priority.
     ncell : point-cells per row (default 3 for 3+ layers else 4).
     max_rows : rows per sheet; longer subsets paginate into
-        ``..._gallery_<tier>_pN.png`` pages (owner 2026-08-13: single
+        ``..._gallery_<tier>_pN.jpg`` pages (owner 2026-08-13: single
         very-long sheets do not review well).
     sort : order cells by (class, id) — class from the ``class_colors``
         key order, and the id's facility prefix groups airports/stations.
         Pass False to keep the caller's order.
 
     Returns the LIST of written paths (one per page;
-    ``<outdir>/<site>_<subset_tag>_gallery_<tier>[_pN].png``).
+    ``<outdir>/<site>_<subset_tag>_gallery_<tier>[_pN].jpg``).
 
     A layer that cannot be read at a point renders an "unavailable" panel
     rather than failing the sheet (points outside one product's footprint

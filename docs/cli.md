@@ -77,6 +77,9 @@ frame. A 3D input such as `EPSG:7912` lands at its 2D counterpart, `EPSG:9000`; 
 written file's CRS is promoted back to the 3D code when every row's vertical datum is
 that frame's ellipsoid.
 
+`--target-crs` and `--target-epoch` are not implemented for fetch, and passing either one
+raises. Landing in the product frame happens in `groundcontrol-assess`.
+
 A source that cannot land in the requested frame degrades into the per-source status
 report rather than poisoning the rest. Plate-fixed NGS and 3DEP control into a dynamic
 ITRF frame is one such case, pending declared-epoch landing.
@@ -126,27 +129,33 @@ Options:
 - `--hs NAME=PATH`: a pre-rendered hillshade for very large mosaics.
 - `--site-name`, `--outdir`.
 - `--target-epoch`: the epoch the control is propagated to.
-- `--method`, `--radius`: sampling method (bilinear, nearest, radius neighborhood).
+- `--landing-crs`: the horizontal landing frame for the control fetch. The default is the
+  CONUS EPSG:6318 + NAVD88 contract. A target datum outside the NAD83 family derives the
+  landing frame, so an ITRF2014 target lands at EPSG:7912. Geographic CRS only.
+- `--method`, `--radius`: point sampling with `linear` (the default) or `nearest`, or a
+  neighborhood median within a radius in raster units. The two flags are mutually exclusive.
 - `--point-lim`, `--vendor-lim`, `--wide-lim`: pin the empirical dz color and axis tiers
   when figures must be comparable across runs.
 - `--rgb`, `--intensity`: an orthoimage and a lidar intensity raster for the contact
   sheets.
+- `--no-figures`: skip all figure output.
 - `--context-sheets`, `--basemap`, `--sources`, `--faa-ownership`, `--refresh`, `--quiet`:
   as for fetch.
 
-`groundcontrol-assess` always writes the capped residual review sheets, the 6 largest and
-6 smallest dz per control subset and product; `--basemap none` renders them without tiles.
+Unless `--no-figures` is set, `groundcontrol-assess` writes the capped residual review
+sheets, the 6 largest and 6 smallest dz per control subset and product. `--basemap none`
+renders them without tiles.
 
 ## Outputs
 
 | File | Contents |
 |------|----------|
-| `<site>_control.parquet` + `.provenance.json` | fetched control in the normalized schema (`schema.py`), EPSG:6318 + NAVD88 landing, per-source status. Reused on the next run. |
+| `<site>_control.parquet` + `.provenance.json` | fetched control in the normalized schema (`schema.py`), landed horizontally in EPSG:6318 by default, with per-row `vertical_crs` provenance and per-source status. Reused on the next run. |
 | `<site>_assessed.parquet` + `.provenance.json` | control landed in the product frame, with `h_ell` and the per-point `xform_acc_m` transform budget, and `h_<NAME>` and `dz_<NAME>` (product minus control, in the product's vertical reference) per product. Unsampled points (nodata, mosaic gaps) stay NaN, never dropped. |
 | `<site>_dz_stats.csv` | one row per product and control segment (3DEP NVA/VVA, GNSS occupation classes, NGS monuments, ...): `n`, `n_valid`, `n_out`, robust `median_m` and `nmad_m`, parametric `mean_m`, `std_m`, `rmse_m`, `le90_m`, `le95_m` after a 3 NMAD gate, `xform_acc_m`, and `applies` (whether that segment validates that product class). |
 | `<site>_validation_dz_<NAME>.png` | per product: the dz map over the hillshade plus dual-track histograms for the survey-grade segments and the NGS monuments ([example](gallery.md#2b-the-clis-own-output-bring-your-own-dem)). |
-| `<site>_<subset>_gallery_<tier>[_pN].png` | per-point context contact sheets by subset (`cors`, `opus`, `gnss_other`, `faa_runway`, `3dep_nva`, `3dep_vva`) at two tiers, 120 m context and 30 m native-pixel. Panels adapt to the available layers: RGB imagery (your `--rgb` ortho and/or `--basemap` tiles, credited on the sheet), `--intensity` grayscale when given, and shaded relief per product ([example](gallery.md#7-per-point-context-contact-sheets)). Opt-in with `--context-sheets`; an AOI-only fetch gets RGB panels only. |
-| `<site>_<subset>_dz_<NAME>_largest.jpg`, `_smallest.jpg` | per product and control subset (the six above plus `ngs_monument`, `ngs_best`): the 6 largest and 6 smallest absolute dz points as imagery, intensity and relief windows at the two tiers, labeled with dz. The review product that separates a biased control point (mast, roof, canopy, moved pad) from a product error. Always written. |
+| `<site>_<subset>_gallery_<tier>[_pN].jpg` | per-point context contact sheets by subset (`cors`, `opus`, `gnss_other`, `faa_runway`, `3dep_nva`, `3dep_vva`) at two tiers, 120 m context and 30 m native-pixel. Panels adapt to the available layers: RGB imagery (your `--rgb` ortho and/or `--basemap` tiles, credited on the sheet), `--intensity` grayscale when given, and shaded relief per product ([example](gallery.md#7-per-point-context-contact-sheets)). Opt-in with `--context-sheets`; an AOI-only fetch gets RGB panels only. |
+| `<site>_<subset>_dz_<NAME>_largest.jpg`, `_smallest.jpg` | per product and control subset (the six above plus `ngs_monument`, `ngs_best`): the 6 largest and 6 smallest absolute dz points as imagery, intensity and relief windows at the two tiers, labeled with dz. The review product that separates a biased control point (mast, roof, canopy, moved pad) from a product error. Written unless `--no-figures` is set. |
 
 The CLI also prints the per-source row counts, the selected transform with its stated
 accuracy, and the stats table to stderr.

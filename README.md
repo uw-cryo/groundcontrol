@@ -136,6 +136,7 @@ source. Details in the [capabilities page](docs/features.md#not-yet-implemented)
 - [Quickstart](docs/quickstart.md): consuming groundcontrol from another project
 - [Gallery](docs/gallery.md): standard outputs on a real site
 - [Vertical datum field guide](docs/vdatum.md): what common products are really on
+- [3DEP checkpoints](docs/checkpoints_3dep.md): the checkpoint data file, its QC flags and the height screen; findings in the [quality assessment notebook](docs/checkpoints_quality_assessment.ipynb)
 - [Accuracy conventions](docs/accuracy_conventions.md): statistics and reporting
 - [CRS implementation](docs/crs_implementation.md): the geodesy directives and their verification
 - [Design plan](docs/plan.md) and [control sources survey](docs/control_sources_survey.md)

@@ -49,6 +49,96 @@ def test_parse_3dep_empty_aoi():
     assert out.crs is not None and out.crs.to_epsg() == 6318
 
 
+def test_parse_3dep_uses_qc_height():
+    """height comes from z_meter_qc when the parquet has it: a repaired row
+    gets the repaired value, a flag-only row NaN (not the bad USGS value),
+    and qc_height_flag rides along in raw."""
+    import numpy as np
+    import pandas as pd
+    raw = gpd.read_parquet(DATA / "checkpoints_3dep_sample.parquet").iloc[:3].copy()
+    z = raw["z_meter_vdatum_update"].to_numpy()
+    raw["z_meter_qc"] = [z[0], z[1] * 10, np.nan]
+    raw["qc_height_flag"] = pd.array([pd.NA, "decimal_shift", "ellipsoid_height_labelled_navd88"],
+                              dtype="string")
+    raw["qc_horizontal_flag"] = pd.array([pd.NA, pd.NA, "source_datum_not_nad83_2011"],
+                                         dtype="string")
+    out = schema.normalize(checkpoints_3dep.parse(raw), source="3dep")
+    np.testing.assert_allclose(out["height"].to_numpy()[:2], [z[0], z[1] * 10])
+    assert np.isnan(out["height"].iloc[2]) and np.isnan(out["native_h"].iloc[2])
+    assert json.loads(out["raw"].iloc[1])["qc_height_flag"] == "decimal_shift"
+    assert json.loads(out["raw"].iloc[2])["qc_horizontal_flag"] == "source_datum_not_nad83_2011"
+    # a clean row's flags are JSON null, not "<NA>"/"nan", so they filter as null
+    flags = checkpoints_3dep.expand_attributes(out)
+    assert flags["qc_height_flag"].isna().tolist() == [True, False, False]
+    assert flags["qc_horizontal_flag"].isna().tolist() == [True, True, False]
+    clean = flags.query("qc_height_flag.isna() and qc_horizontal_flag.isna()", engine="python")
+    assert clean["id"].tolist() == [out["id"].iloc[0]]
+    assert "z_meter_qc" not in json.loads(out["raw"].iloc[0])
+
+
+def test_fetch_3dep_checks_sha256_and_keys_cache(monkeypatch, tmp_path):
+    """A download whose SHA-256 differs from the pin is refused and not
+    cached; the cache file name carries the pin, so a re-pin re-downloads."""
+    import hashlib
+    src = tmp_path / "src.parquet"   # fixture + the bbox covering a bbox read needs
+    gpd.read_parquet(DATA / "checkpoints_3dep_sample.parquet").to_parquet(
+        src, write_covering_bbox=True)
+    body = src.read_bytes()
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    tmp_path = cache
+    monkeypatch.setenv("GROUNDCONTROL_CACHE_DIR", str(cache))
+
+    class _Resp:
+        content = body
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(checkpoints_3dep.requests, "get", lambda *a, **k: _Resp())
+    url = "https://example.invalid/x/checkpoints.parquet"
+    with pytest.raises(ValueError, match="SHA-256"):
+        checkpoints_3dep.fetch((-180, -90, 180, 90), url=url, sha256="0" * 64)
+    assert list(tmp_path.iterdir()) == []
+    good = hashlib.sha256(body).hexdigest()
+    out = checkpoints_3dep.fetch((-180, -90, 180, 90), url=url, sha256=good)
+    assert len(out) > 0
+    assert [p.name for p in tmp_path.iterdir()] == [f"checkpoints_{good[:12]}.parquet"]
+
+
+def test_fetch_3dep_falls_through_mirrors(monkeypatch, tmp_path):
+    """A mirror that errors is skipped and the next one is used."""
+    import hashlib
+
+    import requests
+    src = tmp_path / "src.parquet"
+    gpd.read_parquet(DATA / "checkpoints_3dep_sample.parquet").to_parquet(
+        src, write_covering_bbox=True)
+    body = src.read_bytes()
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setenv("GROUNDCONTROL_CACHE_DIR", str(cache))
+    calls = []
+
+    class _Resp:
+        content = body
+
+        def raise_for_status(self):
+            pass
+
+    def _get(u, **k):
+        calls.append(u)
+        if "down" in u:
+            raise requests.ConnectionError("mirror down")
+        return _Resp()
+
+    monkeypatch.setattr(checkpoints_3dep.requests, "get", _get)
+    urls = ("https://down.invalid/c.parquet", "https://up.invalid/c.parquet")
+    out = checkpoints_3dep.fetch((-180, -90, 180, 90), url=urls,
+                                 sha256=hashlib.sha256(body).hexdigest())
+    assert len(out) > 0 and calls == list(urls)
+
+
 def test_parse_nde_sample():
     records = json.loads((DATA / "ngs_nde_sample.json").read_text())
     out = schema.normalize(ngs.parse_nde(records), source="ngs")

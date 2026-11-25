@@ -26,3 +26,7 @@ sandbox/
 # Review staging (workspace convention): collector-managed copies + quarantine
 review/
 review_superseded/
+
+# built data (published as release assets / object store, not committed)
+data/*.parquet
+data/*_parts/

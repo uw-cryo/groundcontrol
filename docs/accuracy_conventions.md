@@ -66,6 +66,10 @@ publishes **no** network accuracy for orthometric heights. Orthometric accuracy 
   ≤ 3.3 cm RMSEz; NGS-58 (2/5 cm @95%) is the survey standard ASPRS Annex C.5 invokes.
 - `z_meter_vdatum_update`: VDatum-harmonized to GEOID18 (CONUS/PR) / GEOID12B (HI/AK);
   harmonization noise ~1–2 cm (inference; example shift 1.7 cm).
+- **Known errors in the published table** (2026-11): the `3dep` source reads `z_meter_qc`, which
+  repairs or blanks known height errors, and `qc_height_flag` / `qc_horizontal_flag` (in `raw`) flag
+  heights and positions to treat with care. Flag reference: [3DEP checkpoints](checkpoints_3dep.md);
+  evidence: [quality assessment notebook](checkpoints_quality_assessment.ipynb).
 
 ## Proposed mapping (PROVISIONAL — do not implement without owner sign-off)
 Convention candidate: meters at 95% (FGDC-STD-007 reporting standard). Priority: measured

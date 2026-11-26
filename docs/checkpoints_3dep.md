@@ -44,7 +44,7 @@ publish under a new name (`checkpoints-3dep-<version>-qc.parquet`).
 | `unique_identifier`, `collection_date` | | renamed `id`, `datetime` (STAC-style names) |
 | `OBJECTID` | row counter 1..N | dropped |
 | geometry | Point Z, compound EPSG:6349 | 2D Point, EPSG:6318 (the horizontal part); XY identical |
-| added columns | | `z_meter_qc`, `qc_height_flag`, `qc_horizontal_flag` |
+| added columns | | `z_meter_qc`, `qc_height_flag`, `qc_horizontal_flag`, `source_horizontal_crs_qc`, `source_axes_swapped_qc` |
 | layout | | Hilbert-sorted rows, 15 row groups of 10k, `bbox` covering column (GeoParquet 1.1), zstd |
 
 **Why 2D:** the height already lives in columns, and geometry Z would be a third copy that has to
@@ -72,6 +72,14 @@ per row.
 | `qc_horizontal_flag` | `source_crs_mismatch` | 4,748 | source coordinates land more than 1 km from the published lon,lat position in their recorded `source_horizontal_epsg`; do not use the source fields as recorded | unchanged |
 | `qc_horizontal_flag` | `source_datum_not_nad83_2011` | 29,591 | source datum other than NAD83(2011): the published lon,lat position does not match a PROJ transform of the source coordinates; uncertain by 0.2–1.2 m, which matters on slopes | unchanged |
 
+**Source coordinate system.** `source_horizontal_crs_qc` is the CRS `source_easting` /
+`source_northing` are actually in, as an authority code (`EPSG:nnnn` or `ESRI:nnnnnn`): the
+recorded code where it fits, and for `source_crs_mismatch` rows the NAD83 projected CRS the values
+fit to 50 m (4,723 of 4,748; null for the other 25). 50 m identifies the projection, not the NAD83
+realization: among equally good fits the recorded code's datum is kept. `source_axes_swapped_qc`
+is true where easting and northing are swapped (621 rows). With these two columns the source
+coordinates can be put straight onto a project's OPR DEM grid for every row but those 25.
+
 A unit repair removes only the unit error, `z + (src × true unit − src × labelled unit)`, so the
 VDatum shift USGS applied stays in. Where the true unit is a foot, the U.S. survey foot is assumed
 (the two feet differ by 2 ppm).
@@ -82,7 +90,7 @@ they ride in `raw` (they are 3DEP-specific, so not schema columns) and
 
 ```python
 from groundcontrol.sources import checkpoints_3dep
-gdf = checkpoints_3dep.expand_attributes(gdf)   # qc_height_flag, qc_horizontal_flag, project_id, source_geoid
+gdf = checkpoints_3dep.expand_attributes(gdf)   # QC flags, source_horizontal_crs_qc, project_id, ...
 clean = gdf.query("qc_height_flag.isna() and qc_horizontal_flag.isna()", engine="python")
 ```
 

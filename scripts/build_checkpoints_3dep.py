@@ -308,14 +308,78 @@ def recorded_crs(code):
     raise ValueError(f"source_horizontal_epsg {code} is neither an EPSG nor an Esri code")
 
 
+#: source_crs_mismatch rows whose values fit some NAD83 projected CRS (50 m)
+FIT_TOL_M = 50.0
+FIT_AOI_PAD_DEG = 3.0
+EXPECTED_FITTED = 4_723
+
+
+def fit_source_crs(gdf: gpd.GeoDataFrame, rows: np.ndarray) -> tuple[pd.Series, pd.Series]:
+    """The projected CRS that ``source_easting``/``source_northing`` actually fit.
+
+    For each (recorded code, project) group of ``rows``, tries every non-deprecated
+    NAD83-family projected CRS in the EPSG database whose area of use comes within
+    ``FIT_AOI_PAD_DEG`` of the group's published lon,lat positions, with the axes as recorded and swapped, and keeps the
+    one that puts the most points within ``FIT_TOL_M`` of the published lon,lat
+    position. 50 m identifies the projection, not the NAD83 realization: among
+    candidates that fit equally well, the recorded code's datum wins, then the
+    lowest code. Returns ("EPSG:nnnn" or NA, axes-swapped or NA) per row.
+    """
+    import pyproj
+    from pyproj.aoi import AreaOfInterest
+    from pyproj.database import query_crs_info
+    from pyproj.enums import PJType
+    geod = pyproj.Geod(ellps="GRS80")
+    crs_out = pd.Series(pd.NA, index=gdf.index, dtype="string")
+    swap_out = pd.Series(pd.NA, index=gdf.index, dtype="boolean")
+    sub = gdf[rows]
+    for (code, _pid), g in sub.groupby(["source_horizontal_epsg", "project_id"]):
+        rec_datum = recorded_crs(code).geodetic_crs.name
+        e, n = g["source_easting"].to_numpy(), g["source_northing"].to_numpy()
+        px, py = g.geometry.x.to_numpy(), g.geometry.y.to_numpy()
+        # widened: values are often in a zone whose area of use stops short of
+        # the points (one UTM zone for a whole project); the fit test decides
+        aoi = AreaOfInterest(px.min() - FIT_AOI_PAD_DEG, py.min() - FIT_AOI_PAD_DEG,
+                             px.max() + FIT_AOI_PAD_DEG, py.max() + FIT_AOI_PAD_DEG)
+        cands = [c for c in query_crs_info(auth_name="EPSG", pj_types=PJType.PROJECTED_CRS,
+                                           area_of_interest=aoi)
+                 if c.name.startswith("NAD83") and not c.deprecated]
+        scored = []
+        for c in cands:
+            crs = pyproj.CRS.from_epsg(int(c.code))
+            to_geo = pyproj.Transformer.from_crs(crs, crs.geodetic_crs, always_xy=True)
+            for swapped, (a, b) in ((False, (e, n)), (True, (n, e))):
+                lo, la = to_geo.transform(a, b)
+                ok = geod.inv(lo, la, px, py)[2] < FIT_TOL_M
+                if ok.any():
+                    same = crs.geodetic_crs.name == rec_datum
+                    scored.append((-ok.sum(), not same, swapped, int(c.code), ok))
+        if scored:
+            _, _, swapped, epsg, ok = min(scored, key=lambda t: t[:4])
+            idx = g.index[ok]
+            crs_out[idx] = f"EPSG:{epsg}"
+            swap_out[idx] = swapped
+    return crs_out, swap_out
+
+
 def apply_horizontal_qc(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    """Add ``qc_horizontal_flag``; geometry and source fields stay untouched."""
+    """Add ``qc_horizontal_flag``, ``source_horizontal_crs_qc`` and
+    ``source_axes_swapped_qc``; geometry and source fields stay untouched.
+
+    ``source_horizontal_crs_qc`` is the CRS ``source_easting``/``source_northing``
+    are actually in: the recorded code (EPSG or Esri) where it fits, the fitted
+    projection for ``source_crs_mismatch`` rows (see :func:`fit_source_crs`), NA
+    where nothing fits. ``source_axes_swapped_qc`` is True where easting and
+    northing are swapped.
+    """
     import pyproj
     geod = pyproj.Geod(ellps="GRS80")
     dist = pd.Series(np.nan, index=gdf.index)
     datum = pd.Series("", index=gdf.index, dtype=object)
+    rec = pd.Series(pd.NA, index=gdf.index, dtype="string")
     for code, g in gdf.groupby("source_horizontal_epsg"):
         crs = recorded_crs(code)
+        rec[g.index] = ":".join(crs.to_authority())
         lon, lat = pyproj.Transformer.from_crs(crs, crs.geodetic_crs, always_xy=True).transform(
             g["source_easting"].to_numpy(), g["source_northing"].to_numpy())
         dist[g.index] = geod.inv(lon, lat, g.geometry.x.to_numpy(), g.geometry.y.to_numpy())[2]
@@ -332,6 +396,14 @@ def apply_horizontal_qc(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
                                  f"expected {rule['n']}")
         flag[m] = rule["flag"]
     gdf["qc_horizontal_flag"] = flag
+
+    mismatch = masks["source_crs_mismatch"].to_numpy()
+    fitted, swapped = fit_source_crs(gdf, mismatch)
+    if fitted.notna().sum() != EXPECTED_FITTED:
+        raise AssertionError(f"fit_source_crs fitted {fitted.notna().sum()} rows, "
+                             f"expected {EXPECTED_FITTED}")
+    gdf["source_horizontal_crs_qc"] = rec.where(~mismatch, fitted)
+    gdf["source_axes_swapped_qc"] = swapped.where(mismatch, False).astype("boolean")
     return gdf
 
 

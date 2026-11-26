@@ -8,3 +8,6 @@ versioned data releases.
   See [docs/checkpoints_3dep.md](../docs/checkpoints_3dep.md).
 - `checkpoints_3dep_opr_samples.parquet` (and `*_parts/`): DEM sample cache of
   `scripts/screen_checkpoints_3dep.py`.
+- `checkpoints_3dep_position_test.csv`, `checkpoints_3dep_position_test_workunits.csv` (committed):
+  results of `scripts/position_test_checkpoints_3dep.py`, read by
+  [docs/checkpoints_position_investigation.ipynb](../docs/checkpoints_position_investigation.ipynb).

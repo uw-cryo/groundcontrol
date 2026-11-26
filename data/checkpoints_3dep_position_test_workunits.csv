@@ -1,0 +1,392 @@
+workunit,project_id,src_datum,dem_datum,status,shift_m
+AK_IFSAR_Cell6_2010,-10320,NAD83,NAD83,labels agree (not testable),7.081267575614875e-10
+AK_IFSAR_Cell7_2010,-10330,NAD83,NAD83,labels agree (not testable),1.877140660839749e-09
+AK_IFSAR_Cell20_2010,-10170,NAD83,NAD83,labels agree (not testable),2.6031257322754127e-10
+AK_IFSAR_Cell8_2010,-10340,NAD83,NAD83,labels agree (not testable),1.7119386663954638e-09
+AK_IFSAR_Cell11_2010,-10070,NAD83,NAD83,labels agree (not testable),2.9103830456733704e-09
+AK_IFSAR_Add_On_Area_1_35_37_38_2010,-10040,NAD83,NAD83,labels agree (not testable),6.444050763234418e-10
+AK_IFSAR_Cell9_2010,-10350,NAD83,NAD83,labels agree (not testable),3.550667315721512e-09
+AK_IFSAR_Cell32_2010,-10270,NAD83,NAD83,labels agree (not testable),1.079983503748632e-09
+AK_IFSAR_Cell19_2010,-10160,NAD83,NAD83,labels agree (not testable),1.5168234053374484e-09
+AK_IFSAR_Cell15_2010,-10120,NAD83,NAD83,labels agree (not testable),1.041250292910165e-09
+AK_IFSAR_Chugach2_C277_2014,59122,NAD83(CORS96),NAD83(CORS96),labels agree (not testable),1.999315553062188e-09
+AK_IFSAR_Cell17_2010,-10140,NAD83,NAD83,labels agree (not testable),2.1005224641140236e-09
+AK_IFSAR_Cell16_2010,-10130,NAD83,NAD83,labels agree (not testable),3.0357401842263756e-09
+AK_IFSAR_CellD_2010,-10360,NAD83,NAD83,labels agree (not testable),1.3056441880958543e-09
+AK_IFSAR_Chugach2_C312_2014,59122,NAD83(CORS96),NAD83(CORS96),labels agree (not testable),2.8663948765595282e-09
+AK_IFSAR_Chugach2_C276_2014,59122,NAD83(CORS96),NAD83(CORS96),labels agree (not testable),2.4099817997433363e-09
+AK_IFSAR_Chugach2_C308_2014,59122,NAD83(CORS96),NAD83(CORS96),labels agree (not testable),1.137867654623068e-09
+AK_IFSAR_Chugach2_C279_2016,59122,NAD83(CORS96),NAD83(CORS96),labels agree (not testable),1.0732962350934845e-09
+AK_IFSAR_Chugach2_C305_2014,59122,NAD83(CORS96),NAD83(CORS96),labels agree (not testable),1.0528555166224434e-09
+AK_IFSAR_Chugach2_C306_2014,59122,NAD83(CORS96),NAD83(CORS96),labels agree (not testable),1.099766769848401e-09
+AK_IFSAR_Chugach2_C283_2014,59122,NAD83(CORS96),NAD83(CORS96),labels agree (not testable),1.9349123046960055e-09
+AK_IFSAR_Chugach_c282_2016,55185,NAD83(CORS96),NAD83(CORS96),labels agree (not testable),2.57169851502107e-09
+AK_IFSAR_CopperRiver_C286_2012,269,NAD83,Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+AK_IFSAR_D5_L2_C133_2012,255,NAD83,NAD83,labels agree (not testable),2.7058737583387315e-09
+AK_IFSAR_D5_L2_C132_2012,255,NAD83,NAD83,labels agree (not testable),1.1674228077830968e-09
+AK_IFSAR_Chugach_c311_2016,55185,NAD83(CORS96),NAD83(CORS96),labels agree (not testable),2.146592470186969e-09
+AK_IFSAR_CopperRiver_C285_2012,269,NAD83,Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+AK_IFSAR_CopperRiver_C287_2012,269,NAD83,Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+AK_IFSAR_D5_L2_C159_2012,255,NAD83,NAD83,labels agree (not testable),1.1656075014325783e-09
+AK_IFSAR_D5_L3_C129_2012,255,NAD83,NAD83,labels agree (not testable),2.047222270056253e-09
+AK_IFSAR_D5_L3_C155_2012,255,NAD83,NAD83,labels agree (not testable),4.8949839644200725e-09
+AK_IFSAR_D5_L1_C126_2012,255,NAD83,NAD83,labels agree (not testable),1.1872079953534493e-09
+AK_IFSAR_Chugach2_C354_2016,59122,NAD83(CORS96),NAD83(CORS96),labels agree (not testable),7.362751430292566e-10
+AK_IFSAR_Chugach_c281_2016,55185,NAD83(CORS96),NAD83(CORS96),labels agree (not testable),2.1197900332778394e-09
+AK_IFSAR_D5_L4_C135_2012,255,NAD83,NAD83,labels agree (not testable),1.6668137469417827e-09
+AK_IFSAR_D5_L3_C157_2012,255,NAD83,NAD83,labels agree (not testable),3.845672276606534e-09
+AK_IFSAR_D5_L5_C26_2012,255,NAD83,NAD83,labels agree (not testable),1.1301883402599254e-09
+AK_IFSAR_D5_L2_C158_2012,255,NAD83,NAD83,labels agree (not testable),3.459807741854708e-09
+AK_IFSAR_D5_L1_C128_2012,255,NAD83,NAD83,labels agree (not testable),3.540633787807438e-09
+AK_IFSAR_D5_L1_C154_2012,255,NAD83,NAD83,labels agree (not testable),1.7510737474648426e-09
+AK_IFSAR_D5_L4_C136_2012,255,NAD83,NAD83,labels agree (not testable),4.889443516731262e-09
+AK_IFSAR_D5_L4_C160_2012,255,NAD83,NAD83,labels agree (not testable),4.4582090694944035e-09
+AK_IFSAR_D5_L4_C134_2012,255,NAD83,NAD83,labels agree (not testable),9.35406347270368e-10
+AK_IFSAR_D5_L3_C130_2012,255,NAD83,NAD83,labels agree (not testable),8.334068734708913e-10
+AK_IFSAR_D5_L5_C28_2012,255,NAD83,NAD83,labels agree (not testable),2.2279167558304778e-09
+AK_IFSAR_D5_L5_C9_2012,255,NAD83,NAD83,labels agree (not testable),7.967489205011422e-09
+AK_IFSAR_D5_L3_C131_2012,255,NAD83,NAD83,labels agree (not testable),7.134891739191524e-10
+AK_IFSAR_D5_L5_C8_2012,255,NAD83,NAD83,labels agree (not testable),5.206251464550825e-10
+AK_IFSAR_D5_L5_C27_2012,255,NAD83,NAD83,labels agree (not testable),9.385703304198744e-10
+AK_IFSAR_D5_L5_C7_2012,255,NAD83,NAD83,labels agree (not testable),1.3997096866847771e-09
+AK_IFSAR_D5_L3_C156_2012,255,NAD83,NAD83,labels agree (not testable),1.4551915228366852e-09
+AK_IFSAR_D5_L6_C29_2012,255,NAD83,NAD83,labels agree (not testable),2.3283064365386963e-10
+AK_IFSAR_D5_L4_C162_2012,255,NAD83,NAD83,labels agree (not testable),1.3997096866847771e-09
+AK_IFSAR_D5_L6_C31_2012,255,NAD83,NAD83,labels agree (not testable),2.794119302185017e-09
+AK_IFSAR_D5_L6_C30_2012,255,NAD83,NAD83,labels agree (not testable),1.951476397719259e-09
+AK_IFSAR_D5_L4_C161_2012,255,NAD83,NAD83,labels agree (not testable),2.1039976094539145e-09
+AK_IFSAR_D5_L6_C81_2012,255,NAD83,NAD83,labels agree (not testable),2.6330523491333112e-09
+AK_IFSAR_D5_L5_C6_2012,255,NAD83,NAD83,labels agree (not testable),4.662430005730313e-09
+AK_IFSAR_D5_L6_C82_2012,255,NAD83,NAD83,labels agree (not testable),3.507102140953368e-09
+AK_IFSAR_D5_L8B_C80_2012,255,NAD83,NAD83,labels agree (not testable),1.1641532182693481e-09
+AK_IFSAR_D5_L7_C107_2012,255,NAD83,NAD83,labels agree (not testable),1.875560670825423e-09
+AK_IFSAR_D5_L7_C102_2012,255,NAD83,NAD83,labels agree (not testable),3.757889473710436e-09
+AK_IFSAR_D5_L7_C104_2012,255,NAD83,NAD83,labels agree (not testable),2.254560869986228e-09
+AK_IFSAR_D5_L7_C100_2012,255,NAD83,NAD83,labels agree (not testable),2.109174492302518e-09
+AK_IFSAR_D5_L7_C105_2012,255,NAD83,NAD83,labels agree (not testable),2.796391991308032e-09
+AK_IFSAR_D5_L7_C101_2012,255,NAD83,NAD83,labels agree (not testable),8.559693331977319e-10
+AK_IFSAR_D5_L8B_C78_2012,255,NAD83,NAD83,labels agree (not testable),2.670583721938185e-09
+AK_IFSAR_D5_L7_C103_2012,255,NAD83,NAD83,labels agree (not testable),2.3283064365386963e-10
+AK_IFSAR_D5_L7_C106_2012,255,NAD83,NAD83,labels agree (not testable),9.331397911231848e-10
+AK_IFSAR_D5_L6_C108_2012,255,NAD83,NAD83,labels agree (not testable),1.870812694540736e-09
+AK_IFSAR_D5_L8B_C50_2012,255,NAD83,NAD83,labels agree (not testable),2.08250058582033e-09
+AK_IFSAR_D5_L8P_C76_2012,255,NAD83,NAD83,labels agree (not testable),1.416253515122975e-09
+AK_IFSAR_D5_L8B_C49_2012,255,NAD83,NAD83,labels agree (not testable),7.362751430292566e-10
+AK_IFSAR_D5_L8B_C79_2012,255,NAD83,NAD83,labels agree (not testable),1.9199706733309015e-09
+AK_IFSAR_D5_L9_C55_2012,255,NAD83,NAD83,labels agree (not testable),5.720068940715585e-09
+AK_IFSAR_D6_L1B_C191_2012,4332,NAD83,NAD83,labels agree (not testable),1.6507286243707911e-09
+AK_IFSAR_D5_L9_C54_2012,255,NAD83,NAD83,labels agree (not testable),2.1911144983860094e-09
+AK_IFSAR_D5_L9_C51_2012,255,NAD83,NAD83,labels agree (not testable),2.5137354249238483e-09
+AK_IFSAR_D6_L1B_C109_2012,4332,NAD83,NAD83,labels agree (not testable),1.7119386663954638e-09
+AK_IFSAR_D6_L4_C63_2013,-10490,NAD83,NAD83,labels agree (not testable),2.215146744198669e-09
+AK_IFSAR_D5_L9_C52_2012,255,NAD83,NAD83,labels agree (not testable),6.788121413957911e-10
+AK_IFSAR_D5_L8P_C77_2012,255,NAD83,NAD83,labels agree (not testable),4.700426299409573e-09
+AK_IFSAR_D6_L1B_C83_2012,4332,NAD83,NAD83,labels agree (not testable),8.1814900022411e-10
+AK_IFSAR_D6_L3_C87_2013,-10460,NAD83,NAD83,labels agree (not testable),1.21850568825434e-09
+AK_IFSAR_D6_L1B_C137_2012,4332,NAD83,NAD83,labels agree (not testable),1.5159156922140878e-09
+AK_IFSAR_D7_L1_C288_2012,6717,NAD83(CORS96),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+AK_IFSAR_DEM6_Lot1B_C110_2012,4332,NAD83,NAD83,labels agree (not testable),2.5704219005486934e-09
+AK_IFSAR_D7_L3_C116_2013,20064,NAD83,NAD83,labels agree (not testable),3.728131386029174e-09
+AK_IFSAR_D6_L1B_C163_2012,4332,NAD83,NAD83,labels agree (not testable),1.6308535968561075e-09
+AK_IFSAR_D6_L201_C188_2012,-10390,NAD83,NAD83,labels agree (not testable),2.1748176883288433e-09
+AK_IFSAR_DEM6_Lot1B_C84_2012,4332,NAD83,NAD83,labels agree (not testable),2.563309128033491e-09
+AK_IFSAR_SumNNE_L2_c73_2016,58824,NAD83,NAD83,labels agree (not testable),2.577620305293767e-09
+AK_IFSAR_DEM6_Lot1B_C138_2012,4332,NAD83,NAD83,labels agree (not testable),4.4425069128843453e-10
+AK_IFSAR_NRCS_L2_C289_2014,20064,NAD83(CORS96),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+AK_IFSAR_NRCS_C255_2012,-10590,NAD83(CORS96),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+AK_IFSAR_NRCS_L2_C316_2014,20064,NAD83(CORS96),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+AK_IFSAR_SumNNE_L2_c74_2016,58824,NAD83,NAD83,labels agree (not testable),3.790208277315764e-09
+AK_IFSAR_Sum_L4_C168_2010,33609,NAD83(CORS96),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+AK_IFSAR_Sum_L4_C169_2010,33609,NAD83(CORS96),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+AK_IFSAR_SumNNE_179_2016,58824,NAD83,NAD83,labels agree (not testable),4.692851652099372e-10
+AK_IFSAR_DEM6_Lot1B_C111_2012,4332,NAD83,NAD83,labels agree (not testable),2.050994240436006e-09
+AK_IFSAR_Sum_L4_C170_2010,33609,NAD83(CORS96),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+AK_IFSAR_SumNNE_L2_c99_2016,58824,NAD83,NAD83,labels agree (not testable),2.8539566956766095e-09
+AK_IFSAR_NRCS_L2_C260_2012,20064,NAD83(CORS96),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+AK_IFSAR_Sum_L8_C19_2013,33609,NAD83,NAD83,labels agree (not testable),1.9199706733309015e-09
+AK_IFSAR_NRCS_L2_C258_2012,20064,NAD83(CORS96),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+AK_IFSAR_LowerSE_L1_C351_2014,16847,NAD83(CORS96),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+AK_IFSAR_SumNNE_L2_c98_2016,58824,NAD83,NAD83,labels agree (not testable),1.6300743404939358e-09
+AK_IFSAR_SumNNE_c125_2016,58824,NAD83,NAD83,labels agree (not testable),1.8072517933626687e-09
+AK_IFSAR_Sum_L5_C91_2013,33609,NAD83,NAD83,labels agree (not testable),1.9792744582424992e-09
+AK_NRCS_L2_C259_2012,20064,NAD83(CORS96),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+AK_IFSAR_Sum_lot3_C90_2013,33609,NAD83,NAD83,labels agree (not testable),2.09567789307268e-09
+AK_IFSAR_Yukon_Tokiak_C213_2015,58571,NAD83,NAD83,labels agree (not testable),2.7283191786282616e-09
+AK_IFSAR_Yukon_Tokiak_C299_2015,58571,NAD83,NAD83,labels agree (not testable),1.889957126119898e-09
+AK_SummerNNE_L2_c25_2016,58824,NAD83,NAD83,labels agree (not testable),1.863554421996479e-09
+AK_IFSAR_Sum_L9_C145_2013,33609,NAD83,NAD83,labels agree (not testable),1.525176786932296e-09
+AK_IFSAR_Sum_lot3_C65_2013,33609,NAD83,NAD83,labels agree (not testable),3.6124231955346214e-09
+AK_IFSAR_Sum_L9_C144_2013,33609,NAD83,NAD83,labels agree (not testable),1.5159156922140878e-09
+AK_IFSAR_Sum_L9_C117_2015,33609,NAD83,NAD83,labels agree (not testable),1.051369581149684e-09
+AK_Mid_Accuracy_CarryOver_C67,26006,NAD83,NAD83,labels agree (not testable),8.399871695822694e-10
+AK_Mid_Accuracy_CarryOver_C147,26006,NAD83,NAD83,labels agree (not testable),2.0047871045878303e-09
+AK_SummerNNE_Lot1c152_2016,58824,NAD83,NAD83,labels agree (not testable),7.566995918750763e-10
+AK_IFSAR_Yukon_Tokiak_c239_2015,58571,NAD83,NAD83,labels agree (not testable),6.585445079827193e-10
+AK_Yukon_Tokiak_L1_C325_2015,58571,NAD83,NAD83,labels agree (not testable),2.52985789115782e-09
+AK_Mid_Accuracy_CarryOver_C41_2013,26006,NAD83,NAD83,labels agree (not testable),1.166424738903981e-09
+AK_SummerNNE_Lot1c178_2016,58824,NAD83,NAD83,labels agree (not testable),2.6781850192526683e-09
+AK_SummerNNE_Lot1c124_2016,58824,NAD83,NAD83,labels agree (not testable),2.393071197517183e-09
+AK_JUNEAU_2013_2014,6958,NAD83,Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+AL_ThreeCo_2012,2641,NAD83,NAD83,labels agree (not testable),4.197414120966556e-10
+AL_EscambiaCo_2013,6002,NAD83(2011),NAD83,sampled,1.5817402095538513
+AK_Mid_Accuracy_CarryOver_C146,26006,NAD83,NAD83,labels agree (not testable),3.026798367500305e-09
+AK_SummerNNE_Lot1c153_2016,58824,NAD83,NAD83,labels agree (not testable),2.047222270056253e-09
+AL_MobileCo_2014,13792,NAD83(2011),NAD83,sampled,1.7908930425163272
+AR_R6_JeffersonCO_2015,23369,NAD83(2011),NAD83,sampled,0.3222827799861361
+AK_Yukon_Kuskokwim_2016,57713,NAD83(2011),NAD83,sampled,2.1357939802592565
+AR_Ouachita_2016,62397,NAD83(2011),NAD83,sampled,0.3518684809691771
+AZ_BrawleyRillito_NRCS_2018,174142,NAD83(2011),NAD83,sampled,0.224066749436769
+AR_Benton_Co_2015,42027,NAD83(2011),NAD83,sampled,0.37197975443632664
+AR_R6_WashingtonCO_2015,23369,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+AZ_BrawleyRillito_FEMA_2018,174142,NAD83(2011),NAD83,sampled,0.20509621839497977
+AZ_Coconino_B1_2019,182392,NAD83(2011),NAD83(2011),labels agree (not testable),7.362751430292566e-10
+AR_DardanelleReservoir_2015,45482,NAD83(2011),NAD83,sampled,0.3313460317923662
+AR_R6_LowerBlackwaterWS_2015,23369,NAD83(2011),NAD83,sampled,0.3252011963858441
+CA_Central_Valley_2017,58946,NAD83(2011),NAD83(2011),labels agree (not testable),0.0
+AZ_Fredonia_QL1_2016,59089,NAD83(2011),NAD83,sampled,0.18427030957640775
+CA_CarrHirzDeltaFires_1_2019,183383,NAD83(2011),NAD83(2011),labels agree (not testable),5.820766091346741e-11
+Alaska_Mid_Accuracy_DEM_Summer_2015,33609,NAD83,NAD83,labels agree (not testable),1.463607298289444e-09
+AZ_Safford_QL2_2016,59089,NAD83(2011),NAD83,sampled,0.20943751675419245
+CA_Klamath_Topography_2018,80589,NAD83(2011),NAD83,sampled,0.6521724241040534
+CA_LakeCounty_2015,53868,NAD83(2011),NAD83,sampled,0.7630588748299802
+CA_Klamath_Bathymetry_2018,80589,NAD83(2011),NAD83,sampled,0.3833661550472422
+CO_Eastern_North_Priority_2018,77682,NAD83(2011),NAD83(2011),labels agree (not testable),2.3744159907068985e-09
+CA_Sonoma_2013,12384,NAD83,NAD83(2011),sampled,2.5120010595102866
+CO_Eastern_South_Priority2_2018,77682,NAD83(2011),NAD83(2011),labels agree (not testable),1.3626064069941204e-09
+CO_NESEColorado_2_2019,189089,NAD83,NAD83(2011),sampled,0.9816084548956736
+CA_Sonoma_A2_2013,12384,NAD83,NAD83(2011),sampled,2.781010097270333
+CA_WestCoastElNinoUTM11_2016,50604,NAD83(2011),NAD83,sampled,0.787798694184827
+CA_Sonoma_A3_2013,12384,NAD83,NAD83(2011),sampled,2.184452442625397
+CA_WestCoastElNinoUTM10_2016,50604,NAD83(2011),NAD83,sampled,0.5442616510092607
+CO_MesaCo_QL2_UTM13_2015,41707,NAD83(2011),NAD83,sampled,0.14897532142730194
+CA_Montecito_2018,77871,NAD83(2011),NAD83,sampled,1.0094826927449099
+CO_MesaCo_QL2_2015,41707,NAD83(2011),NAD83,sampled,0.28655077691457254
+CA_SE_Fault_Zone_2017,73878,NAD83(2011),NAD83,sampled,0.09568395637220024
+CO_NESEColorado_1_2019,189089,NAD83,NAD83(2011),sampled,0.6011448442020435
+CA_Sonoma_A4_2013,12384,NAD83,Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+CO_NESEColorado_4_2019,189089,NAD83,NAD83(2011),sampled,0.4176258997821344
+CO_NESEColorado_3_2019,189089,NAD83,NAD83(2011),sampled,0.7390658266401864
+CT_Sandy_2014,11306,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+ID_KootenaiRiver_TL_2017,74179,NAD83(2011),NAD83,sampled,0.2874844724163581
+DE_DelawareValleyHD_5A_2015,30706,NAD83(2011),NAD83,sampled,0.28192850195475283
+IL_BondCo_2015,41137,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+IL_5County_KankakeeCo_2014,41765,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+ID_KootenaiRiver_2017,74179,NAD83(2011),NAD83,sampled,0.2613038475320667
+DE_DelawareValley_HD_2015,30706,NAD83(2011),NAD83,sampled,0.17511418589891273
+FL_Upper_Saint_Johns_2017,74157,NAD83(2011),NAD83,sampled,1.4039893544937856
+FL_Suwannee_NCentral_2014,9649,NAD83(HARN),NAD83,sampled,1.2155764826350426
+IA_SouthCentral_1_2020,190537,NAD83(2011),NAD83(2011),labels agree (not testable),1.7462298274040222e-10
+ID_Franklin_Bear_2017,74173,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+IL_5County_WillCo_2014,41765,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+IL_ChristianCo_2014,19741,NAD83(HARN),NAD83,sampled,1.763478356939072
+DE_Snds_2013,6416,NAD83(2011),NAD83,sampled,0.3804701078201351
+IL_District4_Fulton_2014,26340,NAD83(HARN),GCS_NAD83_ILLINOIS_HPGN,labels agree (not testable),0.0
+IL_District7_Clark_2014,26345,NAD83(HARN),NAD83(HARN),labels agree (not testable),4.692851652099372e-10
+IL_District4_Mercer_2014,26340,NAD83(HARN),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+IL_District7_Edwards_2014,26345,NAD83(HARN),NAD83,sampled,1.1678927685143785
+IL_District4_Peoria_2014,26340,NAD83(HARN),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+IL_District4_Knox_2014,26340,NAD83(HARN),GCS_NAD83_ILLINOIS_HPGN,labels agree (not testable),0.0
+IL_ClintonCo_2015,41765,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+IL_DOT_District_7_LiDAR,26345,NAD83(HARN),NAD83(HARN),labels agree (not testable),1.0874088441644216e-09
+IL_District4_Marshal_2014,26340,NAD83(HARN),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+IL_District4_Tazewell_2014,26340,NAD83(HARN),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+IL_District7_Cumberland_2014,26345,NAD83(HARN),NAD83,sampled,1.123576957706315
+IL_District4_Henderson_2014,26340,NAD83(HARN),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+IL_District7_Effingham_2014,26345,NAD83(HARN),NAD83,sampled,1.491068118746833
+IL_District4_Woodford_2014,26340,NAD83(HARN),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+IL_District7_Macon_2014,26345,NAD83(HARN),NAD83,sampled,1.1316013165471375
+IL_District7_Wayne_2014,26345,NAD83(HARN),NAD83,sampled,1.3497628612079524
+IL_District7_Moultrie_2014,26345,NAD83(HARN),NAD83(HARN),labels agree (not testable),7.362751430292566e-10
+IL_District7_Fayette_2014,26345,NAD83(HARN),NAD83,sampled,1.8777919023009486
+IL_JeffersonCo_2015,41137,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+IL_District7_Shelby_2014,26345,NAD83(HARN),NAD83,sampled,1.6486543351256866
+IL_District7_Wabash_2014,26345,NAD83(HARN),NAD83,sampled,1.0598576841913803
+IL_District7_Crawford_2014,26345,NAD83(HARN),NAD83,sampled,0.9685884745154225
+IL_Jasper_2014,26345,NAD83(HARN),NAD83,sampled,1.1922583664790176
+IL_FranklinCo_2014,26358,NAD83(2011),NAD83,sampled,1.281485271455805
+IL_MadisonCo_2014,41765,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+KS_15CoNorth_A1_2015,60659,NAD83(HARN),NAD83(HARN),labels agree (not testable),2.3283064365386963e-10
+IL_WashingtonCo_2015,41137,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+KS_15CoNorth_A2_2015,60659,NAD83(HARN),NAD83(HARN),labels agree (not testable),8.731149137020111e-11
+IL_District7_Richland_2014,26345,NAD83(HARN),NAD83,sampled,1.1689294314506622
+KS_15Co_Cheney_2015,60659,NAD83(HARN),NAD83,sampled,0.22801910494376532
+KS_Area1_2014,22469,NAD83(HARN),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+KS_15Co_South_2015,60659,NAD83(HARN),NAD83,sampled,0.3099013423608278
+IL_PerryCo_2015,26358,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+IL_JacksonCo_2015,26358,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+KS_Area2_B2_2012,1082,NAD83(HARN),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+KS_Area2_2014,22469,NAD83(HARN),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+KS_Area1_Eastern_2013,2208,NAD83(HARN),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+KS_Lidar_1_B1_2013,2208,NAD83(HARN),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+KS_Area2_B5_2012,1082,NAD83(HARN),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+KS_15CoNorth_A3_2015,60659,NAD83(HARN),NAD83(HARN),labels agree (not testable),0.0
+KS_Lidar_1_B4_2013,2208,NAD83(HARN),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+KS_Area2_B6_2012,1082,NAD83(HARN),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+KS_Area2_B4_2012,1082,NAD83(HARN),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+KS_Lidar_1_B5_2013,2208,NAD83(HARN),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+KS_Lidar_1_B3_2013,2208,NAD83(HARN),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+KS_Area2_B1_2012,1082,NAD83(HARN),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+KS_Area2_B3_2012,1082,NAD83(HARN),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+KS_Lidar_1_B2_2013,2208,NAD83(HARN),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+KS_Lidar_1_B6_2013,2208,NAD83(HARN),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+MA_ME_MA_QL1_UTM18_L1_2015,30172,NAD83(2011),NAD83,labels agree (not testable),0.04461887748075012
+KS_SCentral_L2_2015,29347,NAD83(HARN),NAD83,sampled,0.19814711004923669
+KS_Statewide_2017,209088,NAD83(HARN),NAD83,sampled,0.20698409913522087
+LA_Sabine_River_Lidar_A3_2018,75813,NAD83(2011),NAD83(2011),labels agree (not testable),1.7462298274040222e-10
+KS_SCentral_L3_2015,29347,NAD83(HARN),NAD83,sampled,0.17192217736351573
+MD_PA_SandySupp_2014,12553,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+ME_ME_MA_QL2_L2_2015,30172,NAD83(2011),NAD83,sampled,0.1400262250345821
+MI_MackinacCo_2015,46447,NAD83(2011),GCS_NAD83_2011,labels agree (not testable),1.862645149230957e-09
+MA_ME_MA_QL2_UTM18_L1_2015,30172,NAD83(2011),NAD83,sampled,0.058604572332794244
+MN_Phase4_Metro_MapleGrove_2011,5060,NAD83(NSRS2007),NAD83,sampled,0.22250971502265435
+ME_ME_MA_QL2_L1_2015,30172,NAD83(2011),NAD83,sampled,0.15465190087445965
+LA_Sabine_River_Lidar_A4_2018,75813,NAD83(2011),NAD83(2011),labels agree (not testable),1.7462298274040222e-10
+MN_Phase4_Metro_H_2011,5060,NAD83(NSRS2007),NAD83,sampled,0.2571977359267831
+MD_Garret_Co_2014,24866,NAD83(2011),NAD83,sampled,0.25965489162595334
+MI_MuskegonCo_2013,6007,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+MA_ME_MA_QL2_UTM18_L2_2015,30172,NAD83(2011),NAD83,sampled,0.06018467566319638
+LA_Bayou_Nezpique_B4_2018,75843,NAD83(2011),NAD83,sampled,0.5992372678665586
+MO_BooneCo_2015,29326,NAD83,NAD83,labels agree (not testable),6.585445079827193e-10
+MO_FEMAR7_North_A2_2017,75800,NAD83(2011),NAD83,sampled,0.46343656935988753
+MS_Laurel_2014,6724,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+MI_Olga_Lake_Lot5_2016,49678,NAD83(2011),NAD83,sampled,0.11777900047535739
+MO_FEMAR7_North_A3_2017,75800,NAD83(2011),NAD83,sampled,0.37941665102583644
+MO_FEMAR7_North_A4_2017,75800,NAD83(2011),NAD83,sampled,0.3594790748045796
+MO_FEMAR7_North_A1_2017,75800,NAD83(2011),NAD83,sampled,0.3672543965289079
+MS_Coastal_3DEP_Extension_UTM16_2015,27070,NAD83(2011),NAD83,sampled,0.43149727814991123
+MS_Tishomingo_North_2016,48658,NAD83(2011),NAD83,sampled,0.29964152740055683
+MS_Tupelo_UTM15_2015,20344,NAD83,Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+MS_NatchezTrace_2016,48025,NAD83(2011),NAD83,sampled,0.44060898009471505
+MS_Tishomingo_South_2016,48658,NAD83(2011),GCS_North_American_1983_2011,no transformation,
+MT_BentonLake_2014,14327,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+MS_RankinSimpson_2013,8855,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+MT_GlacierNP_2016,55212,NAD83(2011),NAD83,sampled,0.3029670197398926
+MS_Coastal_Z15_2015,27070,NAD83(2011),NAD83,sampled,0.46570976639106265
+NC_SandyLot9_2014,9759,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+NC_Sandy_L14_2014,9759,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+MT_LittleBigHorn_2014,14322,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+NC_Sandy_Lot10_2014,9759,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+NC_Sandy_L15_2014,9759,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+NC_Sandy_L6_2014,9759,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+MT_Stillwater_2016,58059,NAD83(2011),NAD83,sampled,0.3067271956890883
+NC_Sandy_Lot8_2014,9759,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+NC_Sandy_L12_2014,9759,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+ND_McKenzieCo_2014,20870,NAD83(NSRS2007),NAD83,sampled,0.45748708377669395
+NC_Sandy_Lot11_2014,9759,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+NC_Sandy_Lot7_2014,9759,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+NE_SouthPlatte_UTM14_2015,42314,NAD83(2011),NAD83,sampled,0.18717772499131238
+NM_Animas_2014,23209,NAD83(2011),NAD83,sampled,0.24931580237101095
+ND_KidderCO_2014,20002,NAD83(2011),NAD83,sampled,0.35156849030489934
+NE_Sandhills_B4_UTM14_2016,62580,NAD83(2011),NAD83,sampled,0.12196303636567679
+NJ_SdL5_2014,6703,NAD83(2011),NAD83,sampled,0.0768908413598589
+NE_Sandhills_B6_2016,62580,NAD83(2011),NAD83,sampled,0.2213545942530164
+NE_Sandhills_B4_UTM13_2016,62580,NAD83(2011),NAD83,sampled,0.259720587661647
+NM_NRCS_MiddleRioGrande_2017,77898,NAD83(2011),NAD83(2011),labels agree (not testable),1.1641532182693481e-10
+NE_SouthPlatte_UTM14_2015,42314,NAD83(2011),NAD83,sampled,0.18717772556340675
+NM_RioHondo_2014,23181,NAD83(2011),NAD83,sampled,0.1676607193699043
+NM_NRCS_Central_A3_2017,75829,NAD83(2011),NAD83,sampled,0.12471688965392826
+NM_NRCS_Central_A2_2017,75829,NAD83(2011),NAD83,sampled,0.20675485828523094
+NM_RioSanJose_2016,62550,NAD83(2011),NAD83,sampled,0.06847772507451268
+NM_SouthEast_B4_2018,172486,NAD83(2011),NAD83(2011),labels agree (not testable),1.1641532182693481e-10
+NV_Reno_Carson_QL1_2017,74266,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+NM_SouthEast_B2_2018,172486,NAD83(2011),NAD83(2011),labels agree (not testable),1.7462298274040222e-10
+NY_CayugaOswego_TL_2018,77260,NAD83(2011),NAD83,sampled,0.2599587458200935
+NY_FEMA_R2L1_ChautauquaCo_2014,10040,NAD83(2011),NAD83,sampled,0.20585204232167434
+NM_WhiteSandsNM_2020,186615,NAD83(2011),NAD83(2011),labels agree (not testable),4.737760346644705e-10
+NM_NorthCentral_B3_2017,62561,NAD83(2011),NAD83,sampled,0.2058969199733969
+NY_FEMA_R2L2_OrleansCo_2014,10040,NAD83(2011),NAD83,sampled,0.1491846783365807
+NM_WhiteSands_2015,35922,NAD83(2011),NAD83,sampled,0.2172187212187057
+NM_NorthCentral_B4_2016,62561,NAD83(2011),NAD83,sampled,0.2174962211573092
+NM_SouthEast_B3_2018,172486,NAD83(2011),NAD83(2011),labels agree (not testable),1.1641532182693481e-10
+NV_Reno_Carson_QL2_2017,74266,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+NY_GreatLakes_Phase2_L3_2014,10040,NAD83(2011),NAD83,sampled,0.20760169276193133
+NY_Schoharie_2014,6941,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+OH_ChippewaWatershed_2017,70701,NAD83(HARN),NAD83(HARN),labels agree (not testable),6.984919309616089e-10
+NY_CMPG_2013,6523,NAD83(2011),NAD83,sampled,0.0576646193619773
+NY_Sandy_Ul_Du_Or_2013,6239,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+OH_Statewide_Phase1_2_2019,182849,NAD83(2011),NAD83(2011),labels agree (not testable),2.3283064365386963e-10
+OH_Statewide_Phase1_1_2019,182849,NAD83(2011),NAD83(2011),labels agree (not testable),8.149072527885437e-10
+NY_Southwest_East_2017,66511,NAD83(2011),NAD83,sampled,0.12794716605911954
+OK_3County_2017,77892,NAD83(2011),NAD83(2011),labels agree (not testable),5.820766091346741e-11
+OH_Statewide_Phase1_4_2019,182849,NAD83(2011),NAD83(2011),labels agree (not testable),1.3576242827915821e-09
+OK_LowerCimarron_2015,45526,NAD83(2011),NAD83,sampled,0.32824741637072546
+OK_Woodward_UTM15_B4_2016,62484,NAD83(2011),NAD83,sampled,0.6247986003970063
+OK_Craig_Nowata_2015,45493,NAD83(2011),NAD83,sampled,0.7164533405451151
+OH_Statewide_Phase1_5_2019,182849,NAD83(2011),NAD83(2011),labels agree (not testable),4.0745362639427185e-10
+OR_PoleCreek_2013,5963,NAD83(CORS96),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+OR_Malheur_2016,41776,NAD83(2011),NAD83,sampled,0.0933417959604538
+NY_MadisonOtsegoCo_2015,29281,NAD83(2011),NAD83,sampled,0.1903203899306299
+PA_WesternPA_3_2019,186387,NAD83(2011),NAD83(2011),labels agree (not testable),4.799926683327254e-10
+SC_6County_Abbeville_2012,2173,NAD83(NSRS2007),NAD83,sampled,1.1132555126484298
+SC_6County_Barnwell_2012,2173,NAD83(NSRS2007),NAD83,sampled,0.9680914978006029
+OK_Woodward_UTM15_B5_2016,62484,NAD83(2011),NAD83,sampled,0.26501293068215076
+OK_Woodward_UTM15_B3_2016,62484,NAD83(2011),NAD83,sampled,0.6190736509163043
+PA_3_County_South_Central_2018,76415,NAD83(2011),NAD83,sampled,0.07044652964383023
+SC_6County_Aiken_2012,2173,NAD83(NSRS2007),NAD83,sampled,0.9368141917955948
+SD_MORiver_Woolpert_B2_2016,59034,NAD83(2011),NAD83,sampled,0.16841451178504344
+SC_6County_McCormick_2012,2173,NAD83(NSRS2007),NAD83,sampled,0.8486417171243432
+SC_6County_Edgefield_2012,2173,NAD83(NSRS2007),NAD83,sampled,0.9063983730252451
+TN_3County_2015,29439,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+SD_NRCS_DAS_2017,70767,NAD83(2011),NAD83,sampled,0.33595850437708724
+TX_East_UTM15_2017,65085,NAD83(2011),NAD83,sampled,0.39647297099985657
+TX_East_UTM14_2017,65085,NAD83(2011),NAD83,sampled,0.381387053752028
+TX_Amistad_NRA_2017,73889,NAD83(2011),NAD83,sampled,0.6355642295874946
+SD_NRCS_PAR_2017,74236,NAD83(2011),NAD83,sampled,0.32966198737588054
+SD_MORiver_Woolpert_B3_2016,59034,NAD83(2011),NAD83,sampled,0.3137808968743349
+SC_6County_Calhoun_2012,2173,NAD83(NSRS2007),NAD83,sampled,1.3129002407158996
+TX_Eastern_B2_Z15_2018,78662,NAD83(2011),NAD83(2011),labels agree (not testable),0.0
+TX_Hurricane_B5B_2018,80412,NAD83(2011),NAD83(2011),labels agree (not testable),2.9103830456733704e-11
+TX_Eastern_B3_2018,78662,NAD83(2011),NAD83,sampled,0.26799693288309373
+TX_Eastern_B1_2018,78662,NAD83(2011),NAD83(2011),labels agree (not testable),5.820766091346741e-10
+TX_Neches_B1_2016,48664,NAD83(2011),NAD83,sampled,0.613752593147339
+TX_Panhandle_B10_TL_2017,76484,NAD83(2011),NAD83,sampled,0.2686249425344318
+TX_Neches_B2_2016,48664,NAD83(2011),NAD83,sampled,0.4383250575908042
+TX_MiddleBrazos_2016,45518,NAD83(2011),NAD83,sampled,0.5223928119942151
+TX_Neches_B5_2016,48664,NAD83(2011),NAD83,sampled,0.4405294376541324
+TX_Panhandle_B1_TL_2018,76484,NAD83(2011),NAD83,sampled,0.337940415582397
+TX_Neches_B3_2016,48664,NAD83(2011),NAD83,sampled,0.4785993566561378
+TX_Eastern_B2_Z14_2018,78662,NAD83(2011),NAD83(2011),labels agree (not testable),4.656612873077393e-10
+TX_RedRiver_3Area_B2_2018,62435,NAD83(2011),NAD83(2011),labels agree (not testable),1.1641532182693481e-10
+TX_Archer_Jack_2014,23174,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+TX_Panhandle_B1_2017,76484,NAD83(2011),NAD83,sampled,0.3268548488105882
+TX_Neches_B4_2016,48664,NAD83(2011),NAD83,sampled,0.46776444265369416
+TX_RedRiver_Atacosa_B1_2018,62435,NAD83(2011),NAD83,sampled,0.5732349200083339
+TX_RedRiver_3Area_B1_2018,62435,NAD83(2011),NAD83(2011),labels agree (not testable),3.2927225399135965e-10
+TX_RedRiver_Atacosa_B2_2018,62435,NAD83(2011),NAD83(2011),labels agree (not testable),1.1641532182693481e-10
+TX_RedRiver_B1_2017,62435,NAD83(2011),NAD83(2011),labels agree (not testable),2.9103830456733704e-11
+TX_Panhandle_B2_2017,76484,NAD83(2011),NAD83,sampled,0.2697311356842208
+TX_RedRiver_BrazosBasin_B2_2017,62435,NAD83(2011),NAD83(2011),labels agree (not testable),1.1641532182693481e-10
+TX_RedRiver_BrazosBasin_B4_2017,62435,NAD83(2011),NAD83,sampled,0.49197733849968983
+TX_RedRiver_BrazosBasin_B3_2017,62435,NAD83(2011),NAD83(2011),labels agree (not testable),1.7462298274040222e-10
+TX_RedRiver_BrazosBasin_B1_2017,62435,NAD83(2011),NAD83(2011),labels agree (not testable),1.1641532182693481e-10
+TX_RedRiver_B2_2017,62435,NAD83(2011),NAD83,sampled,0.3635905439076215
+TX_RedRiver_B3_2017,62435,NAD83(2011),NAD83(2011),labels agree (not testable),2.9103830456733704e-11
+TX_UpClCrkBrazos_2015,23363,NAD83(2011),NAD83,sampled,0.32609057884217724
+TX_RioGrand_FTWhit_2014,23217,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+TX_RedRiver_B2_TL_2017,62435,NAD83(2011),NAD83,sampled,0.28982174221876805
+TX_RedRiver_BrazosBasin_B5_2017,62435,NAD83(2011),NAD83,sampled,0.5105039099252321
+UT_NorthEscalanteDesert_2016,60607,NAD83(2011),NAD83,sampled,0.19744408647189246
+UT_Wasatch_L5_2014,6259,NAD83,Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+UT_ZionNP_QL1_2016,42018,NAD83(2011),NAD83,sampled,0.13846369112095197
+TX_RedRiver_Lavaca_Wharton_2018,62435,NAD83(2011),NAD83,sampled,0.5341950669427719
+UT_WashingtonCo_2016,60607,NAD83(2011),NAD83,sampled,0.1793267279336916
+UT_Washakie_Whites_Valley_2017,71392,NAD83(2011),NAD83,sampled,0.3463828714220586
+UT_GreatSaltLakeQL2_2016,60607,NAD83(2011),NAD83,sampled,0.477037051892972
+UT_GreatSaltLakeQL1_2016,60607,NAD83(2011),NAD83,sampled,0.4224779793086386
+UT_BearLake_Cache_2016,60607,NAD83(2011),NAD83,sampled,0.3972476631382055
+UT_WasatchFault_L3_2013,6259,NAD83,Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+TX_West_Central_B1_2018,76612,NAD83(2011),NAD83,sampled,0.1634857289176274
+UT_ZionNP_QL2_2016,42018,NAD83(2011),NAD83,sampled,0.15338858005490363
+VA_FEMA_R3_Southwest_A_2016,59073,NAD83(2011),NAD83,sampled,0.343163061938418
+VA_FEMA_R3_Southwest_B_2016,59073,NAD83(2011),NAD83,sampled,0.23246382019873865
+VA_Shenandoah_2014,4693,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+VA_FEMA_R3_Northeast_2016,59073,NAD83(2011),NAD83,sampled,0.24701846487765075
+WA_MtBaker_2015,41821,NAD83(HARN),NAD83,sampled,0.07550965737239189
+VA_Central_Seismic_2013,6279,NAD83(2011),NAD83,sampled,0.3544176823772461
+UT_StatewideNCentral_4_2020,194160,NAD83(2011),NAD83(2011),labels agree (not testable),1.7462298274040222e-10
+WI_FEMAHQ_TL_2018,77865,NAD83(2011),NAD83,sampled,0.3692533401980077
+WA_ColumbiaValley_3_2018,183633,NAD83(2011),NAD83(2011),labels agree (not testable),0.0
+WI_Shawano_2015,41726,NAD83(2011),NAD83,sampled,0.0668215036439888
+WA_GlacierPeak_2014,18332,NAD83,Unknown datum based upon the GRS 1980 ellipsoid,no transformation,
+WA_MountAdams_2016,57819,NAD83(HARN),NAD83,sampled,0.43520369115565916
+WY_GrandTetonElkRefuge_2014,18630,NAD83(2011),Unknown datum based upon the GRS 1980 ellipsoid,no transformation,

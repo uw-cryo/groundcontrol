@@ -215,7 +215,8 @@ def parse(raw: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
 
 
 #: ``raw`` fields lifted by :func:`expand_attributes` by default
-QC_FIELDS = ("qc_height_flag", "qc_horizontal_flag", "project_id", "source_geoid")
+QC_FIELDS = ("qc_height_flag", "qc_horizontal_flag", "source_horizontal_crs_qc",
+             "source_axes_swapped_qc", "project_id", "source_geoid")
 
 
 def expand_attributes(gdf: gpd.GeoDataFrame, fields=QC_FIELDS, prefix: str = "") -> gpd.GeoDataFrame:
